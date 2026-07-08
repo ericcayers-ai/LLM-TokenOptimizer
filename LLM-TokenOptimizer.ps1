@@ -1,13 +1,19 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    LLM-TokenOptimizer - Production Quality v2.1
+    LLM-TokenOptimizer - Production Quality v2.2
 .DESCRIPTION
     Self-bootstrapping launcher that verifies the environment, installs
     dependencies, generates Graphify graphs, and launches Claude Code reliably
     on any Windows 10/11 PC. References itself as LLM-TokenOptimizer throughout.
+
+    v2.2: when the pxpipe proxy is enabled, the launcher now points Claude Code
+    at it automatically AND bridges a Claude *subscription* login by forwarding
+    the stored OAuth token as a Bearer token, so Pro/Max users don't need an
+    API key. (If Anthropic refuses subscription tokens via a proxy, fall back
+    to an API key - see notes in Set-ProxyLaunchEnvironment.)
 .NOTES
-    Version: 2.1.0
+    Version: 2.2.0
     Exit Codes:
         0   - Success
         99  - Unexpected error
@@ -36,7 +42,7 @@ $ProgressPreference = "SilentlyContinue"
 
 # Application constants
 $script:APP_NAME = "LLM-TokenOptimizer"
-$script:APP_VERSION = "2.1.0"
+$script:APP_VERSION = "2.2.0"
 $script:MAX_HISTORY = 20
 $script:GRAPHIFY_IGNORE_VERSION = "V4"
 $script:PROXY_PORT = 47821
@@ -57,13 +63,9 @@ $script:CleanupRegistered = $false
 
 # ============================================================================
 # UI TOOLKIT (ASCII only - safe in any console/encoding)
-#   One status primitive + thin wrappers, so every line shares an aligned,
-#   colour-coded gutter. No boxes, no centered text.
 # ============================================================================
 
 function Get-SafeConsoleWidth {
-    # [Console]::WindowWidth throws when there is no attached console
-    # (redirected output, some hosts). Fall back to a sane default.
     try { $w = [Console]::WindowWidth; if ($w -gt 0) { return $w } } catch {}
     return 80
 }
@@ -83,10 +85,10 @@ function Write-Status {
     Write-Host $Message -ForegroundColor $MessageColor
 }
 
-function Write-Success { param([Parameter(Mandatory)][string]$Message) Write-Status "ok"   ([System.ConsoleColor]::Green)  $Message ([System.ConsoleColor]::Gray) }
+function Write-Success { param([Parameter(Mandatory)][string]$Message) Write-Status "ok"   ([System.ConsoleColor]::Green)    $Message ([System.ConsoleColor]::Gray) }
 function Write-Info    { param([Parameter(Mandatory)][string]$Message) Write-Status "info" ([System.ConsoleColor]::DarkCyan) $Message ([System.ConsoleColor]::Gray) }
-function Write-Warning { param([Parameter(Mandatory)][string]$Message) Write-Status "warn" ([System.ConsoleColor]::Yellow) $Message ([System.ConsoleColor]::Yellow) }
-function Write-Fail    { param([Parameter(Mandatory)][string]$Message) Write-Status "fail" ([System.ConsoleColor]::Red)    $Message ([System.ConsoleColor]::Red) }
+function Write-Warning { param([Parameter(Mandatory)][string]$Message) Write-Status "warn" ([System.ConsoleColor]::Yellow)   $Message ([System.ConsoleColor]::Yellow) }
+function Write-Fail    { param([Parameter(Mandatory)][string]$Message) Write-Status "fail" ([System.ConsoleColor]::Red)      $Message ([System.ConsoleColor]::Red) }
 function Write-Hint    { param([string]$Message = "") Write-Host "  $Message" -ForegroundColor DarkGray }
 
 function Write-Title {
@@ -107,7 +109,6 @@ function Write-Section {
 function Get-Elapsed { return ((Get-Date) - $script:StartTime).ToString('mm\:ss') }
 
 function Read-YesNo {
-    # Streamlined confirm with a default: Enter accepts the default answer.
     param([Parameter(Mandatory)][string]$Prompt, [bool]$Default = $false)
     $suffix = if ($Default) { "[Y/n]" } else { "[y/N]" }
     $ans = Read-Host "  $Prompt $suffix"
@@ -123,7 +124,6 @@ function Get-Truncated {
 }
 
 function Set-Marker {
-    # Write a small "done" sentinel file; failures are non-fatal.
     param([Parameter(Mandatory)][string]$Path)
     try { "done" | Out-File -FilePath $Path -Encoding ASCII -Force -NoNewline } catch {}
 }
@@ -141,9 +141,7 @@ function Initialize-Logging {
             Sort-Object LastWriteTime -Descending |
             Select-Object -Skip $script:MAX_LOG_FILES |
             ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
-    } catch {
-        # Logging is non-critical
-    }
+    } catch {}
 }
 
 function Write-Log {
@@ -165,8 +163,6 @@ function Write-Log {
 # ============================================================================
 
 function Stop-Script {
-    # Central exit path. `exit` is NOT catchable by try/catch and slams the
-    # window shut, so always pause here so the user can read WHY it stopped.
     [CmdletBinding()]
     param([int]$Code = 0, [string]$Reason = "")
     if ($Reason) { Write-Fail $Reason }
@@ -213,7 +209,6 @@ function Initialize-Configuration {
     if (Test-Path $script:ConfigPath) {
         try {
             $savedConfig = (Get-Content $script:ConfigPath -Raw -Encoding UTF8) | ConvertFrom-Json
-            # Backfill any keys added in newer versions.
             foreach ($prop in (Get-DefaultConfiguration).PSObject.Properties) {
                 if (-not ($savedConfig.PSObject.Properties.Name -contains $prop.Name)) {
                     $savedConfig | Add-Member -NotePropertyName $prop.Name -NotePropertyValue $prop.Value
@@ -242,8 +237,6 @@ function Save-Configuration {
 }
 
 function Set-ProxyDisabled {
-    # Turn the proxy off, persist, and return $false so callers can
-    # `return (Set-ProxyDisabled)` in one line.
     $script:Config.UseProxy = $false
     Save-Configuration
     return $false
@@ -353,9 +346,7 @@ function Add-StandardPaths {
                     $addedCount++
                 }
             }
-        } catch {
-            # Pattern didn't match anything
-        }
+        } catch {}
     }
     if ($addedCount -gt 0) { Write-Log "Added $addedCount directories to PATH" }
 }
@@ -379,7 +370,7 @@ function Invoke-ExternalCommand {
     $process = $null
     try {
         # Resolve the command so we can correctly launch .cmd/.bat/.ps1 shims.
-        # With UseShellExecute=$false, the Windows process API cannot start a
+        # With UseShellExecute=$false the Windows process API cannot start a
         # batch file (npm.cmd, claude.cmd, etc.) directly - it must be run
         # through cmd.exe. Bare .exe/console commands are launched as-is.
         $fileName = $Command
@@ -506,8 +497,6 @@ function Test-RequiredDependencies {
     [CmdletBinding()]
     param([array]$Missing)
 
-    # pip has a more targeted remediation message and must be checked before
-    # the generic fatal check below (which excludes it) can be reached.
     if (@($Missing | Where-Object { $_.Name -eq "pip" }).Count -gt 0) {
         Write-Host ""
         Write-Fail "Python was found but pip is missing"
@@ -516,8 +505,7 @@ function Test-RequiredDependencies {
     }
 
     # Graphify + Claude are excluded: Graphify is auto-installed later, and
-    # Claude has its own multi-strategy detection (PATH, registry, folders,
-    # picker) that a simple PATH check must not short-circuit.
+    # Claude has its own multi-strategy detection.
     $fatalMissing = @($Missing | Where-Object { $_.Info.Required -and $_.Name -notin @("Graphify", "Claude", "pip") })
     if ($fatalMissing.Count -gt 0) {
         Write-Host ""
@@ -678,7 +666,8 @@ function Initialize-Pxpipe {
 
     if ($null -eq $script:Config.UseProxy) {
         Write-Section "Pxpipe proxy (optional)"
-        Write-Hint "Optional proxy for enhanced Claude integration; best with Fable 5 workflows."
+        Write-Hint "Token-saving proxy: images bulky context to cut Claude Code tokens."
+        Write-Hint "Best with Fable 5. On a Pro/Max subscription it can stretch your usage cap."
         $script:Config.UseProxy = Read-YesNo "Enable Pxpipe proxy?" $false
         $script:Config.FirstRunComplete = $true
         Save-Configuration
@@ -705,7 +694,7 @@ function Initialize-Pxpipe {
             return (Set-ProxyDisabled)
         }
         Write-Info "Cloning Pxpipe repository..."
-        $result = Invoke-ExternalCommand -Command "git" -Arguments "clone https://github.com/nicepkg/pxpipe.git `"$pxDir`"" -TimeoutSeconds 120
+        $result = Invoke-ExternalCommand -Command "git" -Arguments "clone https://github.com/teamchong/pxpipe.git `"$pxDir`"" -TimeoutSeconds 120
         if (-not $result.Success) {
             Write-Fail "Failed to clone Pxpipe"
             Write-Hint (Get-Truncated $result.Output 300)
@@ -801,6 +790,71 @@ function Stop-PxpipeProxy {
         } catch { Write-Log "Port-based cleanup failed" -Level "WARN" }
     }
     if ($stopped) { Write-Success "Proxy stopped" }
+}
+
+# ============================================================================
+# SUBSCRIPTION AUTH BRIDGE
+#   pxpipe just relays whatever auth Claude Code sends. Claude's *subscription*
+#   login is an OAuth token, and Claude Code will NOT attach it when
+#   ANTHROPIC_BASE_URL points at a proxy - so requests fail. We read the token
+#   Claude Code already stored at login and forward it explicitly via
+#   ANTHROPIC_AUTH_TOKEN (Bearer), which travels through the proxy to Anthropic.
+# ============================================================================
+
+function Get-ClaudeSubscriptionToken {
+    # Returns the current OAuth access token from Claude Code's local store, or
+    # $null. Never logs the token value itself.
+    $candidates = @(
+        (Join-Path $env:USERPROFILE ".claude\.credentials.json"),
+        (Join-Path $env:USERPROFILE ".claude.json"),
+        (Join-Path $env:USERPROFILE ".config\claude\.credentials.json"),
+        (Join-Path $env:APPDATA  "Claude\.credentials.json"),
+        (Join-Path $env:APPDATA  "claude-code\.credentials.json")
+    )
+    foreach ($path in $candidates) {
+        if (-not (Test-Path $path -PathType Leaf)) { continue }
+        try {
+            $json = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json
+            $oauth = $null
+            foreach ($key in @('claudeAiOauth', 'oauth', 'oauthAccount')) {
+                if ($json.PSObject.Properties.Name -contains $key) { $oauth = $json.$key; break }
+            }
+            if ($oauth) {
+                foreach ($tokKey in @('accessToken', 'access_token', 'token')) {
+                    if (($oauth.PSObject.Properties.Name -contains $tokKey) -and $oauth.$tokKey) {
+                        Write-Log "Loaded Claude OAuth token from $path"
+                        return [string]$oauth.$tokKey
+                    }
+                }
+            }
+        } catch { Write-Log "Could not parse credentials at ${path}: $_" -Level "DEBUG" }
+    }
+    return $null
+}
+
+function Set-ProxyLaunchEnvironment {
+    # Point THIS launch of Claude Code at the local pxpipe proxy and, for
+    # subscription users, bridge the login token. Process-scoped only - it does
+    # not change your permanent environment, and only runs when the proxy is on.
+    if (-not $script:Config.UseProxy) { return }
+
+    $env:ANTHROPIC_BASE_URL = "http://127.0.0.1:$($script:PROXY_PORT)"
+    Write-Info "Routing Claude through pxpipe ($env:ANTHROPIC_BASE_URL)"
+
+    # If an explicit key/token is already set, respect it (API-key users).
+    if ($env:ANTHROPIC_API_KEY)    { Write-Info "Using existing ANTHROPIC_API_KEY";    return }
+    if ($env:ANTHROPIC_AUTH_TOKEN) { Write-Info "Using existing ANTHROPIC_AUTH_TOKEN"; return }
+
+    $token = Get-ClaudeSubscriptionToken
+    if ($token) {
+        $env:ANTHROPIC_AUTH_TOKEN = $token
+        Write-Success "Bridged your Claude subscription login to the proxy"
+        Write-Hint "If Anthropic still returns 429/401, subscription tokens are blocked outside"
+        Write-Hint "the official app - set ANTHROPIC_API_KEY (pay-as-you-go) and relaunch."
+    } else {
+        Write-Warning "Couldn't find a Claude login token - the proxy may reject requests."
+        Write-Hint "Log in once by running Claude directly, or set ANTHROPIC_API_KEY, then retry."
+    }
 }
 
 # ============================================================================
@@ -1060,6 +1114,8 @@ function Show-GraphResult {
 function Start-ClaudeSession {
     [CmdletBinding()] param([Parameter(Mandatory)][string]$ClaudePath)
     Write-Section "Launch Claude"
+    # Wire up proxy routing + subscription auth for this launch only.
+    Set-ProxyLaunchEnvironment
     Write-Info "Starting Claude Code..."
     Write-Log "Launching Claude: $ClaudePath in $($PWD.Path)"
     try { & $ClaudePath; Write-Success "Claude session ended" }
@@ -1091,8 +1147,6 @@ function Main {
             Write-Section "Graphify installation"
             if (-not (Install-Graphify)) { Stop-Script -Code 104 -Reason "Cannot continue without Graphify" }
         }
-        # A version-string check must NOT be fatal: graphify is already present,
-        # and some builds return non-zero or don't support --version.
         if (-not (Test-GraphifyVersion)) { Write-Warning "Could not verify Graphify version (continuing)" }
         Update-GraphifyIfNeeded
 
