@@ -1,78 +1,106 @@
 # LLM-TokenOptimizer
 
-A self-bootstrapping, production-quality PowerShell launcher designed to index local codebases, manage proxy routing, and start the Claude CLI without absolute paths or environment mismatches. It automatically detects and installs missing dependencies, handles project history, and ensures complete resource cleanup on exit.
+A self-bootstrapping, production-quality PowerShell launcher for Windows that indexes a local codebase with [Graphify](https://graphify.com), installs matching AI skills with `autoskills`, and launches [Claude Code](https://claude.ai) routed through [OmniRoute](https://github.com/diegosouzapw/OmniRoute) for automatic prompt compression — all with zero manual setup, on a completely clean Windows install.
 
-## Functionality
+## What it does
 
-* **Single Instance Mutex Guard:** Uses a global .NET Mutex (`Global\GraphifyClaudeLauncherMutex_v2`) scoped to the current user to instantly terminate duplicate windows and prevent multiple concurrent instances or environment conflicts.
-* **Intelligent Dependency Detection:** Dynamically locates Git, Node.js, NPM, Python, pip, and Claude CLI across system PATH, Program Files, LocalAppData, Scoop, Chocolatey, and Winget installations.
-* **Automatic Graphify Installation:** If the Graphify CLI is missing from the system, it is automatically fetched and installed via `pip install graphify`, with post-installation verification.
-* **Smart Claude Resolution:** Searches for `claude.exe` using PATH resolution, common directory heuristics, and Windows Registry queries. Falls back to a native file picker dialog for manual selection if automated detection fails, then remembers the chosen path for future runs.
-* **Pxpipe Proxy Lifecycle:** Checks if port 47821 is active via `Get-NetTCPConnection` (with `netstat` fallback). If the port is free, it clones/updates the Pxpipe repository, runs `npm install` only if `package-lock.json` has changed, and starts the proxy in an isolated window. Reuses the session if the port is already listening. Works best for Fable 5.
-* **JSON Configuration & History:** Replaces temporary text files with a persistent JSON config stored in `%LOCALAPPDATA%\GraphifyLauncher\config.json`. Tracks proxy preferences, Claude paths, project history (up to 20 entries), and auto-update preferences.
-* **Interactive Directory Selection:** Utilizes an embedded PowerShell loop to handle folder drag-and-drop operations and maintain a path history buffer navigable via Up/Down arrow keys. Supports the Delete key to remove entries from history.
-* **Project Validation:** Verifies that the selected directory exists, is readable and writable, is not a root drive partition, and is not empty before proceeding.
-* **Versioned Ignore Matrix:** Injects a versioned template (`GRAPHIFY_IGNORE_TEMPLATE_V4`) into `.graphifyignore` to skip build artifacts, binaries, and log files. Automatically upgrades older templates while preserving user-defined custom rules.
-* **Graphify Pipeline Management:** Checks global gate files to skip redundant platform registrations and hook installations. Retries corrupted or failed hook installations automatically.
-* **Visual Export and Abort Option:** Runs the structural layout extraction, tracks extraction time and node/edge statistics, compiles an interactive HTML map, and outputs a browser-compatible link. Allows pressing Enter to launch Claude or entering X to gracefully shut down the proxy and release the port.
-* **Comprehensive Logging:** Logs all operations (startup, dependency detection, Git/NPM/Graphify commands, proxy lifecycle, and exceptions) with millisecond timestamps to `%LOCALAPPDATA%\GraphifyLauncher\logs\`, with automatic log rotation.
-* **Guaranteed Teardown Sequence:** Uses `try/catch/finally` blocks and PowerShell engine events to ensure resources are always released—even on unexpected crashes or Ctrl+C interrupts.
+- **Bootstraps a clean Windows PC from scratch.** Detects Git, Node.js, npm, Python, and pip; auto-installs anything missing via `winget` (falling back to a per-user install if machine-scope needs admin rights it doesn't have). If `winget` itself isn't available, it prints manual install links instead of failing.
+- **Installs and verifies Graphify.** Auto-installs via `pip` if missing, verifies the version, and on every launch either does a full scan (`graphify .`, first run in a project) or an incremental one (`graphify update`, every run after — only re-parses changed files, with an automatic fallback to a full rescan if `update` isn't supported by the installed version).
+- **Installs and runs `autoskills`.** Detects the project's tech stack and installs matching Claude Code skills from the skills.sh registry on every launch, fully non-interactively (`npx -y autoskills -y -a claude-code`).
+- **Finds or installs Claude Code.** Checks PATH, common install directories, and the Windows registry; installs via `npm install -g @anthropic-ai/claude-code` if not found; falls back to a native file picker if all else fails. Remembers the resolved path for next time.
+- **Auto-installs and starts OmniRoute.** Installs via `npm install -g omniroute@latest` if missing, checks for updates, and launches it in its own minimized, titled console window (separate from both this launcher and Claude Code) with a progress bar while it comes online.
+- **Routes Claude Code through OmniRoute**, applying OmniRoute's compression pipeline (RTK → Caveman → LLMLingua → Lite) to every request automatically. No model-switching logic lives in this script — model selection happens entirely inside Claude Code's own `/model` picker.
+- **Pins the `/model` picker to four exact models, all served through OmniRoute** — Opus 4.8, Sonnet 5, Fable 5, and Haiku 4.5 — by resolving each one against OmniRoute's live model catalog and writing `ANTHROPIC_DEFAULT_OPUS_MODEL` / `_SONNET_MODEL` / `_FABLE_MODEL` / `_HAIKU_MODEL` for the session, and restricting `~/.claude/settings.json`'s `availableModels` so no other version or `auto/*` combo shows up in the picker. If OmniRoute doesn't have an exact match for a family, that family is left on Claude Code's own built-in default instead of silently substituting a generic model.
+- **Detects (and helps you complete) the one manual step OmniRoute requires**: connecting your Claude.ai account as a provider. This is a browser OAuth sign-in and can't be automated — the script checks `omniroute providers list --json` and, if nothing's connected yet, opens the dashboard page directly to `/dashboard/providers/claude` and waits for you to click **+ Add**.
+- **Resumes your previous Claude session automatically** when you reopen a project you've used before (`claude --continue`), and if there's no previous session to resume, falls back to starting a fresh one instead of erroring out.
+- **Lets you force a specific model for one launch** with `-Model sonnet` or `-Model opus`, without touching whatever's saved as your Claude Code default.
+- **Remembers your last 20 project paths**, navigable with Up/Down arrow keys in the path prompt, with Delete to remove an entry.
+- **Asks about updates fresh every launch** ("Check for updates now?") rather than persisting or throttling a schedule — say yes and it checks Git, Node, Python, Graphify, Claude Code, OmniRoute, and `autoskills` for newer versions.
+- **Single-instance protected** via a global, per-user `.NET Mutex`, so a duplicate launch closes immediately instead of causing environment conflicts.
+- **Logs everything** with millisecond timestamps to `%LOCALAPPDATA%\LLM-TokenOptimizer\logs\`, with automatic rotation (keeps the last 10 log files).
+- **Cleans up guaranteed on exit** — mutex release and config save run inside `try/catch/finally` and a `PowerShell.Exiting` engine event, so they run even on a crash or Ctrl+C.
 
 ## Requirements
 
-The following core dependencies must be available globally in the system environment (the launcher will halt and provide download links if they are missing):
-1. **Git**
-2. **Node.js and NPM**
-3. **Python and pip**
+Nothing needs to be pre-installed. On a totally clean Windows 10 (2004+) or Windows 11 machine, the script installs everything itself via `winget` and `npm`/`pip` as needed:
 
-The following dependencies are managed automatically by the launcher:
-4. **Graphify CLI** (`graphify`) — Auto-installed via pip if missing.
-5. **Claude CLI** (`claude`) — Detected automatically or selected via file dialog.
+- Git
+- Node.js + npm
+- Python + pip
+- Graphify CLI (via pip)
+- Claude Code CLI (via npm)
+- OmniRoute CLI (via npm)
+- `autoskills` (via npm, on first use)
 
-## Usage Instructions
+If `winget` isn't available on the machine (very old Windows 10 builds, or it's disabled by policy), the script degrades gracefully: it tells you exactly what's missing and where to get it manually instead of failing outright.
 
-1. **Run the script:**
-   ```powershell
-   .\LLM-TokenOptimizer.ps1
-   ```
+## Usage
 
-2. **Optional Flags:**
-   * `-VerboseMode`: Outputs detailed debug logs to the console.
-   * `-ForceUpdate`: Forces Pxpipe and Graphify to update to their latest versions.
-   * `-SkipProxy`: Bypasses the Pxpipe proxy setup entirely.
-   * `-ResetConfig`: Deletes the saved JSON configuration and starts fresh.
+```powershell
+.\LLM-TokenOptimizer.ps1
+```
 
-3. **Select Proxy Option (First Run Only):**
-   Choose whether to activate the networking layer for the current project:
-   ```text
-   Enable Pxpipe Proxy? [Y/N]:
-   ```
+### Flags
 
-4. **Specify Installation Path (First Run Only, if Proxy Enabled):**
-   Provide a directory for the Pxpipe repository to be cloned into:
-   ```text
-   Installation path: D:\Tools\Pxpipe
-   ```
+| Flag | Effect |
+|---|---|
+| `-VerboseMode` | Prints detailed debug logs to the console. |
+| `-ForceUpdate` | (Reserved for future use alongside the update-check prompt.) |
+| `-SkipOmniRoute` | Skips OmniRoute entirely — Claude Code launches directly, uncompressed. |
+| `-ResetConfig` | Deletes the saved JSON config and starts fresh (re-asks every first-run prompt). |
+| `-Model sonnet` \| `-Model opus` | Forces this one session onto Sonnet or Opus, regardless of whatever Claude Code has saved as its default. Session-only — doesn't persist. |
 
-5. **Select Directory:**
-   Drag and drop the target folder into the window or use the Up and Down arrow keys to cycle through recent paths. Press Delete to remove a path from history.
+### First run
 
-6. **Open the Graph Map:**
-   Ctrl + Click the generated file URI to view the structural network map inside a web browser:
-   ```text
-   file:///C:/Users/Profile/Workspace/graphify-out/graph.html
-   ```
+1. **Windows/dependency check** — the script verifies Windows 10+, then detects and auto-installs any missing tools.
+2. **Graphify install/verify** — installed via pip if missing, version printed.
+3. **Update check** — "Check for updates now?" (asked fresh every launch, not just first run).
+4. **Claude Code detection** — found on PATH/registry/common dirs, or auto-installed, or you're prompted for the path.
+5. **OmniRoute routing** — "Route Claude Code through OmniRoute?" (Y/n). If yes, you'll be asked once for your OmniRoute API key (stored encrypted, DPAPI, tied to your Windows account). OmniRoute is then auto-started in its own window.
+6. **Claude Code provider connection** — if OmniRoute has no Claude.ai account connected yet, your browser opens straight to the dashboard's Claude provider page; click **+ Add**, sign in, then press Enter back in the console.
+7. **Project path** — drag-and-drop a folder or type a path; Up/Down cycles your history, Delete removes an entry.
+8. **Graphify extraction** — full scan on a new project, incremental `update` on repeat runs; builds the interactive HTML graph.
+9. **autoskills** — detects your stack and installs matching Claude Code skills automatically.
+10. **Launch** — press Enter to start Claude Code (resuming your previous session if this project's been used before), or `X` to exit without launching.
 
-7. **Select Next Action:**
-   * Press **Enter** to open the Claude CLI terminal environment.
-   * Type **X** and press Enter to cancel and initiate the teardown sequence.
+Every subsequent run in the same project just resumes: no re-prompting for OmniRoute, provider connection, or dependency installs unless something's actually missing or reset.
 
-## Teardown Sequence
+### Picking a model
 
-When exiting Claude or choosing to abort early via the X option, the script executes the following guaranteed cleanup steps:
-* Sends a graceful close window request to processes titled `PxpipeProxyWindow`.
-* Waits 5 seconds for graceful shutdown, then force-terminates if the process is still active.
-* Scans port 47821 using `Get-NetTCPConnection` and force-terminates any orphaned processes still holding the port.
-* Releases the global .NET Mutex.
-* Saves the final state to the JSON configuration file.
-* Flushes and closes all application logs.
+Model selection lives entirely inside Claude Code's own `/model` picker — this script doesn't prompt for it. The picker is restricted to exactly four entries, all routed through OmniRoute's compression pipeline:
+
+- **Opus 4.8**
+- **Sonnet 5**
+- **Fable 5**
+- **Haiku 4.5**
+
+No `auto/*` combo or older/duplicate model version appears in the list.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success |
+| 99 | Unexpected error |
+| 100 | Duplicate instance already running |
+| 101 | Unsupported Windows version |
+| 102 | Missing required dependency that couldn't be auto-installed |
+| 103 | Claude Code not found |
+| 104 | Graphify installation failed |
+| 106 | Graph extraction failed |
+
+## Where things live
+
+| What | Location |
+|---|---|
+| Config (project history, saved paths, encrypted API key) | `%LOCALAPPDATA%\LLM-TokenOptimizer\config.json` |
+| Logs | `%LOCALAPPDATA%\LLM-TokenOptimizer\logs\` |
+| Graph output + studio | `<project>\.graphify\graph.json`, `<project>\.graphify\studio\studio.html` |
+| Claude Code model restrictions | `~\.claude\settings.json` (`availableModels`) |
+
+## Troubleshooting
+
+- **"Missing closing '}'" or other parse errors** — the `.ps1` file got truncated during a copy/download. Re-copy it fresh rather than re-running a partial copy; verify the file ends with a bare `Main` call on the last line.
+- **OmniRoute never comes online** — it can take 10–20s on first boot; the script waits up to 45s with a progress bar. If it still fails, start it manually with `omniroute` in its own terminal.
+- **`/model` picker doesn't show gateway models** — needs Claude Code v2.1.129+ and `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` (set automatically by this script whenever OmniRoute routing is active).
+- **Claude keeps launching on the wrong model** — Claude Code caches your last `/model` pick as the session default. Either pick Opus/Sonnet/Fable/Haiku again in `/model`, or launch with `-Model sonnet` / `-Model opus` to force it for one session.
