@@ -1364,6 +1364,101 @@ function Install-GraphifyHook {
     Write-Log "Hook install failed after retries" -Level "WARN"
 }
 
+# ----------------------------------------------------------------------------
+# Strict-mode enforcement: hard-blocks the first raw source read of a
+# session and redirects it to the graph, then writes a mandatory
+# `PreToolUse` hook into .claude\settings.json that intercepts file search
+# (Glob/Grep) and bash commands so Claude can't bypass the graph by shelling
+# out to `grep`/`find` directly. Runs every launch; each step is idempotent
+# and marker-gated so repeat launches are a no-op.
+# ----------------------------------------------------------------------------
+function Install-GraphifyStrictMode {
+    $strictMarker = Join-Path $PWD ".graphify_strict_installed"
+    if (-not (Test-Path $strictMarker)) {
+        Write-Info "Installing Graphify strict mode (blocks raw source reads before the graph)..."
+        $result = Invoke-ExternalCommand -Command "graphify" -Arguments "install --project --strict" -TimeoutSeconds 30
+        if ($result.Success) {
+            Set-Marker $strictMarker
+            Write-Success "Strict mode installed"
+        } else {
+            Write-Warning "Strict mode install failed - continuing without the hard block"
+            Write-Log "graphify install --project --strict failed: $($result.Output)" -Level "WARN"
+        }
+    } else {
+        Write-Log "Strict mode already installed for this project" -Level "DEBUG"
+    }
+
+    # Keeps the block active for this process; strict installs alone are
+    # only a marker file on disk, this env var is what Graphify's hook
+    # actually checks at runtime before letting a raw read through.
+    [Environment]::SetEnvironmentVariable("GRAPHIFY_HOOK_STRICT", "1", "Process")
+
+    $claudeHookMarker = Join-Path $PWD ".graphify_claude_hook_installed"
+    if (-not (Test-Path $claudeHookMarker)) {
+        Write-Info "Wiring Graphify into Claude Code's PreToolUse hook..."
+        $result = Invoke-ExternalCommand -Command "graphify" -Arguments "claude install" -TimeoutSeconds 30
+        if ($result.Success) {
+            Set-Marker $claudeHookMarker
+            Write-Success "Claude Code hook installed (.claude\settings.json)"
+        } else {
+            Write-Warning "graphify claude install failed - PreToolUse hook not written"
+            Write-Log "graphify claude install failed: $($result.Output)" -Level "WARN"
+        }
+    } else {
+        Write-Log "Claude Code PreToolUse hook already installed" -Level "DEBUG"
+    }
+}
+
+# ----------------------------------------------------------------------------
+# Ensures every project this launcher touches has the graph-first directive
+# in its CLAUDE.md, so strict mode is backed up by an explicit instruction
+# even on a machine where the PreToolUse hook install failed or an older
+# Graphify build ignores it. Two paths:
+#   - No CLAUDE.md yet          -> write a new one with just the directive.
+#   - CLAUDE.md already exists  -> leave existing content untouched, just
+#                                   append the directive block if it isn't
+#                                   already present (checked via a marker
+#                                   heading, so repeat launches don't stack
+#                                   duplicate copies).
+# ----------------------------------------------------------------------------
+function Set-ProjectClaudeMdDirective {
+    $claudeMdPath = Join-Path $PWD "CLAUDE.md"
+    $markerHeading = "# Graphify enforcement"
+    $directiveBlock = @"
+CRITICAL: You must run ``graphify query`` or read ``graphify-out/GRAPH_REPORT.md`` (or ``.graphify/graph.json`` / ``.graphify/studio/studio.html`` on newer Graphify builds) before any raw file read, Glob, or Grep. This is non-negotiable.
+
+$markerHeading
+
+- Treat ``graphify`` as mandatory for understanding this codebase. ``grep``/``Grep`` and raw file reads are a fallback only, to be used after consulting the graph, never before it.
+- Any subagent spawned inside this project must follow the same rule: query the graph first, fall back to grep only if the graph doesn't have the answer.
+- At the start of a session: use ``graphify-out/GRAPH_REPORT.md`` (or the current project's ``.graphify/graph.json``) before searching files. Do not use raw grep first.
+- Strict-mode enforcement is active for this project (``graphify install --project --strict``, ``GRAPHIFY_HOOK_STRICT=1``, and a ``PreToolUse`` hook installed via ``graphify claude install`` in ``.claude/settings.json``). The first raw source read of a session is hard-blocked and redirected to the graph; file search and bash commands are intercepted by the hook.
+"@
+
+    try {
+        if (-not (Test-Path $claudeMdPath -PathType Leaf)) {
+            $directiveBlock | Out-File -FilePath $claudeMdPath -Encoding UTF8 -Force
+            Write-Success "Created CLAUDE.md with the Graphify directive"
+            Write-Log "CLAUDE.md created at $claudeMdPath" -Level "DEBUG"
+            return
+        }
+
+        $existing = Get-Content -Path $claudeMdPath -Raw -Encoding UTF8
+        if ($existing -match [regex]::Escape($markerHeading)) {
+            Write-Log "CLAUDE.md already has the Graphify directive - leaving as-is" -Level "DEBUG"
+            return
+        }
+
+        $merged = $existing.TrimEnd() + "`r`n`r`n" + $directiveBlock
+        $merged | Out-File -FilePath $claudeMdPath -Encoding UTF8 -Force
+        Write-Success "Added the Graphify directive to existing CLAUDE.md"
+        Write-Log "CLAUDE.md merged at $claudeMdPath" -Level "DEBUG"
+    } catch {
+        Write-Warning "Could not write/merge CLAUDE.md - continuing without it"
+        Write-Log "CLAUDE.md write failed: $_" -Level "WARN"
+    }
+}
+
 function Invoke-GraphifyExtract {
     Write-Section "Graph extraction"
     $graphFile = Join-Path (Join-Path $PWD ".graphify") "graph.json"
@@ -1590,6 +1685,8 @@ function Main {
         Write-Section "Graphify setup"
         Install-GraphifyPlatform
         Install-GraphifyHook
+        Install-GraphifyStrictMode
+        Set-ProjectClaudeMdDirective
 
         if (-not (Invoke-GraphifyExtract)) { Stop-Script -Code 106 -Reason "Extraction failed - aborting" }
         Show-GraphResult
