@@ -996,27 +996,19 @@ function Start-OmniRoute {
         Write-Warning "Could not auto-launch OmniRoute ('omniroute' not found on PATH)"
         Write-Hint "Start it manually by running 'omniroute', then press Enter"
         try { $null = Read-Host } catch {}
+        return $false
     }
 
-    # First-run startup (env load + server boot) commonly takes ~10-15s -
-    # give it real headroom and show progress so it doesn't look hung.
-    Write-Info "Waiting for OmniRoute to come online (first run can take up to 15-20s)..."
-    $maxWaitSeconds = 45
-    for ($waited = 0; $waited -lt $maxWaitSeconds; $waited++) {
-        if (Test-OmniRouteRunning) {
-            Write-ProgressBar -Percent 100 -Label "OmniRoute is up!"
-            Clear-ProgressLine
-            Write-Success "OmniRoute is up at $script:OMNIROUTE_URL"
-            return $true
-        }
-        $pct = [Math]::Min(99, [Math]::Round(($waited / $maxWaitSeconds) * 100))
-        Write-ProgressBar -Percent $pct -Label "starting... (${waited}s/${maxWaitSeconds}s)"
-        Start-Sleep -Seconds 1
-    }
-    Clear-ProgressLine
-    Write-Warning "OmniRoute still not reachable after ${maxWaitSeconds}s - continuing without it"
-    Write-Hint "Claude will launch normally, but without OmniRoute's compression."
-    return $false
+    # Don't block here waiting for the HTTP server to come online - it opened
+    # in its own window and boots on its own timeline (~10-20s on a cold
+    # start). The rest of this launcher (Graphify extraction, autoskills,
+    # project selection) takes long enough that OmniRoute is almost always
+    # ready by the time Claude actually launches and needs it - and if it
+    # isn't yet, Set-OmniRouteLaunchEnvironment / Test-OmniRouteRunning at
+    # that point just proceed without compression rather than erroring.
+    Write-Success "OmniRoute launching in its own window - continuing without waiting"
+    Write-Hint "It usually finishes booting in 10-20s; the rest of setup runs in parallel with that."
+    return $true
 }
 
 function Set-OmniRouteDisabled {
@@ -1044,21 +1036,21 @@ function Get-OmniRouteApiKey {
 }
 
 function Set-ClaudeAvailableModels {
-    # Restricts the /model picker to exactly: Fable 5, Opus 4.8, Sonnet 5,
-    # Haiku 4.5 - all four routed through OmniRoute (see the ANTHROPIC_
-    # DEFAULT_*_MODEL pins in Set-OmniRouteLaunchEnvironment), no "auto/*"
-    # combos and no separate Anthropic-direct entries. Claude Code's own
-    # `availableModels` setting (~/.claude/settings.json) is the documented
-    # allowlist mechanism, and it applies to gateway-discovered models too -
-    # so this trims OmniRoute's whole catalog (opus-4-7, opus-4-6,
-    # opus-4-5-20251101, sonnet-4-6, sonnet-4-5-*, any auto/* combo, etc.)
-    # down to just the four wanted entries. A version prefix like
-    # "claude-opus-4-8" matches only that exact family - it disables the
-    # broader "opus" wildcard, so older Opus/Sonnet releases drop out of the
-    # list instead of the requested one becoming ambiguous.
+    # Restricts the /model picker to exactly two entries: claude-opus-5 and
+    # claude-sonnet-5, both routed through OmniRoute. Fable and Haiku are
+    # deliberately NOT included anymore - per explicit instruction, nothing
+    # else should be selectable. Claude Code's own `availableModels` setting
+    # (~/.claude/settings.json) is the documented allowlist mechanism, and it
+    # applies to gateway-discovered models too.
+    #
+    # NOTE: "claude-opus-5" does not exist in OmniRoute's current catalog
+    # (the current Opus release is "claude-opus-4-8") - this is a literal,
+    # intentional match on "claude-opus-5" specifically. Until a model with
+    # that exact name ships, no Opus entry will appear in /model at all;
+    # only Sonnet 5 will be selectable. This is expected, not a bug.
     $claudeDir = Join-Path $env:USERPROFILE ".claude"
     $settingsPath = Join-Path $claudeDir "settings.json"
-    $wanted = @("fable", "claude-opus-4-8", "claude-sonnet-5", "haiku")
+    $wanted = @("claude-opus-5", "claude-sonnet-5")
     try {
         if (-not (Test-Path $claudeDir)) { New-Item -ItemType Directory -Path $claudeDir -Force | Out-Null }
         $settings = if (Test-Path $settingsPath) {
@@ -1075,7 +1067,7 @@ function Set-ClaudeAvailableModels {
                 $settings | Add-Member -NotePropertyName "availableModels" -NotePropertyValue $wanted
             }
             $settings | ConvertTo-Json -Depth 10 | Out-File -FilePath $settingsPath -Encoding UTF8 -Force
-            Write-Success "Model picker restricted to Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5"
+            Write-Success "Model picker restricted to claude-opus-5 and claude-sonnet-5 only"
             Write-Log "Wrote availableModels to $settingsPath : $($wanted -join ', ')"
         } else {
             Write-Log "availableModels already set correctly - skipping write" -Level "DEBUG"
@@ -1169,17 +1161,19 @@ function Initialize-ClaudeCodeProvider {
 
 function Resolve-OmniRouteClaudeModelId {
     # Asks OmniRoute's live /v1/models catalog for the exact ID it's using
-    # for each Claude family, instead of hardcoding a guessed ID or falling
-    # back to a generic "auto/claude-<family>" combo. Every family - Opus,
-    # Sonnet, Fable, and Haiku - is meant to resolve to a specific OmniRoute
-    # catalog entry (e.g. claude-opus-4-8, claude-sonnet-5) with no "auto/*"
-    # combo involved anywhere. If nothing in the catalog matches, this
-    # returns $null rather than substituting an auto combo - the caller
-    # leaves that family's env var unset so Claude Code falls back to its
-    # own built-in default instead of silently routing through "auto".
+    # for Opus and Sonnet - the only two families this script supports now.
+    # No "auto/*" combo involved anywhere, and no fallback substitution: if
+    # nothing in the catalog matches, this returns $null and the caller
+    # leaves that family's env var unset entirely.
+    #
+    # Opus is matched literally against "claude-opus-5" - NOT "claude-opus-
+    # 4-8" (the current real Opus release name in OmniRoute's catalog as of
+    # this writing). That's intentional, per explicit instruction: until a
+    # model literally named claude-opus-5 exists, this will find nothing and
+    # Opus simply won't be pinned or appear in /model - only Sonnet 5 will.
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][ValidateSet('opus', 'sonnet', 'fable', 'haiku')][string]$Family,
+        [Parameter(Mandatory)][ValidateSet('opus', 'sonnet')][string]$Family,
         [Parameter(Mandatory)][string]$ApiKey
     )
     try {
@@ -1193,14 +1187,12 @@ function Resolve-OmniRouteClaudeModelId {
     }
     if ($ids.Count -eq 0) { return $null }
 
-    # Most specific pattern first per family. Sonnet excludes the "[1m]"/"1m"
-    # long-context variant so it doesn't accidentally pin to that instead of
-    # the standard model. "auto/*" IDs are already filtered out above.
+    # Sonnet excludes the "[1m]"/"1m" long-context variant so it doesn't
+    # accidentally pin to that instead of the standard model. "auto/*" IDs
+    # are already filtered out above.
     $patterns = switch ($Family) {
-        'opus'   { @('^claude-opus-4-8$', 'claude-opus-4[.-]8') }
+        'opus'   { @('^claude-opus-5$', 'claude-opus-5') }
         'sonnet' { @('^claude-sonnet-5$', 'claude-sonnet-5(?!.*1m)') }
-        'fable'  { @('^claude-fable-5$', 'claude-fable-5', 'claude-fable') }
-        'haiku'  { @('^claude-haiku-4-5$', 'claude-haiku-4[.-]5', 'claude-haiku') }
     }
     foreach ($pattern in $patterns) {
         $match = $ids | Where-Object { $_ -match $pattern } | Select-Object -First 1
@@ -1217,13 +1209,14 @@ function Set-OmniRouteLaunchEnvironment {
     # OmniRoute's own env var (confirmed in OmniRoute's
     # docs/guides/CLAUDE-CODE-CONFIGURATION.md), and it does make the native
     # /model picker list claude*/anthropic*-prefixed IDs from /v1/models.
-    # The four picker rows we keep (Fable, Opus, Sonnet, Haiku - see
-    # Set-ClaudeAvailableModels) are each repointed at OmniRoute's own
-    # catalog entry for that exact model via the ANTHROPIC_DEFAULT_*_MODEL
-    # vars. No "auto/*" combo is used anywhere - Resolve-OmniRouteClaudeModelId
-    # filters those out and returns $null instead of substituting one, so a
-    # family with no exact OmniRoute catalog match just falls back to
-    # Claude Code's own built-in default for that alias rather than "auto".
+    # Only two picker rows are supported now (see Set-ClaudeAvailableModels):
+    # Opus and Sonnet, each repointed at OmniRoute's own catalog entry via
+    # the ANTHROPIC_DEFAULT_*_MODEL vars. Fable and Haiku are intentionally
+    # not pinned anymore. No "auto/*" combo is used anywhere -
+    # Resolve-OmniRouteClaudeModelId filters those out and returns $null
+    # instead of substituting one, so a family with no exact OmniRoute
+    # catalog match just falls back to Claude Code's own built-in default
+    # for that alias rather than "auto".
     if (-not $script:Config.UseOmniRoute) { return }
     $apiKey = Get-OmniRouteApiKey
     if (-not $apiKey) {
@@ -1235,10 +1228,8 @@ function Set-OmniRouteLaunchEnvironment {
     $env:CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = "1"
 
     $modelPins = @(
-        @{ Family = 'opus';   EnvVar = 'ANTHROPIC_DEFAULT_OPUS_MODEL';   NameVar = 'ANTHROPIC_DEFAULT_OPUS_MODEL_NAME';   Label = 'Opus 4.8 (OmniRoute)' }
+        @{ Family = 'opus';   EnvVar = 'ANTHROPIC_DEFAULT_OPUS_MODEL';   NameVar = 'ANTHROPIC_DEFAULT_OPUS_MODEL_NAME';   Label = 'Opus 5 (OmniRoute)' }
         @{ Family = 'sonnet'; EnvVar = 'ANTHROPIC_DEFAULT_SONNET_MODEL'; NameVar = 'ANTHROPIC_DEFAULT_SONNET_MODEL_NAME'; Label = 'Sonnet 5 (OmniRoute)' }
-        @{ Family = 'fable';  EnvVar = 'ANTHROPIC_DEFAULT_FABLE_MODEL';  NameVar = 'ANTHROPIC_DEFAULT_FABLE_MODEL_NAME';  Label = 'Fable 5 (OmniRoute)' }
-        @{ Family = 'haiku';  EnvVar = 'ANTHROPIC_DEFAULT_HAIKU_MODEL';  NameVar = 'ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME';  Label = 'Haiku 4.5 (OmniRoute)' }
     )
     $pinnedLog = [System.Collections.ArrayList]::new()
     foreach ($pin in $modelPins) {
