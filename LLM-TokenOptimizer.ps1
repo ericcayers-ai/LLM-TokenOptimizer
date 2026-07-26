@@ -1474,6 +1474,28 @@ function Invoke-GraphifyExtract {
     $extractStart = Get-Date
     $result = Invoke-ExternalCommand -Command "graphify" -Arguments $extractArgs -TimeoutSeconds 300 -ShowSpinner -SpinnerLabel "Scanning project graph"
     $extractTime = (Get-Date) - $extractStart
+
+    # Newer Graphify builds refuse to run on a mixed repo (code + docs/
+    # PDFs/images) unless you either point it at an LLM backend for
+    # semantic extraction or tell it to skip the non-code files entirely.
+    # The exact skip flag isn't consistent across Graphify versions (we've
+    # seen --code-only rejected as "unknown option" on some installs), so
+    # instead of hardcoding a guess we read graphify's own --help output
+    # and pick whatever flag it actually advertises for this.
+    if ((-not $result.Success) -and ($result.Output -match "non-code corpus files|--semantic|--backend")) {
+        Write-Log "graphify $extractArgs hit the semantic-extraction gate: $(Get-Truncated $result.Output 200)" -Level "DEBUG"
+        $skipFlag = Find-GraphifySkipSemanticFlag
+        if ($skipFlag) {
+            Write-Hint "Project has non-code files (docs/PDFs/images) - retrying with $skipFlag"
+            $codeOnlyArgs = "$extractArgs $skipFlag"
+            $result = Invoke-ExternalCommand -Command "graphify" -Arguments $codeOnlyArgs -TimeoutSeconds 300 -ShowSpinner -SpinnerLabel "Scanning project graph (code-only)"
+            $extractTime = (Get-Date) - $extractStart
+            if ($result.Success) { $extractArgs = $codeOnlyArgs }
+        } else {
+            Write-Log "No code-only/skip-semantic flag found in 'graphify --help' output" -Level "DEBUG"
+        }
+    }
+
     if (-not $result.Success) {
         if ($isUpdate) {
             # Older Graphify builds may not support `update` - fall back to a
@@ -1481,23 +1503,75 @@ function Invoke-GraphifyExtract {
             Write-Log "graphify update failed, falling back to full scan: $(Get-Truncated $result.Output 200)" -Level "DEBUG"
             $result = Invoke-ExternalCommand -Command "graphify" -Arguments "." -TimeoutSeconds 300 -ShowSpinner -SpinnerLabel "Scanning project graph"
             $extractTime = (Get-Date) - $extractStart
+            if ((-not $result.Success) -and ($result.Output -match "non-code corpus files|--semantic|--backend")) {
+                $skipFlag = Find-GraphifySkipSemanticFlag
+                if ($skipFlag) {
+                    Write-Log "graphify . also hit the semantic-extraction gate, retrying with $skipFlag" -Level "DEBUG"
+                    $result = Invoke-ExternalCommand -Command "graphify" -Arguments ". $skipFlag" -TimeoutSeconds 300 -ShowSpinner -SpinnerLabel "Scanning project graph (code-only)"
+                    $extractTime = (Get-Date) - $extractStart
+                }
+            }
         }
         if (-not $result.Success) {
             Write-Fail "Graph extraction failed"
             foreach ($line in ($result.Output -split "`r?`n" | Select-Object -First 10)) { Write-Hint $line }
-            return $false
+            Write-Warning "Continuing without a graph - Claude Code will still launch normally"
+            return $true
         }
     }
     if (-not (Test-Path $graphFile -PathType Leaf)) {
         Write-Fail "Graph file missing: .graphify\graph.json"
         foreach ($line in ($result.Output -split "`r?`n" | Select-Object -First 10)) { Write-Hint $line }
-        return $false
+        Write-Warning "Continuing without a graph - Claude Code will still launch normally"
+        return $true
     }
     $stats = Get-GraphStatistics -GraphPath $graphFile
     Write-Success "Extracted in $($extractTime.ToString('mm\:ss'))"
     Write-Hint "Nodes $($stats.Nodes)   Edges $($stats.Edges)   Size $($stats.Size)"
     Write-Log "Extraction complete: $($stats.Nodes) nodes, $($stats.Edges) edges"
     return $true
+}
+
+# ----------------------------------------------------------------------------
+# Graphify's exact flag for "index code, skip docs/PDFs/images that need
+# semantic extraction" isn't consistent across versions (--code-only is
+# rejected as an unknown option on some installs). Rather than hardcoding
+# a guess, read graphify's own --help text and pick whatever it actually
+# advertises. Cached per-process since --help output won't change mid-run.
+# ----------------------------------------------------------------------------
+$script:GraphifySkipFlagChecked = $false
+$script:GraphifySkipFlagCached = $null
+function Find-GraphifySkipSemanticFlag {
+    if ($script:GraphifySkipFlagChecked) { return $script:GraphifySkipFlagCached }
+    $script:GraphifySkipFlagChecked = $true
+    try {
+        $helpResult = Invoke-ExternalCommand -Command "graphify" -Arguments "--help" -TimeoutSeconds 15 -NoLog
+        $helpText = $helpResult.Output
+        if (-not $helpText) { return $null }
+        # Prefer flags that explicitly mention skipping/limiting to code,
+        # in rough order of specificity. First match wins.
+        $candidates = @(
+            '--code-only', '--skip-semantic', '--no-semantic',
+            '--ast-only', '--code-mode', '--skip-docs'
+        )
+        foreach ($candidate in $candidates) {
+            if ($helpText -match [regex]::Escape($candidate)) {
+                $script:GraphifySkipFlagCached = $candidate
+                return $candidate
+            }
+        }
+        # Fall back to a generic scan of the help text for any flag whose
+        # name mentions "code" alongside "only"/"skip", in case this
+        # version spells it differently than our candidate list.
+        $match = [regex]::Match($helpText, '--[a-z][a-z0-9-]*(code[a-z0-9-]*only|skip[a-z0-9-]*semantic|only[a-z0-9-]*code)[a-z0-9-]*')
+        if ($match.Success) {
+            $script:GraphifySkipFlagCached = $match.Value
+            return $match.Value
+        }
+    } catch {
+        Write-Log "Find-GraphifySkipSemanticFlag failed: $_" -Level "DEBUG"
+    }
+    return $null
 }
 
 function Get-GraphStatistics {
