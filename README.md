@@ -2,6 +2,8 @@
 
 A self-bootstrapping, production-quality PowerShell launcher for Windows that indexes a local codebase with [Graphify](https://graphify.com), installs matching AI skills with `autoskills`, and launches [Claude Code](https://claude.ai) routed through [OmniRoute](https://github.com/diegosouzapw/OmniRoute) for automatic prompt compression — all with zero manual setup, on a completely clean Windows install.
 
+Ensure the command is run in powershell beforehand: Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+
 ## What it does
 
 - **Bootstraps a clean Windows PC from scratch.** Detects Git, Node.js, npm, Python, and pip; auto-installs anything missing via `winget` (falling back to a per-user install if machine-scope needs admin rights it doesn't have). If `winget` itself isn't available, it prints manual install links instead of failing.
