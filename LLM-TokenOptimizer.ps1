@@ -286,6 +286,32 @@ function Get-PathSlug {
     return "$leaf-$hash"
 }
 
+function Add-PythonUserScriptsToPath {
+    <#
+    .SYNOPSIS
+        Locates Python's user‑site Scripts directory (especially for
+        Microsoft Store Python) and adds it to $env:PATH for this process.
+    #>
+    if (-not (Test-CommandAvailable "python" -UseCache)) { return }
+
+    try {
+        # site.USER_BASE gives the root of the user‑site packages;
+        # the Scripts folder lives directly inside it.
+        $userBase = Invoke-ExternalCommand -Command "python" -Arguments "-c `"import site; print(site.USER_BASE + '\\Scripts')`"" -TimeoutSeconds 5 -Silent
+        if (-not $userBase.Success) { return }
+
+        $scriptsDir = $userBase.Output.Trim()
+        if ($scriptsDir -and (Test-Path $scriptsDir -PathType Container)) {
+            if ($env:PATH -notlike "*$scriptsDir*") {
+                $env:PATH = "$scriptsDir;$env:PATH"
+                Write-Log "Added to PATH: $scriptsDir" -Level "DEBUG"
+            }
+        }
+    } catch {
+        Write-Log "Failed to add Python user scripts to PATH: $_" -Level "DEBUG"
+    }
+}
+
 # ============================================================================
 # LOGGING SYSTEM
 # ============================================================================
@@ -1015,17 +1041,32 @@ function Test-RequiredDependencies {
 # GRAPHIFY MANAGEMENT
 # ============================================================================
 
+# The PyPI package name for the Graphify CLI tool.
+# Change this if you are using a custom/private build or a different source.
+$script:GraphifyPipPackage = "graphifyy"
+
 function Install-Graphify {
     [CmdletBinding()]
     param([switch]$Silent)
-    Write-Info "Installing Graphify via pip..."
-    $result = Invoke-ExternalCommand -Command "pip" -Arguments "install graphify" -TimeoutSeconds 180 -ShowSpinner -SpinnerLabel "Installing Graphify"
-    if ($result.Success) {
-        $script:DependencyCache["graphify"] = $false
-        if (Test-CommandAvailable -Name "graphify") { Write-Success "Graphify installed"; return $true }
+        # upgrade pip silently (non‑fatal)
+    $null = Invoke-ExternalCommand -Command "python" -Arguments "-m pip install --upgrade pip" -TimeoutSeconds 60 -Silent
+    
+    Write-Info "Installing Graphify via pip (package: $script:GraphifyPipPackage)..."
+    $result = Invoke-ExternalCommand -Command "pip" -Arguments "install --upgrade $script:GraphifyPipPackage" -TimeoutSeconds 180 -ShowSpinner -SpinnerLabel "Installing Graphify"
+
+    # Ensure Python's user Scripts directory (e.g. Store Python) is on PATH
+    Add-PythonUserScriptsToPath
+
+    $script:DependencyCache = @{}          # completely clear detection cache
+    if ($result.Success -or (Test-CommandAvailable -Name "graphify")) {
+        Write-Success "Graphify installed / already present"
+        return $true
     }
     Write-Fail "Graphify installation failed"
-    if (-not $Silent) { Write-Hint (Get-Truncated $result.Output 200) }
+    if (-not $Silent) { 
+        Write-Hint (Get-Truncated $result.Output 200)
+        Write-Hint "If your Graphify package has a different name, edit `$script:GraphifyPipPackage near line $((Get-PSCallStack)[0].ScriptLineNumber)."
+    }
     return $false
 }
 
@@ -1044,7 +1085,7 @@ function Test-GraphifyVersion {
 
 function Update-GraphifyIfNeeded {
     Write-Info "Checking for Graphify updates..."
-    $result = Invoke-ExternalCommand -Command "pip" -Arguments "install --upgrade graphify" -TimeoutSeconds 180 -Silent
+    $result = Invoke-ExternalCommand -Command "pip" -Arguments "install --upgrade $script:GraphifyPipPackage" -TimeoutSeconds 180 -Silent
     if ($result.Success) {
         $script:DependencyCache["graphify"] = $false
         Write-Success "Graphify up to date"
@@ -2601,6 +2642,7 @@ function Invoke-ProjectMode {
 
     Write-Section "Environment"
     Add-StandardPaths
+    Add-PythonUserScriptsToPath
     $depSummary = Get-DependencySummary -Quiet
     $criticalMissing = @($depSummary.Missing | Where-Object { $_.Name -in @("Python", "pip", "npm") })
     if ($criticalMissing.Count -gt 0) {
