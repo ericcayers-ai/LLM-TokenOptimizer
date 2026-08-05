@@ -160,8 +160,172 @@
       agent sessions even though it's compressing - if the dashboard numbers
       look flat, that's a known upstream display issue, not a sign this
       script's PUT to /api/settings/compression failed.
+
+    v4.2.0 - robustness sweep, verified auto-compression, install
+    verification, no behavioral change to what gets installed:
+    - Several blocking Read-Host prompts (Start-OmniRoute's "press Enter"
+      waits, Confirm-ClaudeCodeProvider's browser-signin wait, the manual
+      OmniRoute API key prompt, Find-ClaudeExecutable's last-resort file
+      picker) could be reached from a spawned/child project window with no
+      guarantee anyone is watching it - the multi-window picker can open
+      several at once. All now check $script:IsChild and skip straight to a
+      warn-and-degrade path instead of blocking a window nobody may be
+      looking at; the interactive launcher window is unaffected.
+    - Invoke-CompleteUninstaller's "type rm to uninstall" listener used to
+      run in every window, including spawned project windows - a child
+      window is the wrong place to offer removing shared global tools out
+      from under its sibling windows. Now launcher-only.
+    - The official Claude Code installer fetch (irm https://claude.ai/
+      install.ps1) had no timeout at all; a stalled download could hang the
+      launcher indefinitely. Added -TimeoutSec 60.
+    - Stop-Script's final "press Enter to close" wait was unbounded; it now
+      gives up after 15 minutes and exits anyway, so a window nobody comes
+      back to still closes instead of sitting open forever.
+    - Test-ClaudeExecutable's native-binary check read the child process's
+      output with a blocking, unbounded ReadToEnd() before ever applying its
+      5-second WaitForExit - a hung `claude.exe --version` could block
+      forever. Worse, if the version check failed OR threw, the catch block
+      swallowed it and the function fell through to reporting success
+      anyway ("Verified Claude binary path") purely because the file
+      existed - so a broken Claude install was never actually caught. Now
+      reuses Invoke-ExternalCommand (async reads, real timeout) and only
+      returns true when the version check itself actually succeeded.
+    - Both launcher and project-window setup now check Test-ClaudeExecutable's
+      result instead of discarding it, retry via a manual path prompt
+      (launcher only), and stop with exit code 103 (documented since v4.0 but
+      never actually used) if Claude Code still can't be verified, rather
+      than pressing on with a ClaudePath that was never confirmed to work.
+    - Set-OmniRouteBestCompression now does a GET read-back after its PUT and
+      retries once if the active mode doesn't match what was requested
+      (OmniRoute's own issue #4268 notes success isn't always reliably
+      reported). Still configures Stacked only, still uses only the
+      already-saved API key, still doesn't nag after a manual dashboard
+      change - but a new OmniRouteCompressionLastCheckedUtc timestamp makes
+      it re-verify periodically (every 7 days) instead of trusting a single
+      long-ago push forever, and -ReconfigureOmniRoute now forces an
+      immediate re-check too.
+    - claude-mem, claude-code-setup, claude-md-management, and headroom
+      install-verification strengthened beyond "does a directory exist" /
+      "did the shell command exit 0": claude-mem checks the marketplace
+      directory actually has files in it, the two official plugins
+      cross-check against `claude plugin list`, and headroom checks whether
+      its statusline actually got wired into settings.json.
+
+    v4.3.0 - final correctness pass: multi-window config races, dead control
+    flow, resume-retry parity, and one remaining hang risk:
+    - Save-Configuration's per-field merge only ever protected
+      OmniRouteApiKeyEnc / OmniRouteKeyVerifiedUtc / OmniRouteProviderVerifiedUtc /
+      ClaudePath / LastGraphifyVersion / MasterFolder / LastProject from being
+      clobbered back to blank by a window that loaded its in-memory config
+      before another window recorded one of these. OmniRouteDashboardPasswordEnc,
+      OmniRouteDashboardLoginVerifiedUtc, and the new
+      OmniRouteCompressionLastCheckedUtc were missing from that list - a second
+      window saving config.json for an unrelated reason (adding a project to
+      history, for instance) could silently erase a just-remembered dashboard
+      password or reset the compression recheck clock back to blank. All three
+      now get the same never-blank-over-a-value protection. The same race
+      applied to every "already installed/configured" boolean
+      (ClaudeMemInstalled, HeadroomInstalled, ClaudeCodeSetupPluginInstalled,
+      TaskObserverInstalled, ClaudeMdManagementPluginInstalled,
+      OmniRouteMcpRegistered, OmniRouteCompressionConfigured,
+      FirstRunComplete) - a stale window's own not-yet-installed copy of one of
+      these could overwrite another window's already-recorded success back to
+      false, triggering a needless reinstall attempt on the next launch. These
+      now follow the same "sticky true" rule already used for
+      OmniRouteProviderPromptSuppressed: once any window's on-disk value is
+      true, it stays true for every window from then on.
+    - Invoke-GraphifyExtract always returns $true by design - a failed
+      extraction warns and lets Claude Code start anyway, per its own inline
+      comments - which made Invoke-ProjectMode's
+      "if (-not (Invoke-GraphifyExtract)) { Stop-Script -Code 106 }" dead code
+      that could never actually fire. Removed the unreachable check and the
+      now-provably-unused exit code 106 from the documented exit-code list,
+      rather than leave a control-flow branch that reads as load-bearing but
+      isn't.
+    - Start-ClaudeSession's "--continue failed, retry as a new session"
+      recovery only existed on the native-binary launch path; the Node.js
+      fallback path (used when the native install didn't complete) had no
+      equivalent, so resuming a project with no prior conversation would just
+      fail there instead of falling back to a new session the way the primary
+      path does. Both paths now behave the same way.
+    - Install-ClaudePluginsAndSkills cloned the Superpowers plugin via a raw
+      `cmd /c git clone ... >nul 2>&1` with no timeout - the one remaining
+      unbounded external call after the v4.2.0 timeout sweep, able to hang the
+      launcher indefinitely on a stalled clone. Now goes through
+      Invoke-ExternalCommand with a 60s timeout (and GIT_TERMINAL_PROMPT=0),
+      the same pattern used for every other external call in the script.
+    - Read-PathWithHistory's fast-input drain (added to keep up with a pasted
+      path) appended every already-buffered keystroke's raw character
+      unconditionally - if Enter/Backspace/Escape/an arrow key was already
+      queued behind a paste (typing or pasting a path and immediately pressing
+      Enter is the common case), its control character got typed into the
+      path text instead of being handled, silently corrupting the input. The
+      drain now recognizes control keys and hands them back to the main loop
+      instead of appending them as literal text.
+
+    v4.3.1 - audit follow-up: a config-destroying bug, two more unguarded
+    child-window prompts, and five smaller correctness fixes:
+    - Set-ClaudeAvailableModels could silently wipe the user's entire shared
+      ~/.claude/settings.json: on a JSON parse failure of the existing file,
+      it substituted an empty object and then wrote that (plus the new
+      availableModels field) back over the real file, destroying every MCP
+      server registration, permission, hook, and statusline config on the
+      machine - not just this launcher's. A parse failure now aborts the
+      write entirely and leaves the file untouched, and a settings.json.bak
+      backup is written before every successful overwrite of a file that
+      actually parsed, so a bad write is always recoverable. The same
+      "returns $null on parse failure, read by the caller as genuinely no
+      config yet" pattern in ConvertTo-Configuration was lower blast-radius
+      but the same bug class - Save-Configuration's merge would silently
+      skip merging and overwrite config.json with fresh defaults on the next
+      save after any transient corruption. An existing-but-unparseable
+      config.json is now backed up to config.json.corrupt-<timestamp> with a
+      WARN logged, distinct from the genuinely-missing case.
+    - Two blocking prompts in Invoke-ProjectMode were not guarded by
+      $script:IsChild, contradicting the v4.2.0 hardening pass: Show-
+      GraphResult's "Open the graph now?" and the "Press Enter to launch
+      Claude, or X to exit" prompt both now skip straight to their default
+      (don't open / launch immediately) in a spawned project window, the
+      same pattern already used everywhere else. The final "Press Enter to
+      close this window" wait was also unbounded, unlike Stop-Script's
+      equivalent wait - both now share a new Wait-KeyPressBounded helper
+      (extracted from Stop-Script) so neither can hang a window forever.
+    - Set-OmniRouteLaunchEnvironment's fallback to the blocking secure-string
+      Read-OmniRouteApiKey prompt (reached when Get-OmniRouteApiKey returns
+      $null, e.g. a DPAPI decrypt failure) had no $script:IsChild check,
+      unlike every other missing-key path in Initialize-OmniRoute. Now warns
+      and falls back to launching Claude directly (unrouted) in a child
+      window instead of blocking it.
+    - Install-CompanionTooling and Invoke-UpdateCheckIfRequested both printed
+      [5/6], with OmniRoute setup then printing [6/6] - two steps sharing one
+      number. Invoke-UpdateCheckIfRequested is opt-in and was never supposed
+      to be a numbered step (the comment already said so); it no longer
+      passes -Step/-TotalSteps to Write-Section.
+    - Test-OmniRouteProviderViaCli aborted its whole provider scan on one
+      malformed catalog entry: under Set-StrictMode, a missing .id/.name/
+      .status on any single entry threw, was caught by the function's outer
+      try/catch, and returned $false immediately even if a later entry was
+      the actual connected provider. Each entry now gets its own try/catch
+      that skips past a bad one instead of aborting the scan.
+    - Install-ViaWinget/Update-ViaWinget detected success/failure from
+      English-only text matches, missing on non-English-language Windows
+      installs despite the existing comment already naming the locale-
+      independent numeric winget codes. Both now also check $result.ExitCode
+      numerically (-1978335189 for already-installed, -2147024891 /
+      0x80070005 for access-denied/needs-elevation) alongside the existing
+      text matching.
+    - A bad-project-folder check in project-mode setup used exit code 102,
+      which .NOTES documents (and Test-RequiredDependencies actually uses)
+      exclusively for a missing required dependency. It now uses 106 (freed
+      by the v4.3.0 cleanup) and .NOTES documents it.
+    - AutoUpdateGraphify was defined in Get-DefaultConfiguration but never
+      read anywhere. Wired in: when true, Invoke-UpdateCheckIfRequested now
+      runs Update-GraphifyIfNeeded even if the general interactive update
+      check is declined or skipped via -SkipUpdateCheck, since it's a
+      standing "auto-do this" toggle rather than a "did we already do this"
+      marker like most of this config's other flags.
 .NOTES
-    Version: 4.1.0
+    Version: 4.3.1
     Exit Codes:
         0   - Success
         99  - Unexpected error
@@ -170,7 +334,7 @@
         102 - Missing required dependency
         103 - Claude not found
         104 - Graphify installation failed
-        106 - Graph extraction failed
+        106 - Project folder is not usable
 #>
 
 [CmdletBinding()]
@@ -233,10 +397,17 @@ try {
 
 # Application constants
 $script:APP_NAME = "LLM-TokenOptimizer"
-$script:APP_VERSION = "4.1.0"
+$script:APP_VERSION = "4.3.1"
 $script:MAX_HISTORY = 20
 $script:MAX_LOG_FILES = 10
 $script:OMNIROUTE_URL = "http://localhost:20128"
+# Upper bound on Stop-Script's "press Enter to close" wait, so a window
+# nobody comes back to still exits eventually instead of hanging forever.
+$script:STOP_SCRIPT_MAX_WAIT_SECONDS = 900
+# OmniRoute compression: mode pinned + how often an already-configured
+# machine gets re-verified (not re-forced) rather than trusted forever.
+$script:OMNIROUTE_COMPRESSION_MODE = "stacked"
+$script:OMNIROUTE_COMPRESSION_RECHECK_DAYS = 7
 
 # Claude Opus 5 and Claude Sonnet 5 both have a 1M-token context window as
 # both the default AND the maximum, with no smaller context variant. These
@@ -289,6 +460,7 @@ function Get-Rule {
 }
 
 function Write-Status {
+    [CmdletBinding()]
     param(
         [string]$Tag,
         [System.ConsoleColor]$Color,
@@ -299,15 +471,16 @@ function Write-Status {
     Write-Host $Message -ForegroundColor $MessageColor
 }
 
-function Write-Success { param([Parameter(Mandatory)][string]$Message) Write-Status "ok"   ([System.ConsoleColor]::Green)    $Message ([System.ConsoleColor]::Gray) }
-function Write-Info    { param([Parameter(Mandatory)][string]$Message) Write-Status "info" ([System.ConsoleColor]::DarkCyan) $Message ([System.ConsoleColor]::Gray) }
-function Write-Warning { param([Parameter(Mandatory)][string]$Message) Write-Status "warn" ([System.ConsoleColor]::Yellow)   $Message ([System.ConsoleColor]::Yellow) }
-function Write-Fail    { param([Parameter(Mandatory)][string]$Message) Write-Status "fail" ([System.ConsoleColor]::Red)      $Message ([System.ConsoleColor]::Red) }
-function Write-Hint    { param([string]$Message = "") Write-Host "  $Message" -ForegroundColor DarkGray }
+function Write-Success { [CmdletBinding()] param([Parameter(Mandatory)][string]$Message) Write-Status "ok"   ([System.ConsoleColor]::Green)    $Message ([System.ConsoleColor]::Gray) }
+function Write-Info    { [CmdletBinding()] param([Parameter(Mandatory)][string]$Message) Write-Status "info" ([System.ConsoleColor]::DarkCyan) $Message ([System.ConsoleColor]::Gray) }
+function Write-Warning { [CmdletBinding()] param([Parameter(Mandatory)][string]$Message) Write-Status "warn" ([System.ConsoleColor]::Yellow)   $Message ([System.ConsoleColor]::Yellow) }
+function Write-Fail    { [CmdletBinding()] param([Parameter(Mandatory)][string]$Message) Write-Status "fail" ([System.ConsoleColor]::Red)      $Message ([System.ConsoleColor]::Red) }
+function Write-Hint    { [CmdletBinding()] param([string]$Message = "") Write-Host "  $Message" -ForegroundColor DarkGray }
 
 function Write-ProgressBar {
     # Determinate progress bar (ASCII only). Redraws in place via `r - call
     # Clear-ProgressLine (or just Write-Host "") once the operation finishes.
+    [CmdletBinding()]
     param(
         [Parameter(Mandatory)][int]$Percent,
         [string]$Label = "",
@@ -332,6 +505,7 @@ $script:SpinnerFrames = @('|', '/', '-', '\')
 function Write-Spinner {
     # One animation frame of an indeterminate spinner. Caller tracks frame
     # index and elapsed time; used by Invoke-ExternalCommand's -ShowSpinner.
+    [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Label, [Parameter(Mandatory)][int]$FrameIndex, [string]$Elapsed = "")
     $frame = $script:SpinnerFrames[$FrameIndex % $script:SpinnerFrames.Length]
     $suffix = if ($Elapsed) { " ($Elapsed)" } else { "" }
@@ -342,6 +516,7 @@ function Write-Spinner {
 }
 
 function Write-Title {
+    [CmdletBinding()]
     param([string]$Subtitle = "")
     $width = [Math]::Min(64, [Math]::Max(40, (Get-SafeConsoleWidth) - 4))
     $bar = ('=' * $width)
@@ -358,6 +533,7 @@ function Write-Title {
 }
 
 function Write-Section {
+    [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Name, [int]$Step = 0, [int]$TotalSteps = 0)
     Write-Host ""
     Write-Host "  > " -ForegroundColor DarkCyan -NoNewline
@@ -371,6 +547,7 @@ function Write-Section {
 function Get-Elapsed { return ((Get-Date) - $script:StartTime).ToString('mm\:ss') }
 
 function Read-YesNo {
+    [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Prompt, [bool]$Default = $false)
     $suffix = if ($Default) { "[Y/n]" } else { "[y/N]" }
     $ans = Read-Host "  $Prompt $suffix"
@@ -379,6 +556,7 @@ function Read-YesNo {
 }
 
 function Get-Truncated {
+    [CmdletBinding()]
     param([string]$Text, [int]$Max = 200)
     if ([string]::IsNullOrEmpty($Text)) { return "" }
     if ($Text.Length -le $Max) { return $Text }
@@ -386,6 +564,7 @@ function Get-Truncated {
 }
 
 function Set-Marker {
+    [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
     try { "done" | Out-File -FilePath $Path -Encoding ASCII -Force -NoNewline } catch {}
 }
@@ -394,6 +573,7 @@ function Get-PathSlug {
     # Stable, filesystem-safe, collision-resistant identifier for a directory.
     # Used for per-project mutex names and per-project CLAUDE_CONFIG_DIR names.
     # Case-insensitive because Windows paths are.
+    [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
     $normalized = $Path.TrimEnd('\', '/').ToLowerInvariant()
     $leaf = (($normalized -split '[\\/]') | Where-Object { $_ } | Select-Object -Last 1)
@@ -483,13 +663,31 @@ function Write-Log {
 # CONTROLLED EXIT
 # ============================================================================
 
+function Wait-KeyPressBounded {
+    # Bounded "press any key to continue" wait, shared by Stop-Script and
+    # Invoke-ProjectMode's closing prompt. A normal human presses a key
+    # immediately, but a window nobody comes back to (or a non-interactive/
+    # redirected host where KeyAvailable behaves oddly) still returns on its
+    # own eventually instead of hanging the process forever.
+    [CmdletBinding()]
+    param([int]$MaxWaitSeconds = $script:STOP_SCRIPT_MAX_WAIT_SECONDS)
+    try {
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        while ($sw.Elapsed.TotalSeconds -lt $MaxWaitSeconds) {
+            if ([Console]::KeyAvailable) { $null = [Console]::ReadKey($true); break }
+            Start-Sleep -Milliseconds 100
+        }
+    } catch { Start-Sleep -Seconds 15 }
+}
+
 function Stop-Script {
     [CmdletBinding()]
     param([int]$Code = 0, [string]$Reason = "")
     if ($Reason) { Write-Fail $Reason }
     Write-Host ""
     Write-Hint "The launcher stopped (exit code $Code). Press Enter to close..."
-    try { $null = Read-Host } catch { Start-Sleep -Seconds 15 }
+    # Bounded: see Wait-KeyPressBounded.
+    Wait-KeyPressBounded
     exit $Code
 }
 
@@ -521,14 +719,27 @@ function Get-DefaultConfiguration {
         # Set if you tell the launcher to stop asking about the provider.
         OmniRouteProviderPromptSuppressed = $false
         ClaudePath = ""
+        # Unlike most flags in this config (which record "have we already
+        # done X"), this one is a standing "should we auto-do X" toggle: when
+        # true, Update-GraphifyIfNeeded (Graphify's own pip-based update
+        # check) runs from Invoke-UpdateCheckIfRequested even if the general
+        # interactive "Check for updates now?" prompt is declined or skipped
+        # via -SkipUpdateCheck. No prompt sets this today; it's a config.json
+        # opt-in for anyone who wants Graphify kept current every launch
+        # without opting into the full update check each time.
         AutoUpdateGraphify = $false
         FirstRunComplete = $false
         LastGraphifyVersion = ""
         # Set once OmniRoute's compression has been pushed to its strongest
-        # documented combo (Stacked: RTK -> Caveman) - see
-        # Set-OmniRouteBestCompression. Configured once, not re-forced every
-        # launch, so a later manual dashboard change isn't fought each time.
+        # documented combo (Stacked: RTK -> Caveman) AND a GET read-back has
+        # confirmed it's actually active - see Set-OmniRouteBestCompression.
+        # Not re-forced every launch (so a later manual dashboard change
+        # isn't fought), but OmniRouteCompressionLastCheckedUtc below drives
+        # a periodic re-verify so a setting that silently reverted, or never
+        # actually took despite a successful-looking PUT, doesn't stay
+        # trusted forever.
         OmniRouteCompressionConfigured = $false
+        OmniRouteCompressionLastCheckedUtc = ""
         # Companion tooling installed once at user scope so every project
         # gets it automatically - see Install-CompanionTooling.
         ClaudeMemInstalled = $false
@@ -553,6 +764,7 @@ function Invoke-WithConfigLock {
     # Runs a scriptblock while holding the cross-process config mutex. Falls
     # back to running it unguarded if the mutex can't be had within the
     # timeout - a slightly racy save is strictly better than a hung launcher.
+    [CmdletBinding()]
     param([Parameter(Mandatory)][scriptblock]$Body, [int]$TimeoutMs = 5000)
     $mutex = $null
     $held = $false
@@ -580,6 +792,22 @@ function Invoke-WithConfigLock {
 function ConvertTo-Configuration {
     # Reads config.json from disk and back-fills any keys added since it was
     # written, so upgrading the script never loses or misreads an old config.
+    #
+    # Returns $null for two different situations, and the caller (Initialize-
+    # Configuration / Save-Configuration) treats both the same way - fall back
+    # to fresh defaults - but they are NOT the same underlying event:
+    #   1. Genuinely no config yet (missing file, or an empty file).
+    #   2. A config.json that EXISTS with real content but fails to parse
+    #      (truncated write, disk corruption, hand-editing gone wrong).
+    # Case 2 used to return $null exactly the same as case 1, which read as
+    # "no config existed yet" - so Save-Configuration's merge logic (which
+    # only merges when ConvertTo-Configuration returns something) skipped
+    # merging entirely and silently overwrote config.json with fresh in-
+    # memory defaults on the very next save, discarding the OmniRoute API
+    # key/project history with no trace. Now case 2 backs up the bad file
+    # (config.json.corrupt-<timestamp>) and logs a WARN before returning
+    # $null, so the loss is visible and recoverable instead of silent.
+    [CmdletBinding()]
     param([string]$Path)
     if (-not (Test-Path $Path)) { return $null }
     try {
@@ -594,6 +822,13 @@ function ConvertTo-Configuration {
         return $saved
     } catch {
         Write-Log "Failed to parse config: $_" -Level "WARN"
+        try {
+            $backupPath = "$Path.corrupt-$((Get-Date).ToString('yyyyMMdd-HHmmss'))"
+            Copy-Item -Path $Path -Destination $backupPath -Force -ErrorAction Stop
+            Write-Log "Config.json exists but is unparseable - backed up the bad file to $backupPath before falling back to defaults" -Level "WARN"
+        } catch {
+            Write-Log "Could not back up unparseable config.json: $_" -Level "WARN"
+        }
         return $null
     }
 }
@@ -637,6 +872,7 @@ function Merge-ConfigurationLists {
     # Union of two ordered lists, ours first, de-duplicated case-insensitively,
     # capped at MAX_HISTORY. This is what keeps two windows from erasing each
     # other's project history.
+    [CmdletBinding()]
     param([array]$Ours, [array]$Theirs)
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     $merged = [System.Collections.ArrayList]::new()
@@ -661,15 +897,33 @@ function Save-Configuration {
                 $toWrite.MasterFolderHistory = Merge-ConfigurationLists -Ours @($script:Config.MasterFolderHistory) -Theirs @($onDisk.MasterFolderHistory)
                 foreach ($name in @(
                     'OmniRouteApiKeyEnc', 'OmniRouteKeyVerifiedUtc', 'OmniRouteProviderVerifiedUtc',
-                    'ClaudePath', 'LastGraphifyVersion', 'MasterFolder', 'LastProject')) {
+                    'ClaudePath', 'LastGraphifyVersion', 'MasterFolder', 'LastProject',
+                    # Same "never regress to blank" protection as the above -
+                    # these are written by Request-OmniRouteApiKeyAutomatically /
+                    # Set-OmniRouteBestCompression and must survive a later save
+                    # from a window whose in-memory copy still has the old blank
+                    # value, or a headless-login password / recheck timestamp
+                    # another window just earned would silently vanish again.
+                    'OmniRouteDashboardPasswordEnc', 'OmniRouteDashboardLoginVerifiedUtc',
+                    'OmniRouteCompressionLastCheckedUtc')) {
                     $ours = $toWrite.$name
                     $theirs = $onDisk.$name
                     if ([string]::IsNullOrWhiteSpace([string]$ours) -and -not [string]::IsNullOrWhiteSpace([string]$theirs)) {
                         $toWrite.$name = $theirs
                     }
                 }
-                # A suppression/verification flag set anywhere sticks everywhere.
-                if ($onDisk.OmniRouteProviderPromptSuppressed) { $toWrite.OmniRouteProviderPromptSuppressed = $true }
+                # A one-way "recorded" flag set by ANY window sticks for every
+                # window - a window that loaded its config before another one
+                # flipped one of these true must never overwrite it back to
+                # false with its own stale copy on its own later save. Same
+                # idea as the string fields above, just for booleans.
+                foreach ($flagName in @(
+                    'OmniRouteProviderPromptSuppressed', 'OmniRouteCompressionConfigured',
+                    'ClaudeMemInstalled', 'HeadroomInstalled', 'ClaudeCodeSetupPluginInstalled',
+                    'TaskObserverInstalled', 'ClaudeMdManagementPluginInstalled',
+                    'OmniRouteMcpRegistered', 'FirstRunComplete')) {
+                    if ($onDisk.$flagName) { $toWrite.$flagName = $true }
+                }
             }
             # Write to a temp file and swap it in, so a window killed mid-write
             # can never leave a truncated config.json behind.
@@ -721,7 +975,7 @@ function Initialize-InstanceLock {
     }
 }
 
-function Release-InstanceLock {
+function Unlock-InstanceLock {
     if ($null -ne $script:InstanceMutex) {
         try {
             $script:InstanceMutex.ReleaseMutex()
@@ -753,7 +1007,7 @@ function Invoke-Cleanup {
     # on exit, and a closing project window must not take its siblings' router
     # down with it.
     Write-Log "Cleanup initiated"
-    Release-InstanceLock
+    Unlock-InstanceLock
     Save-Configuration
     Write-Log "Cleanup complete"
 }
@@ -868,8 +1122,13 @@ function Install-ViaWinget {
     Write-Info "Installing $FriendlyName via winget ($WingetId)..."
     $baseArgs = "install --id $WingetId -e --source winget --accept-package-agreements --accept-source-agreements --silent --disable-interactivity"
     $result = Invoke-ExternalCommand -Command "winget" -Arguments $baseArgs -TimeoutSeconds $TimeoutSeconds -ShowSpinner -SpinnerLabel "Installing $FriendlyName"
-    # Exit code -1978335189 / 0x8A150061 = "already installed" in winget - treat as success.
-    if ($result.Success -or $result.Output -match "already installed|No available upgrade") {
+    # Exit code -1978335189 / 0x8A150061 = "already installed" in winget -
+    # treat as success. Checked numerically FIRST because it's locale-
+    # independent; the English-text match beside it is only a fallback for
+    # winget builds that don't surface this exact code, and on its own it
+    # would miss non-English-language Windows installs entirely, producing a
+    # spurious failure warning and a needless per-user retry.
+    if ($result.Success -or $result.ExitCode -eq -1978335189 -or $result.Output -match "already installed|No available upgrade") {
         Write-Success "$FriendlyName installed"
         Sync-ProcessPathFromRegistry
         return $true
@@ -879,11 +1138,14 @@ function Install-ViaWinget {
     # --disable-interactivity mode) on a non-admin account, which is the
     # default on a clean Windows box. Retry per-user scope, which most
     # packages (Git, Node.js, Python) support and doesn't need elevation.
-    if ($result.Output -match "requires administrator|elevat|access is denied|0x80070005") {
+    # -2147024891 / 0x80070005 (E_ACCESSDENIED) is the locale-independent
+    # signal for this case, checked numerically alongside the English-only
+    # text match.
+    if ($result.ExitCode -eq -2147024891 -or $result.Output -match "requires administrator|elevat|access is denied|0x80070005") {
         Write-Info "Machine-wide install needs admin - retrying as a per-user install..."
         $userArgs = "$baseArgs --scope user"
         $result = Invoke-ExternalCommand -Command "winget" -Arguments $userArgs -TimeoutSeconds $TimeoutSeconds
-        if ($result.Success -or $result.Output -match "already installed|No available upgrade") {
+        if ($result.Success -or $result.ExitCode -eq -1978335189 -or $result.Output -match "already installed|No available upgrade") {
             Write-Success "$FriendlyName installed (per-user)"
             Sync-ProcessPathFromRegistry
             return $true
@@ -903,7 +1165,11 @@ function Update-ViaWinget {
     $wingetArgs = "upgrade --id $WingetId -e --source winget --accept-package-agreements --accept-source-agreements --silent --disable-interactivity"
     $result = Invoke-ExternalCommand -Command "winget" -Arguments $wingetArgs -TimeoutSeconds 180 -Silent
     if ($result.Success) { Write-Success "$FriendlyName up to date"; Sync-ProcessPathFromRegistry }
-    elseif ($result.Output -match "No applicable update|No installed package") { Write-Log "$FriendlyName already latest (winget)" -Level "DEBUG" }
+    # -1978335189 / 0x8A150061 checked numerically first (locale-independent),
+    # same "already installed / nothing to do" signal used in Install-ViaWinget -
+    # the English-only text match alone would miss this on a non-English
+    # Windows install.
+    elseif ($result.ExitCode -eq -1978335189 -or $result.Output -match "No applicable update|No installed package") { Write-Log "$FriendlyName already latest (winget)" -Level "DEBUG" }
     else { Write-Log "winget upgrade $WingetId output: $(Get-Truncated $result.Output 300)" -Level "DEBUG" }
 }
 
@@ -947,15 +1213,26 @@ function Install-MissingDependencies {
 function Invoke-UpdateCheckIfRequested {
     # Only meaningful once the tools it checks actually exist, so this runs
     # after dependency detection/install and Graphify/Claude Code detection -
-    # see the phase order in Invoke-LauncherMode (step 5 of 6).
-    Write-Section -Name "Update checks" -Step 5 -TotalSteps 6
+    # see the phase order in Invoke-LauncherMode. Deliberately NOT a numbered
+    # step (no -Step/-TotalSteps) since it's opt-in - Install-CompanionTooling
+    # is [5/6] and OmniRoute setup is [6/6]; this sits between them without
+    # taking a number of its own.
+    Write-Section -Name "Update checks"
     if ($SkipUpdateCheck -and -not $ForceUpdate) {
         Write-Info "Skipping update check (-SkipUpdateCheck)"
+        # AutoUpdateGraphify is a standing "keep Graphify current every
+        # launch" opt-in, independent of the interactive update check above -
+        # someone who's turned it on (by editing config.json; there's no
+        # prompt for it) still wants Graphify's own lightweight pip-based
+        # update even when skipping the general Git/Node/Python/npm/Claude
+        # Code/OmniRoute check.
+        if ($script:Config.AutoUpdateGraphify) { Update-GraphifyIfNeeded }
         return
     }
     Write-Hint "Checks Git/Node/Python/npm/Graphify/Claude Code/OmniRoute for newer versions."
     if (-not $ForceUpdate -and -not (Read-YesNo "Check for updates now?" $false)) {
         Write-Info "Skipping update check"
+        if ($script:Config.AutoUpdateGraphify) { Update-GraphifyIfNeeded }
         return
     }
     Update-AllDependencies
@@ -1148,6 +1425,7 @@ function Find-ExecutableInPaths {
 }
 
 function Get-DependencySummary {
+    [CmdletBinding()]
     param([switch]$Quiet, [int]$Step = 0, [int]$TotalSteps = 0)
     if (-not $Quiet) { Write-Section -Name "Dependencies" -Step $Step -TotalSteps $TotalSteps }
     $dependencies = [ordered]@{
@@ -1219,7 +1497,7 @@ function Test-RequiredDependencies {
 # ============================================================================
 function Sync-PythonScriptsPath {
     # 1. Query Python directly for its user scripts directory
-   if (Test-CommandAvailable "python" -UseCache) {
+    if (Test-CommandAvailable "python" -UseCache) {
         try {
             $cmdResult = Invoke-ExternalCommand -Command "python" -Arguments "-c `"import site, os; print(os.path.join(site.USER_BASE, 'Scripts'))`"" -TimeoutSeconds 5 -Silent -NoLog
             if ($cmdResult.Success -and $cmdResult.Output) {
@@ -1345,6 +1623,7 @@ function Request-ClaudePathFromUser {
 # OFFICIAL CLAUDE CODE INSTALLER & DETECTOR
 # ============================================================================
 function Find-ClaudeExecutable {
+    [CmdletBinding()]
     param([switch]$Quiet, [int]$Step = 0, [int]$TotalSteps = 0)
     if (-not $Quiet) { Write-Section -Name "Claude Code Executable" -Step $Step -TotalSteps $TotalSteps }
 
@@ -1384,7 +1663,7 @@ function Find-ClaudeExecutable {
 
     # 2. Check system PATH via Get-Command
     if (Test-CommandAvailable "claude" -UseCache) {
-        $path = (Get-Command "claude").Source
+        $path = (Get-Command "claude" -ErrorAction Stop).Source
         # Avoid buggy global npm wrapper
         if ($path -notlike "*AppData\Roaming\npm\claude*") {
             if (-not $Quiet) { Write-Success "Found on PATH: $path" }
@@ -1395,9 +1674,11 @@ function Find-ClaudeExecutable {
     }
 
     # 3. Trigger official installer: irm https://claude.ai/install.ps1 | iex
+    # -TimeoutSec bounds only the download itself - a stalled/slow connection
+    # used to hang the launcher here indefinitely with no way out.
     Write-Info "Executing official Claude Code installer (irm https://claude.ai/install.ps1 | iex)..."
     try {
-        Invoke-RestMethod -Uri "https://claude.ai/install.ps1" -UseBasicParsing | Invoke-Expression
+        Invoke-RestMethod -Uri "https://claude.ai/install.ps1" -UseBasicParsing -TimeoutSec 60 | Invoke-Expression
     } catch {
         Write-Warning "Official web installer returned an error: $_"
     }
@@ -1426,10 +1707,27 @@ function Find-ClaudeExecutable {
         return "node"
     }
 
+    # 7. Last resort is an interactive prompt (file dialog, or a typed path).
+    # Never do that from a spawned/child project window - the multi-window
+    # picker can open several at once and there's no guarantee anyone is
+    # watching this particular one. The launcher window (always interactive)
+    # is where this fallback actually gets used.
+    if ($script:IsChild) {
+        Write-Warning "Claude Code not found, and this is a spawned project window - not prompting"
+        Write-Hint "Run the launcher window (no -ProjectPath) once to install/locate Claude Code."
+        return $null
+    }
     return Request-ClaudePathFromUser
 }
 
 function Test-ClaudeExecutable {
+    # Actually runs `--version` and checks the result - a Test-Path/directory
+    # -exists check alone can't tell a working install from a broken one
+    # (wrong architecture, truncated download, permissions). Reuses
+    # Invoke-ExternalCommand rather than hand-rolling a Process object here:
+    # its async stdout/stderr reads plus a real WaitForExit timeout avoid a
+    # hang if the child never exits, which a synchronous ReadToEnd() (the
+    # previous implementation) could not.
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $false)]
@@ -1443,40 +1741,29 @@ function Test-ClaudeExecutable {
 
     # Test Node fallback runtime
     if ($Path -eq "node" -and $script:ClaudeJsPath) {
-        try {
-            $res = & node "$($script:ClaudeJsPath)" --version 2>&1
-            if ($LASTEXITCODE -eq 0 -and $res -notmatch "failed to run|not a valid") {
-                Write-Success "Verified via Node engine ($($res.Trim()))"
-                return $true
-            }
-        } catch {}
-        Write-Warning "Node wrapper verification skipped."
+        $result = Invoke-ExternalCommand -Command "node" -Arguments "`"$($script:ClaudeJsPath)`" --version" -TimeoutSeconds 15 -Silent
+        if ($result.Success -and $result.Output -and $result.Output -notmatch "failed to run|not a valid") {
+            Write-Success "Verified via Node engine ($($result.Output.Trim()))"
+            return $true
+        }
+        Write-Warning "Node wrapper verification failed"
+        Write-Log "Test-ClaudeExecutable (node) failed: exit=$($result.ExitCode) timedOut=$($result.TimedOut) output=$(Get-Truncated $result.Output 200)" -Level "WARN"
         return $false
     }
 
     # Test native binary executable
-    if (Test-Path $Path) {
-        try {
-            $pinfo = New-Object System.Diagnostics.ProcessStartInfo
-            $pinfo.FileName = $Path
-            $pinfo.Arguments = "--version"
-            $pinfo.RedirectStandardOutput = $true
-            $pinfo.RedirectStandardError = $true
-            $pinfo.UseShellExecute = $false
-            $pinfo.CreateNoWindow = $true
-            $p = [System.Diagnostics.Process]::Start($pinfo)
-            $out = $p.StandardOutput.ReadToEnd() + $p.StandardError.ReadToEnd()
-            $p.WaitForExit(5000)
-            if ($p.ExitCode -eq 0 -and $out -notmatch "not a valid application|failed to run") {
-                Write-Success "Verified Claude executable ($($out.Trim()))"
-                return $true
-            }
-        } catch {}
-        Write-Success "Verified Claude binary path ($Path)"
+    if (-not (Test-Path $Path -PathType Leaf)) {
+        Write-Warning "Claude path does not exist ($Path)"
+        return $false
+    }
+    $result = Invoke-ExternalCommand -Command $Path -Arguments "--version" -TimeoutSeconds 15 -Silent
+    if ($result.Success -and $result.Output -and $result.Output -notmatch "not a valid application|failed to run") {
+        Write-Success "Verified Claude executable ($($result.Output.Trim()))"
         return $true
     }
 
     Write-Warning "Claude path could not be verified ($Path)"
+    Write-Log "Test-ClaudeExecutable failed: exit=$($result.ExitCode) timedOut=$($result.TimedOut) output=$(Get-Truncated $result.Output 200)" -Level "WARN"
     return $false
 }
 
@@ -1542,10 +1829,14 @@ function Install-ClaudeMem {
         $env:NON_INTERACTIVE = $oldNonInteractive
     }
 
-    # 3. Verify installation state by checking plugin registry and marketplace directories
+    # 3. Verify installation state by checking plugin registry and marketplace directories.
+    # A bare Test-Path would pass on an empty/partially-cloned directory left
+    # behind by a failed install - require it to actually contain files.
     $pluginPath = Join-Path $env:USERPROFILE ".claude\plugins\marketplaces\thedotmack\claude-mem"
-    
-    if ($result.Success -or (Test-Path $pluginPath)) {
+    $pluginHasContent = (Test-Path $pluginPath) -and
+        ([bool](Get-ChildItem -Path $pluginPath -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1))
+
+    if ($result.Success -or $pluginHasContent) {
         Write-Success "claude-mem installed"
         $script:Config.ClaudeMemInstalled = $true
         Save-Configuration
@@ -1581,7 +1872,21 @@ function Install-HeadroomStatusline {
     $installerUrl = "https://raw.githubusercontent.com/henchmarketing-rgb/headroom/main/install.sh"
     $result = Invoke-ExternalCommand -Command $bash -Arguments "-lc `"curl -fsSL $installerUrl | bash`"" -TimeoutSeconds 60 -ShowSpinner -SpinnerLabel "Installing headroom"
     if ($result.Success) {
-        Write-Success "headroom statusline installed"
+        # The installer's own exit code only proves the script ran, not that
+        # it actually wired the statusline into settings.json - check for
+        # that too, best-effort (some installer versions may wire it lazily
+        # on Claude Code's next start, so this doesn't fail the install).
+        $settingsPath = Join-Path (Get-ClaudeConfigDir) "settings.json"
+        $wired = $false
+        if (Test-Path $settingsPath) {
+            try { $wired = [bool]((Get-Content $settingsPath -Raw -Encoding UTF8) -match 'headroom') } catch {}
+        }
+        if ($wired) {
+            Write-Success "headroom statusline installed and wired into settings.json"
+        } else {
+            Write-Success "headroom installed (statusline wiring not detected yet - may need a fresh Claude Code session)"
+            Write-Log "headroom installer succeeded but settings.json has no 'headroom' reference yet" -Level "DEBUG"
+        }
         $script:Config.HeadroomInstalled = $true
         Save-Configuration
         return $true
@@ -1589,6 +1894,22 @@ function Install-HeadroomStatusline {
     Write-Warning "headroom install did not confirm success - continuing without it"
     Write-Log "headroom install output: $(Get-Truncated $result.Output 300)" -Level "WARN"
     return $false
+}
+
+function Test-ClaudePluginInstalled {
+    # Confirms a plugin is actually registered with Claude Code rather than
+    # trusting the install command's own exit code / "already installed"
+    # text match alone - `claude plugin install` can report success even
+    # when the marketplace add silently no-oped or the plugin failed to
+    # activate. Best-effort: if `claude plugin list` itself isn't available
+    # on this Claude Code version (unrecognized subcommand, non-zero exit),
+    # falls back to trusting what the install command reported, so an older
+    # CLI doesn't turn a real success into a false failure.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$PluginId, [Parameter(Mandatory)][bool]$InstallReportedSuccess)
+    $result = Invoke-ExternalCommand -Command "claude" -Arguments "plugin list --scope user" -TimeoutSeconds 15 -Silent -NoLog
+    if (-not $result.Success) { return $InstallReportedSuccess }
+    return [bool]($result.Output -match [regex]::Escape($PluginId))
 }
 
 function Install-ClaudeCodeSetupPlugin {
@@ -1605,7 +1926,8 @@ function Install-ClaudeCodeSetupPlugin {
     # rather than assuming it's already there.
     $null = Invoke-ExternalCommand -Command "claude" -Arguments "plugin marketplace add anthropics/claude-plugins-official" -TimeoutSeconds 30 -Silent
     $result = Invoke-ExternalCommand -Command "claude" -Arguments "plugin install claude-code-setup@claude-plugins-official --scope user" -TimeoutSeconds 60
-    if ($result.Success -or $result.Output -match "already installed") {
+    $reportedSuccess = [bool]($result.Success -or $result.Output -match "already installed")
+    if (Test-ClaudePluginInstalled -PluginId "claude-code-setup" -InstallReportedSuccess $reportedSuccess) {
         Write-Success "claude-code-setup plugin installed"
         $script:Config.ClaudeCodeSetupPluginInstalled = $true
         Save-Configuration
@@ -1620,6 +1942,7 @@ function Install-ClaudeCodeSetupPlugin {
 # DEDICATED CLAUDE PLUGINS & SKILLS INSTALLER
 # ============================================================================
 function Install-ClaudePluginsAndSkills {
+    [CmdletBinding()]
     param([switch]$Quiet, [int]$Step = 0, [int]$TotalSteps = 0)
     if (-not $Quiet) { Write-Section -Name "Installing Plugins & Prompt Skills" -Step $Step -TotalSteps $TotalSteps }
 
@@ -1634,7 +1957,7 @@ function Install-ClaudePluginsAndSkills {
     foreach ($folder in $pluginSubfolders) {
         $path = Join-Path $pluginsDir $folder
         if (-not (Test-Path $path)) {
-            New-Item -ItemType Directory -Path $path -Force | Out-Null
+            New-Item -ItemType Directory -Path $path -Force -ErrorAction Stop | Out-Null
         }
     }
 
@@ -1648,14 +1971,25 @@ function Install-ClaudePluginsAndSkills {
             "frontend-design" = @{ scope = "user"; enabled = $true; source = "local" }
         }
     }
-    $pluginsRegistry | ConvertTo-Json -Depth 4 | Set-Content -Path $installedJsonPath -Encoding UTF8
+    $pluginsRegistry | ConvertTo-Json -Depth 4 | Set-Content -Path $installedJsonPath -Encoding UTF8 -ErrorAction Stop
     if (-not $Quiet) { Write-Success "Updated plugin registry ($installedJsonPath)" }
 
     # Clone Superpowers into .claude\plugins\cache\superpowers
     $superpowersPluginPath = Join-Path $pluginsDir "cache\superpowers"
     if (-not (Test-Path $superpowersPluginPath)) {
         Write-Info "Cloning Superpowers framework into plugins cache..."
-        $null = cmd /c "git clone --quiet ""https://github.com/obra/superpowers.git"" ""$superpowersPluginPath"" >nul 2>&1"
+        # Was a raw `cmd /c git clone` with no timeout - the one unbounded
+        # external call left after the v4.2.0 timeout sweep, able to hang the
+        # launcher indefinitely on a stalled clone. GIT_TERMINAL_PROMPT=0 also
+        # stops git's credential helper from popping up a blocking prompt.
+        $oldGitPrompt = $env:GIT_TERMINAL_PROMPT
+        try {
+            $env:GIT_TERMINAL_PROMPT = "0"
+            $cloneArgs = "clone --quiet ""https://github.com/obra/superpowers.git"" ""$superpowersPluginPath"""
+            $null = Invoke-ExternalCommand -Command "git" -Arguments $cloneArgs -TimeoutSeconds 60 -ShowSpinner -SpinnerLabel "Cloning Superpowers"
+        } finally {
+            $env:GIT_TERMINAL_PROMPT = $oldGitPrompt
+        }
         if (Test-Path $superpowersPluginPath) {
             Write-Success "Installed Superpowers plugin"
         } else {
@@ -1669,7 +2003,7 @@ function Install-ClaudePluginsAndSkills {
     # 2. SETUP .claude\skills ARCHITECTURE & PROMPT MANIFESTS
     # ------------------------------------------------------------------------
     if (-not (Test-Path $skillsDir)) {
-        New-Item -ItemType Directory -Path $skillsDir -Force | Out-Null
+        New-Item -ItemType Directory -Path $skillsDir -Force -ErrorAction Stop | Out-Null
     }
 
     # Comprehensive skill definitions to initialize
@@ -1687,7 +2021,7 @@ function Install-ClaudePluginsAndSkills {
         $skillFile = Join-Path $targetDir "SKILL.md"
 
         if (-not (Test-Path $skillFile)) {
-            New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+            New-Item -ItemType Directory -Path $targetDir -Force -ErrorAction Stop | Out-Null
             $manifest = @"
 ---
 name: $skillName
@@ -1696,7 +2030,7 @@ description: $($item.Desc)
 # $skillName
 Active and ready for tool execution.
 "@
-            Set-Content -Path $skillFile -Value $manifest -Encoding UTF8
+            Set-Content -Path $skillFile -Value $manifest -Encoding UTF8 -ErrorAction Stop
             Write-Success "Installed skill: $($item.Path)"
         }
     }
@@ -1725,7 +2059,8 @@ function Install-ClaudeMdManagementPlugin {
     Write-Info "Installing the claude-md-management plugin (official marketplace)..."
     $null = Invoke-ExternalCommand -Command "claude" -Arguments "plugin marketplace add anthropics/claude-plugins-official" -TimeoutSeconds 30 -Silent
     $result = Invoke-ExternalCommand -Command "claude" -Arguments "plugin install claude-md-management@claude-plugins-official --scope user" -TimeoutSeconds 60
-    if ($result.Success -or $result.Output -match "already installed") {
+    $reportedSuccess = [bool]($result.Success -or $result.Output -match "already installed")
+    if (Test-ClaudePluginInstalled -PluginId "claude-md-management" -InstallReportedSuccess $reportedSuccess) {
         Write-Success "claude-md-management plugin installed"
         $script:Config.ClaudeMdManagementPluginInstalled = $true
         Save-Configuration
@@ -1791,7 +2126,7 @@ function Install-CompanionTooling {
     $null = Install-ClaudeCodeSetupPlugin
     $null = Install-TaskObserverSkill
     $null = Install-ClaudeMdManagementPlugin
-    Install-ClaudePluginsAndSkills -Quiet  # <-- Add this call
+    Install-ClaudePluginsAndSkills -Quiet
 }
 
 # ============================================================================
@@ -1834,6 +2169,7 @@ function Test-OmniRouteRunning {
 function Get-HttpStatusCode {
     # Pulls the numeric HTTP status out of a terminating web error, across
     # both the WebException (PS 5.1) and HttpResponseException (PS 7) shapes.
+    [CmdletBinding()]
     param([Parameter(Mandatory)]$ErrorRecord)
     try {
         $resp = $ErrorRecord.Exception.Response
@@ -1897,8 +2233,7 @@ function Install-OmniRouteCli {
                 -Force `
                 -ErrorAction SilentlyContinue
         }
-    }
-    catch {
+    } catch {
         Write-Log "OmniRoute cleanup failed: $_" -Level "DEBUG"
     }
 
@@ -1962,13 +2297,19 @@ function Start-OmniRoute {
         if (-not (Install-OmniRouteCli)) {
             Write-Warning "Could not install the OmniRoute CLI automatically"
             Write-Hint "Install it manually: npm install -g omniroute@latest"
-            Write-Hint "After the install, press Enter to continue..."
-            try { $null = Read-Host } catch {}
-            Sync-ProcessPathFromRegistry
-            $script:DependencyCache.Remove("omniroute")
+            if ($script:IsChild) {
+                # Never block a spawned project window on a wait nobody may be
+                # watching - the multi-window picker can open several at once.
+                Write-Hint "Skipping the wait in this project window - rerun the launcher once it's installed."
+            } else {
+                Write-Hint "After the install, press Enter to continue..."
+                try { $null = Read-Host } catch {}
+                Sync-ProcessPathFromRegistry
+                $script:DependencyCache.Remove("omniroute")
+            }
         }
     }
-    
+
     $started = $false
 
     try {
@@ -1987,12 +2328,16 @@ function Start-OmniRoute {
             Start-Process -FilePath "cmd.exe" -ArgumentList $argList -WindowStyle Minimized -ErrorAction Stop
             $started = $true
         }
-    } catch { 
-        Write-Log "omniroute launch failed: $_" -Level "DEBUG" 
+    } catch {
+        Write-Log "omniroute launch failed: $_" -Level "DEBUG"
     }
 
     if (-not $started) {
         Write-Warning "Could not auto-launch OmniRoute"
+        if ($script:IsChild) {
+            Write-Hint "Start it manually by running 'omniroute' (from the launcher window, or any shell)."
+            return (Test-OmniRouteRunning)
+        }
         Write-Hint "Start it manually by running 'omniroute', then press Enter"
         try { $null = Read-Host } catch {}
         return (Test-OmniRouteRunning)
@@ -2003,6 +2348,7 @@ function Start-OmniRoute {
 }
 
 function Wait-OmniRouteReady {
+    [CmdletBinding()]
     param([int]$MaxWaitSeconds = 25)
     if (Test-OmniRouteRunning) { return $true }
     Write-Info "Waiting for OmniRoute to finish booting..."
@@ -2031,6 +2377,7 @@ function Wait-OmniRouteReady {
 # ----------------------------------------------------------------------------
 
 function Protect-OmniRouteApiKey {
+    [CmdletBinding()]
     param([Parameter(Mandatory)][string]$PlainKey)
     $secure = ConvertTo-SecureString -String $PlainKey -AsPlainText -Force
     return ($secure | ConvertFrom-SecureString)
@@ -2055,6 +2402,7 @@ function Get-OmniRouteApiKey {
 }
 
 function Read-OmniRouteApiKey {
+    [CmdletBinding()]
     param([string]$Prompt = "OmniRoute API key")
     Write-Hint "Grab your key from the OmniRoute dashboard (Settings -> API Keys)."
     $secure = Read-Host "  $Prompt" -AsSecureString
@@ -2066,6 +2414,7 @@ function Read-OmniRouteApiKey {
 }
 
 function Save-OmniRouteApiKey {
+    [CmdletBinding()]
     param([Parameter(Mandatory)][string]$PlainKey, [switch]$Verified)
     $script:Config.OmniRouteApiKeyEnc = Protect-OmniRouteApiKey -PlainKey $PlainKey
     if ($Verified) { $script:Config.OmniRouteKeyVerifiedUtc = (Get-Date).ToUniversalTime().ToString('o') }
@@ -2111,6 +2460,7 @@ function Save-OmniRouteDashboardPassword {
     # Only ever called after a login that actually succeeded - see
     # Request-OmniRouteApiKeyAutomatically. A guess that failed is never
     # written here, so this file never remembers a wrong password.
+    [CmdletBinding()]
     param([Parameter(Mandatory)][string]$PlainPassword)
     $script:Config.OmniRouteDashboardPasswordEnc = Protect-OmniRouteApiKey -PlainKey $PlainPassword
     $script:Config.OmniRouteDashboardLoginVerifiedUtc = (Get-Date).ToUniversalTime().ToString('o')
@@ -2265,6 +2615,7 @@ function Get-ModelContextLength {
     # Catalogs disagree on where the context window lives. Check every spelling
     # we've seen before concluding "unknown" (0), which callers treat as
     # "can't confirm 1M" rather than "not 1M".
+    [CmdletBinding()]
     param($ModelEntry)
     $candidates = @(
         'context_length', 'context_window', 'context_size', 'max_context_tokens',
@@ -2369,6 +2720,7 @@ function Get-OmniRouteCatalog {
 # ----------------------------------------------------------------------------
 
 function Test-Is1MContextModel {
+    [CmdletBinding()]
     param([Parameter(Mandatory)]$Model)
     if ($Model.Id -match '(^|/)claude-(opus|sonnet)-5(\b|$|[-.])') { return $true }
     return ($Model.Context -ge $script:MIN_1M_CONTEXT)
@@ -2438,6 +2790,7 @@ function Resolve-OmniRoute1MModel {
 # ----------------------------------------------------------------------------
 
 function Test-ClaudeProviderInCatalog {
+    [CmdletBinding()]
     param([array]$Models)
     if (-not $Models -or $Models.Count -eq 0) { return $false }
     return [bool](@($Models | Where-Object { $_.Id -match 'claude' }).Count -gt 0)
@@ -2450,15 +2803,29 @@ function Test-OmniRouteProviderViaCli {
     # whether one particular CLI subcommand exists and prints parseable JSON.
     $result = Invoke-ExternalCommand -Command "omniroute" -Arguments "providers list --json" -TimeoutSeconds 15 -Silent -NoLog
     if (-not $result.Success) { return $false }
+    $providers = $null
     try {
         $providers = $result.Output | ConvertFrom-Json -ErrorAction Stop
-        foreach ($p in @($providers)) {
+    } catch {
+        Write-Log "Could not parse 'omniroute providers list --json': $_" -Level "DEBUG"
+        return $false
+    }
+    # Each entry gets its own try/catch: under Set-StrictMode, a single
+    # malformed entry (missing .id/.name/.status) throws, and without this
+    # per-item guard that exception used to be caught by the OUTER try/catch
+    # above, aborting the whole scan and returning $false immediately - even
+    # when a later entry in the same array was the actual connected provider.
+    foreach ($p in @($providers)) {
+        try {
             $idText = ("$($p.id) $($p.name)").ToLowerInvariant()
             if ($idText -notmatch "claude|^cc$|\bcc\b") { continue }
             $statusText = "$($p.status)".ToLowerInvariant()
             if ($statusText -match "connect|active|ok|ready" -or $p.connected -eq $true -or $p.enabled -eq $true) { return $true }
+        } catch {
+            Write-Log "Skipping malformed provider entry in 'omniroute providers list --json': $_" -Level "DEBUG"
+            continue
         }
-    } catch { Write-Log "Could not parse 'omniroute providers list --json': $_" -Level "DEBUG" }
+    }
     return $false
 }
 
@@ -2500,11 +2867,22 @@ function Confirm-ClaudeCodeProvider {
 
     Write-Section "OmniRoute: Claude Code provider"
     Write-Warning "No Claude Code account connected in OmniRoute yet"
+    $providerUrl = "$script:OMNIROUTE_URL/dashboard/providers/claude"
+
+    if ($script:IsChild) {
+        # A spawned project window may have no one watching it right now -
+        # the multi-window picker can open several at once. Never block one
+        # of these on a browser sign-in; the launcher window already tries
+        # this interactively once per machine.
+        Write-Hint "One-time browser sign-in needed - finish it from the launcher window, or open:"
+        Write-Hint "  $providerUrl"
+        return $false
+    }
+
     Write-Hint "This is a one-time browser sign-in OmniRoute requires (it can't be"
     Write-Hint "automated from the CLI) before the Opus 5 / Sonnet 5 routes have"
     Write-Hint "anything behind them."
-    $providerUrl = "$script:OMNIROUTE_URL/dashboard/providers/claude"
-    try { Start-Process $providerUrl; Write-Hint "Opened: $providerUrl" }
+    try { Start-Process $providerUrl -ErrorAction Stop; Write-Hint "Opened: $providerUrl" }
     catch { Write-Log "Could not open browser to ${providerUrl}: $_" -Level "DEBUG"; Write-Hint "Open manually: $providerUrl" }
     Write-Hint "Click '+ Add', sign in with your Claude.ai account, then come back here."
     try { $null = Read-Host "  Press Enter once you've added the connection (or just Enter to skip)" } catch {}
@@ -2604,10 +2982,27 @@ function Set-ClaudeAvailableModels {
         try { $held = $mutex.WaitOne(5000, $false) } catch [System.Threading.AbandonedMutexException] { $held = $true }
 
         if (-not (Test-Path $claudeDir)) { New-Item -ItemType Directory -Path $claudeDir -Force | Out-Null }
-        $settings = if (Test-Path $settingsPath) {
-            try { Get-Content $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop }
-            catch { Write-Log "Existing settings.json invalid, recreating: $_" -Level "WARN"; [PSCustomObject]@{} }
-        } else { [PSCustomObject]@{} }
+        $settingsExisted = Test-Path $settingsPath
+        $settings = $null
+        if ($settingsExisted) {
+            try {
+                $settings = Get-Content $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+            } catch {
+                # DO NOT substitute an empty object here and fall through to
+                # writing it - that would overwrite the user's entire shared
+                # ~/.claude/settings.json (every MCP server registration,
+                # permission, hook, statusline config - for EVERY Claude Code
+                # session on the machine, not just this launcher) with just
+                # the new availableModels field. Abort the write entirely and
+                # leave the existing file untouched; the model picker
+                # restriction simply doesn't apply this launch.
+                Write-Fail "Existing settings.json is not valid JSON - refusing to touch it"
+                Write-Log "Set-ClaudeAvailableModels: $settingsPath failed to parse, aborting without writing to avoid destroying its contents: $_" -Level "ERROR"
+                return
+            }
+        } else {
+            $settings = [PSCustomObject]@{}
+        }
 
         $current = @()
         if ($settings.PSObject.Properties.Name -contains "availableModels") { $current = @($settings.availableModels) }
@@ -2623,6 +3018,15 @@ function Set-ClaudeAvailableModels {
             $settings.availableModels = $wanted
         } else {
             $settings | Add-Member -NotePropertyName "availableModels" -NotePropertyValue $wanted
+        }
+        # Safety net: back up the real, successfully-parsed settings.json
+        # before ever overwriting it, so a bad write here is always
+        # recoverable. Only meaningful when a valid pre-existing file was
+        # actually read above (a brand-new settings.json has nothing worth
+        # backing up).
+        if ($settingsExisted) {
+            try { Copy-Item -Path $settingsPath -Destination "$settingsPath.bak" -Force -ErrorAction Stop }
+            catch { Write-Log "Could not write settings.json.bak backup: $_" -Level "WARN" }
         }
         # Atomic swap: another window may be reading this file right now.
         $tmp = "$settingsPath.$PID.tmp"
@@ -2645,14 +3049,72 @@ function Set-ClaudeAvailableModels {
 # OMNIROUTE ONBOARDING (launcher window) - runs at most once per machine
 # ----------------------------------------------------------------------------
 
+function Get-OmniRouteCompressionState {
+    # GET read-back of the currently active compression mode. Returns $null
+    # on any failure (unreachable, auth rejected, unrecognized response
+    # shape) - never throws; callers treat $null as "couldn't confirm either
+    # way", not as "definitely not configured".
+    [CmdletBinding()]
+    param([string]$ApiKey)
+    try {
+        $headers = @{}
+        if ($ApiKey) { $headers["Authorization"] = "Bearer $ApiKey" }
+        $resp = Invoke-RestMethod -Uri "$script:OMNIROUTE_URL/api/settings/compression" -Method Get -Headers $headers -TimeoutSec 10 -ErrorAction Stop
+        foreach ($prop in @('defaultMode', 'mode', 'currentMode', 'compressionMode', 'activeMode')) {
+            try {
+                if ($resp.PSObject.Properties.Name -contains $prop -and $resp.$prop) { return [string]$resp.$prop }
+            } catch {}
+        }
+        Write-Log "Compression GET succeeded but no recognized mode field in the response" -Level "DEBUG"
+        return $null
+    } catch {
+        Write-Log "Compression GET read-back failed: $(Get-Truncated $_.Exception.Message 150)" -Level "DEBUG"
+        return $null
+    }
+}
+
+function Set-OmniRouteCompressionMode {
+    # One PUT attempt. Returns $true only on an HTTP-level success - that is
+    # NOT the same as verified-active, which is the caller's job via a
+    # follow-up Get-OmniRouteCompressionState read-back (OmniRoute's own
+    # issue #4268 notes a successful-looking PUT doesn't always mean the
+    # setting actually took).
+    [CmdletBinding()]
+    param([string]$ApiKey)
+    try {
+        $headers = @{}
+        if ($ApiKey) { $headers["Authorization"] = "Bearer $ApiKey" }
+        $body = @{
+            defaultMode = $script:OMNIROUTE_COMPRESSION_MODE
+            autoTriggerMode = $script:OMNIROUTE_COMPRESSION_MODE
+            autoTriggerTokens = 1000
+        } | ConvertTo-Json
+        $null = Invoke-RestMethod -Uri "$script:OMNIROUTE_URL/api/settings/compression" -Method Put -Body $body -Headers $headers -ContentType "application/json" -TimeoutSec 10 -ErrorAction Stop
+        return $true
+    } catch {
+        Write-Log "Compression PUT failed: $(Get-Truncated $_.Exception.Message 150)" -Level "WARN"
+        return $false
+    }
+}
+
 function Set-OmniRouteBestCompression {
     # Pushes OmniRoute's compression to its strongest documented combo -
     # Stacked mode (RTK -> Caveman, 78-95% eligible-token savings) - as both
     # the default and the auto-trigger mode, with a low auto-trigger
     # threshold so it engages immediately rather than waiting for a large
-    # payload. Runs once per machine (see OmniRouteCompressionConfigured);
-    # a later manual change in OmniRoute's own dashboard is never overwritten
-    # on a subsequent launch.
+    # payload. Only ever uses the already-saved/validated API key via
+    # Get-OmniRouteApiKey - never prompts for credentials.
+    #
+    # Hardened beyond a fire-and-forget PUT: reads the setting back after
+    # writing it and retries once if the active mode doesn't match what was
+    # requested, since OmniRoute's own comments/issue #4268 note success
+    # isn't always reliably reported. Configured once per machine and NOT
+    # re-forced every launch (so a later manual dashboard change isn't
+    # fought) - but OmniRouteCompressionLastCheckedUtc drives a periodic
+    # re-verify (every $script:OMNIROUTE_COMPRESSION_RECHECK_DAYS days, or
+    # immediately on -ReconfigureOmniRoute) so a setting that silently
+    # reverted, or never actually took despite looking successful, doesn't
+    # stay trusted forever.
     #
     # Known caveat, not a bug in this script: OmniRoute issue #4268 reports
     # Stacked sometimes recording zero "stacked" analytics on real coding-
@@ -2660,31 +3122,62 @@ function Set-OmniRouteBestCompression {
     # though RTK/Caveman are still running - Ultra mode shows savings
     # reliably in the same report where Stacked's dashboard numbers look
     # flat. Stacked is kept here because its documented ceiling (78-95%) is
-    # still higher than Ultra's (~75%) and the PUT below still succeeds -
-    # if the dashboard's Analytics page shows suspiciously low numbers,
-    # check that upstream issue before assuming this call failed.
-    if ($script:Config.OmniRouteCompressionConfigured) {
-        Write-Log "OmniRoute compression already configured - not re-pushing" -Level "DEBUG"
+    # still higher than Ultra's (~75%) - if the dashboard's Analytics page
+    # shows suspiciously low numbers, check that upstream issue first.
+    [CmdletBinding()]
+    param([switch]$Force)
+
+    $dueForRecheck = $true
+    if ($script:Config.OmniRouteCompressionLastCheckedUtc) {
+        try {
+            $lastChecked = [datetime]::Parse(
+                $script:Config.OmniRouteCompressionLastCheckedUtc, $null,
+                [System.Globalization.DateTimeStyles]::RoundtripKind)
+            $ageDays = ((Get-Date).ToUniversalTime() - $lastChecked).TotalDays
+            $dueForRecheck = $ageDays -ge $script:OMNIROUTE_COMPRESSION_RECHECK_DAYS
+        } catch { $dueForRecheck = $true }
+    }
+    if ($script:Config.OmniRouteCompressionConfigured -and -not $Force -and -not $dueForRecheck) {
+        Write-Log "OmniRoute compression already configured and recently verified - not re-checking" -Level "DEBUG"
         return
     }
-    try {
-        $body = @{
-            defaultMode = "stacked"
-            autoTriggerMode = "stacked"
-            autoTriggerTokens = 1000
-        } | ConvertTo-Json
-        $null = Invoke-RestMethod -Uri "$script:OMNIROUTE_URL/api/settings/compression" -Method Put -Body $body -ContentType "application/json" -TimeoutSec 10 -ErrorAction Stop
-        Write-Success "OmniRoute compression set to Stacked (RTK -> Caveman, ~78-95% eligible savings)"
+
+    $apiKey = Get-OmniRouteApiKey
+    $applied = Set-OmniRouteCompressionMode -ApiKey $apiKey
+    Start-Sleep -Milliseconds 300   # give the server a beat before reading back
+    $active = Get-OmniRouteCompressionState -ApiKey $apiKey
+
+    if ($active -and $active -notmatch [regex]::Escape($script:OMNIROUTE_COMPRESSION_MODE)) {
+        Write-Log "Compression read-back reported '$active' (expected '$($script:OMNIROUTE_COMPRESSION_MODE)') - retrying once" -Level "WARN"
+        $applied = (Set-OmniRouteCompressionMode -ApiKey $apiKey) -or $applied
+        Start-Sleep -Milliseconds 500
+        $active = Get-OmniRouteCompressionState -ApiKey $apiKey
+    }
+
+    $nowUtc = (Get-Date).ToUniversalTime().ToString('o')
+    if ($active -and $active -match [regex]::Escape($script:OMNIROUTE_COMPRESSION_MODE)) {
+        Write-Success "OmniRoute compression confirmed active: Stacked (RTK -> Caveman, ~78-95% eligible savings)"
+        $script:Config.OmniRouteCompressionConfigured = $true
+        $script:Config.OmniRouteCompressionLastCheckedUtc = $nowUtc
+        Save-Configuration
+    } elseif ($applied) {
+        # PUT succeeded but the GET read-back didn't confirm the mode
+        # (unrecognized response shape, or the known upstream reporting gap)
+        # - trust the write, but keep the recheck interval short by NOT
+        # stamping a fresh verified timestamp, so this gets another look
+        # sooner than a fully-confirmed configuration would.
+        Write-Warning "OmniRoute accepted the compression change but read-back didn't confirm it (known reporting issue - see #4268)"
         $script:Config.OmniRouteCompressionConfigured = $true
         Save-Configuration
-    } catch {
-        Write-Log "Could not configure OmniRoute compression (will retry next launch): $_" -Level "WARN"
+    } else {
+        Write-Log "Could not configure OmniRoute compression (will retry next launch)" -Level "WARN"
     }
 }
 
 function Initialize-OmniRoute {
     # OmniRoute is a required part of every launch now - there's no flag or
     # prompt to turn it off; see the multi-window doc header for why.
+    [CmdletBinding()]
     param([int]$Step = 0, [int]$TotalSteps = 0)
 
     Write-Section -Name "OmniRoute routing" -Step $Step -TotalSteps $TotalSteps
@@ -2709,9 +3202,14 @@ function Initialize-OmniRoute {
     # against a still-booting server looks like a bad key.
     $null = Wait-OmniRouteReady -MaxWaitSeconds 25
 
-    # Local, unauthenticated endpoint - configuring it doesn't need the
-    # Anthropic-side API key below, so do it as soon as the server answers.
-    Set-OmniRouteBestCompression
+    # Compression is a local OmniRoute setting rather than the Anthropic-side
+    # routing below, so it's configured as soon as the server answers -
+    # before we even know whether a Claude provider is connected. It still
+    # only ever uses the already-saved key (if any; the endpoint doesn't
+    # require one) via Get-OmniRouteApiKey inside Set-OmniRouteBestCompression
+    # - never a fresh prompt. -ReconfigureOmniRoute forces an immediate
+    # re-verify instead of waiting for the periodic recheck interval.
+    Set-OmniRouteBestCompression -Force:$ReconfigureOmniRoute
 
     $apiKey = Get-OmniRouteApiKey
     $hadSavedKey = [bool]$apiKey
@@ -2719,13 +3217,20 @@ function Initialize-OmniRoute {
     if (-not $apiKey) {
         Write-Info "No OmniRoute API key saved yet - trying a headless dashboard login first"
         $apiKey = Request-OmniRouteApiKeyAutomatically
-        if (-not $apiKey) {
+        if (-not $apiKey -and -not $script:IsChild) {
             Write-Info "Automatic login didn't produce a key - falling back to manual entry"
             $apiKey = Read-OmniRouteApiKey
         }
         if (-not $apiKey) {
-            Write-Warning "No key entered - OmniRoute routing isn't usable this launch"
-            Write-Hint "You'll be asked again next launch; nothing is permanently turned off."
+            if ($script:IsChild) {
+                # Don't block a spawned project window on a secure-string
+                # prompt nobody may be there to answer - run the launcher
+                # window once to finish this instead.
+                Write-Warning "No OmniRoute API key yet - run the launcher window once to finish setup"
+            } else {
+                Write-Warning "No key entered - OmniRoute routing isn't usable this launch"
+                Write-Hint "You'll be asked again next launch; nothing is permanently turned off."
+            }
             return $false
         }
         Save-OmniRouteApiKey -PlainKey $apiKey
@@ -2742,10 +3247,14 @@ function Initialize-OmniRoute {
         # password changed too - try the automatic path again (it'll reuse
         # the remembered password, or CHANGEME) before bothering the user.
         $apiKey = Request-OmniRouteApiKeyAutomatically
-        if (-not $apiKey) { $apiKey = Read-OmniRouteApiKey -Prompt "New OmniRoute API key" }
+        if (-not $apiKey -and -not $script:IsChild) { $apiKey = Read-OmniRouteApiKey -Prompt "New OmniRoute API key" }
         if (-not $apiKey) {
-            Write-Warning "No key entered - OmniRoute routing isn't usable this launch"
-            Write-Hint "You'll be asked again next launch; nothing is permanently turned off."
+            if ($script:IsChild) {
+                Write-Warning "Rejected key and no automatic re-login - run the launcher window once to re-enter it"
+            } else {
+                Write-Warning "No key entered - OmniRoute routing isn't usable this launch"
+                Write-Hint "You'll be asked again next launch; nothing is permanently turned off."
+            }
             return $false
         }
         Save-OmniRouteApiKey -PlainKey $apiKey
@@ -2791,6 +3300,14 @@ function Set-OmniRouteLaunchEnvironment {
         # account (DPAPI is account-bound), so decryption failed rather than
         # the key being absent.
         Write-Warning "Saved OmniRoute API key could not be read - re-entering it now"
+        if ($script:IsChild) {
+            # Never block a spawned project window on a secure-string prompt
+            # nobody may be there to answer - same guard Initialize-OmniRoute
+            # already applies to every other DPAPI-failure/missing-key path.
+            Write-Warning "No OmniRoute API key available in this project window - run the launcher window once to fix it"
+            Write-Hint "Launching Claude directly (it will ask you to log in) instead of blocking this window."
+            return $false
+        }
         $apiKey = Read-OmniRouteApiKey
         if (-not $apiKey) {
             Write-Warning "No key entered - launching Claude directly (it will ask you to log in)"
@@ -2898,14 +3415,24 @@ function Read-PathWithHistory {
     $history = @($History | Where-Object { $_ })
     $index = $history.Count
     $currentInput = ""
+    # A control key (Enter/Backspace/Escape/arrow/Delete) that the paste-drain
+    # loop below pulled out of the input buffer but couldn't handle itself -
+    # re-fed into the normal key-handling chain on the next iteration instead
+    # of being silently dropped/typed as a literal character.
+    $pendingKey = $null
     while ($true) {
         [Console]::CursorLeft = 0
         Write-Host (' ' * [Math]::Min((Get-SafeConsoleWidth) - 1, 120)) -NoNewline
         [Console]::CursorLeft = 0
         Write-Host "  $($Label): " -NoNewline -ForegroundColor White
         Write-Host $currentInput -NoNewline
-        if (-not [Console]::KeyAvailable) { Start-Sleep -Milliseconds 10; continue }
-        $key = [Console]::ReadKey($true)
+        if ($pendingKey) {
+            $key = $pendingKey
+            $pendingKey = $null
+        } else {
+            if (-not [Console]::KeyAvailable) { Start-Sleep -Milliseconds 10; continue }
+            $key = [Console]::ReadKey($true)
+        }
         if ($key.Key -eq 'Enter') { Write-Host ""; break }
         elseif ($key.Key -eq 'UpArrow') { if ($history.Count -gt 0 -and $index -gt 0) { $index--; $currentInput = $history[$index] } }
         elseif ($key.Key -eq 'DownArrow') {
@@ -2931,7 +3458,19 @@ function Read-PathWithHistory {
         }
         else {
             $currentInput += $key.KeyChar
-            while ([Console]::KeyAvailable) { $currentInput += [Console]::ReadKey($true).KeyChar }
+            # Drain whatever's already buffered (keeps up with a paste)
+            # without blocking - but a control key queued right behind a
+            # paste (e.g. paste-then-Enter) must still be handled as that
+            # key, not appended as a literal control character. Stash the
+            # first one found and let the main loop process it next.
+            while ([Console]::KeyAvailable) {
+                $peeked = [Console]::ReadKey($true)
+                if ($peeked.Key -in @('Enter', 'Backspace', 'Escape', 'UpArrow', 'DownArrow', 'Delete')) {
+                    $pendingKey = $peeked
+                    break
+                }
+                $currentInput += $peeked.KeyChar
+            }
         }
     }
     $path = $currentInput.Trim().Trim('"').Trim()
@@ -3384,6 +3923,11 @@ The following are installed once at user scope (``~/.claude/``) and are active i
 }
 
 function Invoke-GraphifyExtract {
+    # NOTE: every return path below is $true - graph extraction is treated as
+    # a best-effort step, never a reason to stop the launch (see the comments
+    # at each failure branch). The return value is kept boolean for callers
+    # that want to log/branch on it, but don't add a "did this fail" check at
+    # the call site expecting it to ever be $false; it can't be.
     Write-Section "Graph extraction"
     $graphFile = Join-Path (Join-Path $PWD ".graphify") "graph.json"
     # Graphify already tracks what it's seen. On a first run in this project it
@@ -3518,7 +4062,12 @@ function Show-GraphResult {
     }
     Write-Success "Interactive map generated"
     Write-Hint ("file:///" + $studioFile.Replace('\', '/'))
-    if (Read-YesNo "Open the graph now?" $false) { Start-Process $studioFile }
+    # Never block a spawned project window on a prompt nobody may be watching
+    # - the multi-window picker can open several at once. Same guard pattern
+    # used throughout Start-OmniRoute / Confirm-ClaudeCodeProvider /
+    # Find-ClaudeExecutable.
+    if ($script:IsChild) { return }
+    if (Read-YesNo "Open the graph now?" $false) { Start-Process $studioFile -ErrorAction Stop }
 }
 
 # ============================================================================
@@ -3587,6 +4136,15 @@ function Start-ClaudeSession {
         Write-Log "Launching Claude via node $($script:ClaudeJsPath) $($claudeArgs -join ' ')"
         try {
             & node $script:ClaudeJsPath @claudeArgs
+            # Same recovery as the native-binary branch below: an empty
+            # workspace has no prior conversation for --continue to resume,
+            # and without this the Node fallback path would just dead-end
+            # instead of falling back to a new session like the primary path.
+            if ($Resume -and $LASTEXITCODE -ne 0) {
+                Write-Warning "No previous conversation found to continue - starting a new session instead"
+                Write-Log "Claude --continue failed (exit $LASTEXITCODE) - retrying without --continue" -Level "WARN"
+                if ($script:ForcedModelAlias) { & node $script:ClaudeJsPath --model $script:ForcedModelAlias } else { & node $script:ClaudeJsPath }
+            }
         } catch {
             Write-Warning "Claude exited with error: $_"
         }
@@ -3609,6 +4167,7 @@ function Start-ClaudeSession {
 }
 
 function Show-SessionSummary {
+    [CmdletBinding()]
     param(
         [string]$ProjectPath,
         [bool]$Resumed,
@@ -3640,7 +4199,12 @@ function Invoke-ProjectMode {
     # setup work runs - an unusable path (missing, permission-denied, a
     # drive root) should fail immediately, not after installing Graphify.
     if (-not (Test-ProjectDirectory -Path $Path)) {
-        Stop-Script -Code 102 -Reason "Project folder is not usable: $Path"
+        # Code 106 (not 102): 102 is reserved exclusively for a missing
+        # required dependency (see Test-RequiredDependencies) - a bad project
+        # folder is an unrelated failure and deserves its own code rather than
+        # overloading that one. 106 was freed by the v4.3.0 cleanup that
+        # removed the unreachable Invoke-GraphifyExtract failure branch.
+        Stop-Script -Code 106 -Reason "Project folder is not usable: $Path"
     }
 
     # Per-project lock. Different projects run side by side; the same project
@@ -3682,6 +4246,9 @@ function Invoke-ProjectMode {
 
     Write-Section -Name "Claude Code" -Step 3 -TotalSteps $totalSteps
     $claudePath = Find-ClaudeExecutable -Quiet
+    if (-not (Test-ClaudeExecutable -Path $claudePath)) {
+        Stop-Script -Code 103 -Reason "Claude Code could not be found or verified in this project window (run the launcher window once first)"
+    }
     Write-Success "Claude: $claudePath"
 
     # Same reasoning as the launcher window: a project window opened
@@ -3704,13 +4271,27 @@ function Invoke-ProjectMode {
     Install-GraphifyStrictMode
     Set-ProjectClaudeMdDirective
 
-    if (-not (Invoke-GraphifyExtract)) { Stop-Script -Code 106 -Reason "Extraction failed - aborting" }
+    # Invoke-GraphifyExtract always returns $true by design - a failed
+    # extraction warns and lets Claude Code start anyway (see its own
+    # comments) - so there is deliberately no failure branch here to check.
+    $null = Invoke-GraphifyExtract
     Show-GraphResult
 
     Invoke-AutoSkills
 
     Write-Host ""
-    if ((Read-Host "  Press Enter to launch Claude, or X to exit") -match "^[Xx]") {
+    # Never block a spawned project window on a prompt nobody may be
+    # watching - the multi-window picker can open several at once. Same
+    # guard pattern used throughout Start-OmniRoute / Confirm-
+    # ClaudeCodeProvider / Find-ClaudeExecutable: default to launching
+    # immediately instead of waiting for a keypress that may never come.
+    $exitRequested = $false
+    if ($script:IsChild) {
+        Write-Info "Launching Claude..."
+    } else {
+        $exitRequested = (Read-Host "  Press Enter to launch Claude, or X to exit") -match "^[Xx]"
+    }
+    if ($exitRequested) {
         Write-Info "Exiting without launching Claude"
         return
     }
@@ -3720,7 +4301,11 @@ function Invoke-ProjectMode {
     Write-Section "Done"
     Write-Success "Completed in $(Get-Elapsed)"
     Write-Hint "Closing this window won't affect your other project windows."
-    Read-Host "  Press Enter to close this window" | Out-Null
+    Write-Hint "Press Enter to close this window..."
+    # Bounded the same way as Stop-Script's equivalent wait, rather than an
+    # unbounded Read-Host - a window nobody comes back to still closes on
+    # its own instead of sitting open forever.
+    Wait-KeyPressBounded
 }
 
 # ============================================================================
@@ -3758,7 +4343,13 @@ function Invoke-LauncherMode {
 
     Write-Section -Name "Claude Code" -Step 4 -TotalSteps $totalSteps
     $claudePath = Find-ClaudeExecutable -Quiet
-    Test-ClaudeExecutable -Path $claudePath
+    if (-not (Test-ClaudeExecutable -Path $claudePath)) {
+        Write-Warning "Could not confirm Claude Code actually runs - trying manual path entry"
+        $claudePath = Request-ClaudePathFromUser
+        if (-not $claudePath -or -not (Test-ClaudeExecutable -Path $claudePath)) {
+            Stop-Script -Code 103 -Reason "Claude Code could not be found or verified"
+        }
+    }
 
     # claude-mem / headroom / claude-code-setup / task-observer /
     # claude-md-management, installed once at user scope. Needs `claude` to
@@ -3837,6 +4428,7 @@ function Invoke-CompleteUninstaller {
         prompts for an 'X' to confirm full uninstallation of script dependencies
         including the Claude Code CLI.
     #>
+    [CmdletBinding()]
     param([int]$TimeoutSeconds = 3)
 
     Write-Host ""
@@ -3851,7 +4443,7 @@ function Invoke-CompleteUninstaller {
         if ([Console]::KeyAvailable) {
             $key = [Console]::ReadKey($true)
             $char = $key.KeyChar.ToString().ToLowerInvariant()
-            
+
             if ($char -match '[a-z]') {
                 $typedSequence += $char
                 if ($typedSequence.EndsWith("rm")) {
@@ -4016,11 +4608,17 @@ function Invoke-CompleteUninstaller {
 # MAIN ENTRY POINT
 # ============================================================================
 
-function Main {
+function Invoke-Main {
     Initialize-Logging
     Initialize-Configuration
 
-    Invoke-CompleteUninstaller -TimeoutSeconds 3
+    # Launcher-only: a spawned project window is the wrong place to offer
+    # ripping out shared global tools (Claude CLI, OmniRoute, etc.) out from
+    # under its sibling windows, and there's no reason every one of several
+    # concurrently-opened project windows should show this prompt at all.
+    if (-not $script:IsChild) {
+        Invoke-CompleteUninstaller -TimeoutSeconds 3
+    }
 
     try {
         if ($ProjectPath) {
@@ -4041,5 +4639,5 @@ function Main {
     }
 }
 
-Main
+Invoke-Main
 
