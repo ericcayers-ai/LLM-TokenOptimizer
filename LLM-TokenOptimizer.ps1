@@ -324,8 +324,35 @@
       check is declined or skipped via -SkipUpdateCheck, since it's a
       standing "auto-do this" toggle rather than a "did we already do this"
       marker like most of this config's other flags.
+    v4.3.2 - live-run hotfix: the 'n' (new project folder) picker key threw
+    an unhandled "The property 'Count' cannot be found on this object" and
+    crashed the launcher (exit code 99) the first time a typed folder name
+    produced zero or exactly one invalid-character match. New-ProjectFolder's
+    validation checked `($name.ToCharArray() | Where-Object {...}).Count` -
+    when that pipeline matches 0 or 1 characters, PowerShell unwraps the
+    result to $null or a bare [char] rather than an array, and neither has a
+    .Count property under Set-StrictMode. Wrapped in @(...) to force a real
+    array, matching every other .Count check already in the file (a repo-
+    wide grep for the same unwrapped-pipeline-.Count pattern found this was
+    the only remaining instance).
+
+    v4.3.3 - live-run hotfix: choosing a single project number or 'm' (open
+    the master folder) in the picker silently did nothing and just redrew
+    the same menu. Select-Projects returned single-path results as `return
+    @($path)` - but PowerShell enumerates any array written to a function's
+    output stream, so a ONE-element array collapses right back down to a
+    bare string by the time the caller receives it (multi-path results with
+    2+ entries were unaffected, which is why 'a' and "1,3,7" already worked).
+    Invoke-LauncherMode's picker loop then saw what looked like a plain
+    string, didn't match it against 'q'/'c'/'n', and fell through to
+    `continue` - redrawing the menu instead of opening anything. Fixed by
+    changing the three affected `return @(...)` statements (the 'm' case,
+    the 'a' case, and the final numbered-selection case) to `return
+    ,@(...)` - the leading comma wraps the array in one more layer so
+    enumeration only ever unwraps down to the intended array, never past it,
+    regardless of how many paths it holds.
 .NOTES
-    Version: 4.3.1
+    Version: 4.3.3
     Exit Codes:
         0   - Success
         99  - Unexpected error
@@ -397,7 +424,7 @@ try {
 
 # Application constants
 $script:APP_NAME = "LLM-TokenOptimizer"
-$script:APP_VERSION = "4.3.1"
+$script:APP_VERSION = "4.3.3"
 $script:MAX_HISTORY = 20
 $script:MAX_LOG_FILES = 10
 $script:OMNIROUTE_URL = "http://localhost:20128"
@@ -3648,10 +3675,10 @@ function Select-Projects {
         '^[Rr]$' { return 'r' }
         '^[Cc]$' { return 'c' }
         '^[Nn]$' { return 'n' }
-        '^[Mm]$' { return @($MasterPath) }
+        '^[Mm]$' { return ,@($MasterPath) }
         '^[Aa]$' {
             if ($Projects.Count -eq 0) { Write-Fail "No projects to open yet - use 'n' to create one"; return 'r' }
-            return @($Projects | ForEach-Object { $_.FullName })
+            return ,@($Projects | ForEach-Object { $_.FullName })
         }
     }
     if ($Projects.Count -eq 0) { Write-Fail "No numbered projects yet - use 'n' to create one, or 'm' to open the master folder"; return 'r' }
@@ -3666,7 +3693,7 @@ function Select-Projects {
         if (-not ($selected -contains $path)) { $null = $selected.Add($path) }
     }
     if ($selected.Count -eq 0) { return 'r' }
-    return @($selected)
+    return ,@($selected)
 }
 
 function New-ProjectFolder {
@@ -3680,7 +3707,7 @@ function New-ProjectFolder {
     if (-not $name) { Write-Info "Cancelled"; return $null }
 
     $invalidChars = [System.IO.Path]::GetInvalidFileNameChars()
-    if (($name.ToCharArray() | Where-Object { $invalidChars -contains $_ }).Count -gt 0) {
+    if (@($name.ToCharArray() | Where-Object { $invalidChars -contains $_ }).Count -gt 0) {
         Write-Fail 'Name contains characters that are not allowed in a Windows folder name (e.g. \ / : * ? " < > |)'
         return $null
     }
