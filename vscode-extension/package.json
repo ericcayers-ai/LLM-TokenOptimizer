@@ -1,0 +1,179 @@
+{
+  "name": "llm-token-optimizer",
+  "displayName": "LLM-TokenOptimizer",
+  "description": "Thin VS Code wrapper around LLM-TokenOptimizer.ps1 - launches Graphify + OmniRoute + Claude Code project/session windows from inside VS Code instead of a standalone console.",
+  "version": "5.4.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "llmTokenOptimizer.quickMenu",
+        "title": "LLM-TokenOptimizer: Start",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "llmTokenOptimizer.openCurrentWorkspace",
+        "title": "LLM-TokenOptimizer: Open Current Workspace as Project",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "llmTokenOptimizer.openLauncherForFolder",
+        "title": "LLM-TokenOptimizer: Open Launcher (Master Folder Picker)",
+        "icon": "$(list-selection)"
+      },
+      {
+        "command": "llmTokenOptimizer.changeMasterFolder",
+        "title": "LLM-TokenOptimizer: Change Master Folder",
+        "icon": "$(folder)"
+      },
+      {
+        "command": "llmTokenOptimizer.resetConfig",
+        "title": "LLM-TokenOptimizer: Reset Configuration",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "llmTokenOptimizer.reconfigureOmniRoute",
+        "title": "LLM-TokenOptimizer: Reconfigure OmniRoute",
+        "icon": "$(sync)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "llmTokenOptimizer",
+          "title": "LLM-TokenOptimizer",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "llmTokenOptimizer": [
+        {
+          "id": "llmTokenOptimizerView",
+          "name": "LLM-TokenOptimizer",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "llmTokenOptimizerView",
+        "contents": "Manage Graphify + OmniRoute + Claude Code project/session windows without leaving VS Code.\n[$(rocket) Start](command:llmTokenOptimizer.quickMenu)\nOr ask the agent: `@tokenoptimizer` in the Chat view."
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "llmTokenOptimizer.quickMenu",
+          "when": "view == llmTokenOptimizerView",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "llmTokenOptimizer.quickMenu",
+          "when": "true"
+        },
+        {
+          "command": "llmTokenOptimizer.openCurrentWorkspace",
+          "when": "false"
+        },
+        {
+          "command": "llmTokenOptimizer.openLauncherForFolder",
+          "when": "false"
+        },
+        {
+          "command": "llmTokenOptimizer.changeMasterFolder",
+          "when": "false"
+        },
+        {
+          "command": "llmTokenOptimizer.resetConfig",
+          "when": "false"
+        },
+        {
+          "command": "llmTokenOptimizer.reconfigureOmniRoute",
+          "when": "false"
+        }
+      ]
+    },
+    "chatParticipants": [
+      {
+        "id": "llmTokenOptimizer.agent",
+        "fullName": "LLM-TokenOptimizer",
+        "name": "tokenoptimizer",
+        "description": "Open Claude Code project/session windows, Graphify + OmniRoute setup, from VS Code's Chat view.",
+        "isSticky": true
+      }
+    ],
+    "configuration": {
+      "title": "LLM-TokenOptimizer",
+      "properties": {
+        "llmTokenOptimizer.scriptPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to LLM-TokenOptimizer.ps1. Leave blank to use the copy bundled with this extension."
+        },
+        "llmTokenOptimizer.powershellExecutable": {
+          "type": "string",
+          "default": "powershell.exe",
+          "description": "PowerShell executable used to run the script (e.g. powershell.exe or pwsh.exe)."
+        },
+        "llmTokenOptimizer.model": {
+          "type": "string",
+          "enum": [
+            "",
+            "sonnet",
+            "opus"
+          ],
+          "default": "",
+          "description": "Session-only model override forwarded as -Model. Leave blank to use Claude Code's own saved default."
+        },
+        "llmTokenOptimizer.compressionMode": {
+          "type": "string",
+          "enum": [
+            "",
+            "stacked",
+            "ultra",
+            "off"
+          ],
+          "default": "",
+          "description": "Session-only OmniRoute compression override forwarded as -CompressionMode. Leave blank to keep the script's pinned Stacked default. 'off' skips OmniRoute compression setup so long multi-turn sessions keep a byte-identical prompt-cache prefix - see AUDIT.md Finding 3."
+        },
+        "llmTokenOptimizer.isolateClaudeConfig": {
+          "type": "boolean",
+          "default": false,
+          "description": "Forward -IsolateClaudeConfig: give each project its own CLAUDE_CONFIG_DIR instead of sharing ~/.claude."
+        },
+        "llmTokenOptimizer.verboseMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Forward -VerboseMode to the script."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/glob": "^8.1.0",
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.95.0",
+    "@vscode/test-electron": "^2.3.9",
+    "glob": "^10.3.10",
+    "mocha": "^10.3.0",
+    "typescript": "^5.4.0"
+  }
+}
