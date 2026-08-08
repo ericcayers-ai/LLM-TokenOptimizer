@@ -2468,7 +2468,11 @@ function Test-ClaudePluginInstalled {
     # CLI doesn't turn a real success into a false failure.
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$PluginId, [Parameter(Mandatory)][bool]$InstallReportedSuccess)
-    $result = Invoke-ExternalCommand -Command "claude" -Arguments "plugin list --scope user" -TimeoutSeconds 15 -Silent -NoLog
+    # `claude plugin list` does NOT accept a --scope flag (confirmed live on
+    # Claude Code 2.1.224 - passing one errors "unknown option '--scope'" and
+    # this function's own fallback below silently masked that on every prior
+    # call). Scope is already shown per-plugin in the plain listing.
+    $result = Invoke-ExternalCommand -Command "claude" -Arguments "plugin list" -TimeoutSeconds 15 -Silent -NoLog
     if (-not $result.Success) { return $InstallReportedSuccess }
     return [bool]($result.Output -match [regex]::Escape($PluginId))
 }
@@ -2920,33 +2924,44 @@ function Register-Context7Mcp {
 }
 
 function Install-ContextModeMcp {
-    # Context Mode (mksglu/context-mode, MCP server): sandboxes tool output -
-    # e.g. a 56 KB shell dump becomes a 299-byte summary with the full output
-    # indexed into local SQLite FTS5 for on-demand BM25 search - plus persists
-    # session memory across compaction instead of re-dumping history. Verified
-    # via its own README before wiring this in: pure MCP server + optional
-    # hooks, no ANTHROPIC_BASE_URL, no proxying of Claude's traffic, no OAuth
+    # Context Mode (mksglu/context-mode): sandboxes tool output - e.g. a 56 KB
+    # shell dump becomes a 299-byte summary with the full output indexed into
+    # local SQLite FTS5 for on-demand BM25 search - plus persists session
+    # memory across compaction instead of re-dumping history. No
+    # ANTHROPIC_BASE_URL, no proxying of Claude's traffic, no OAuth
     # involvement - same "genuinely local" bar Context7 and RTK were held to.
     # Complementary to RTK rather than redundant: RTK compresses command
     # output at the shell/hook layer before Claude ever sees it; Context Mode
     # operates at the MCP layer with intent-driven filtering and cross-session
     # memory RTK doesn't provide. Both can run at once.
-    if ($script:Config.ContextModeMcpRegistered) { return }
-    if (-not (Test-CommandAvailable "claude" -UseCache)) { return }
-    if (-not (Test-CommandAvailable "npx" -UseCache)) {
-        Write-Log "Context Mode MCP skipped - npx not found on PATH" -Level "DEBUG"
-        return
-    }
+    #
+    # Installed via the plugin marketplace (same pattern as Install-
+    # CavemanPlugin), NOT a bare `npx context-mode-mcp` MCP registration - an
+    # earlier version of this function guessed at that package name and it
+    # doesn't exist. The real npm package is named `context-mode` (confirmed
+    # against the npm registry), and the project's own README documents the
+    # marketplace path as recommended over MCP-only, since it also wires up
+    # the hook-based routing that nudges the model to prefer the sandbox
+    # tools over raw Bash/Read. Live-tested end to end before wiring this in:
+    # marketplace add + plugin install both succeeded, `claude plugin list`
+    # showed it enabled, and `claude mcp list` showed the plugin's own MCP
+    # server connected (`plugin:context-mode:context-mode: ... - Connected`).
+    if ($script:Config.ContextModeMcpRegistered) { Write-Success "Context Mode plugin already installed"; return $true }
+    if (-not (Test-CommandAvailable "claude" -UseCache)) { return $false }
 
-    Write-Info "Registering Context Mode (tool-output sandboxing) as an MCP server for Claude Code..."
-    $result = Invoke-ExternalCommand -Command "claude" -Arguments "mcp add --scope user context-mode -- npx -y context-mode-mcp" -TimeoutSeconds 30 -Silent
-    if ($result.Success -or $result.Output -match "already exists|already added") {
-        Write-Success "Context Mode registered as an MCP server (user scope)"
+    Write-Info "Installing the Context Mode plugin (tool-output sandboxing, mksglu/context-mode)..."
+    $null = Invoke-ExternalCommand -Command "claude" -Arguments "plugin marketplace add mksglu/context-mode" -TimeoutSeconds 30 -Silent
+    $result = Invoke-ExternalCommand -Command "claude" -Arguments "plugin install context-mode@context-mode --scope user" -TimeoutSeconds 60
+    $reportedSuccess = [bool]($result.Success -or $result.Output -match "already installed")
+    if (Test-ClaudePluginInstalled -PluginId "context-mode" -InstallReportedSuccess $reportedSuccess) {
+        Write-Success "Context Mode plugin installed - tool-output sandboxing active"
         $script:Config.ContextModeMcpRegistered = $true
         Save-Configuration
-    } else {
-        Write-Log "claude mcp add context-mode did not confirm success: $(Get-Truncated $result.Output 200)" -Level "DEBUG"
+        return $true
     }
+    Write-Warning "Context Mode plugin install did not confirm success"
+    Write-Log "Context Mode install output: $(Get-Truncated $result.Output 300)" -Level "WARN"
+    return $false
 }
 
 function Test-CompressionMethodsActive {
@@ -2960,11 +2975,21 @@ function Test-CompressionMethodsActive {
     # active right now rather than what was true whenever it was installed.
     $lines = [System.Collections.Generic.List[string]]::new()
 
-    if ($script:Config.CavemanInstalled) {
-        $pluginList = Invoke-ExternalCommand -Command "claude" -Arguments "plugin list --scope user" -TimeoutSeconds 15 -Silent -NoLog
-        $active = [bool]($pluginList.Success -and $pluginList.Output -match "caveman")
-        $lines.Add("caveman " + $(if ($active) { "[OK]" } else { "[MISSING]" }))
-        if (-not $active) { Write-Warning "Caveman plugin was installed but `claude plugin list` no longer shows it active" }
+    if ($script:Config.CavemanInstalled -or $script:Config.ContextModeMcpRegistered) {
+        # `claude plugin list` does NOT accept --scope (confirmed live on
+        # Claude Code 2.1.224 - it errors "unknown option '--scope'"); scope
+        # is already shown per-plugin in the plain listing.
+        $pluginList = Invoke-ExternalCommand -Command "claude" -Arguments "plugin list" -TimeoutSeconds 15 -Silent -NoLog
+        if ($script:Config.CavemanInstalled) {
+            $active = [bool]($pluginList.Success -and $pluginList.Output -match "caveman")
+            $lines.Add("caveman " + $(if ($active) { "[OK]" } else { "[MISSING]" }))
+            if (-not $active) { Write-Warning "Caveman plugin was installed but `claude plugin list` no longer shows it active" }
+        }
+        if ($script:Config.ContextModeMcpRegistered) {
+            $active = [bool]($pluginList.Success -and $pluginList.Output -match "context-mode")
+            $lines.Add("context-mode " + $(if ($active) { "[OK]" } else { "[MISSING]" }))
+            if (-not $active) { Write-Warning "Context Mode plugin was installed but `claude plugin list` no longer shows it active" }
+        }
     }
 
     if ($script:Config.RtkInstalled) {
@@ -2974,18 +2999,11 @@ function Test-CompressionMethodsActive {
         if (-not $active) { Write-Warning "RTK was installed but its hook script is no longer at $rtkHook" }
     }
 
-    if ($script:Config.Context7McpRegistered -or $script:Config.ContextModeMcpRegistered) {
+    if ($script:Config.Context7McpRegistered) {
         $mcpList = Invoke-ExternalCommand -Command "claude" -Arguments "mcp list" -TimeoutSeconds 15 -Silent -NoLog
-        if ($script:Config.Context7McpRegistered) {
-            $active = [bool]($mcpList.Success -and $mcpList.Output -match "context7.*Connected")
-            $lines.Add("context7 " + $(if ($active) { "[OK]" } else { "[MISSING]" }))
-            if (-not $active) { Write-Warning "Context7 MCP was registered but `claude mcp list` doesn't show it connected" }
-        }
-        if ($script:Config.ContextModeMcpRegistered) {
-            $active = [bool]($mcpList.Success -and $mcpList.Output -match "context-mode.*Connected")
-            $lines.Add("context-mode " + $(if ($active) { "[OK]" } else { "[MISSING]" }))
-            if (-not $active) { Write-Warning "Context Mode MCP was registered but `claude mcp list` doesn't show it connected" }
-        }
+        $active = [bool]($mcpList.Success -and $mcpList.Output -match "context7.*Connected")
+        $lines.Add("context7 " + $(if ($active) { "[OK]" } else { "[MISSING]" }))
+        if (-not $active) { Write-Warning "Context7 MCP was registered but `claude mcp list` doesn't show it connected" }
     }
 
     if ($lines.Count -gt 0) {
