@@ -982,6 +982,16 @@ namespace LLMTokenOptimizer {
         static DateTime _cooldownUntil = DateTime.MinValue;
         static readonly object LogFileLock = new object();
 
+        // Set the moment a rate limit is detected, read by PowerShell AFTER
+        // Stop-RateLimitWatcher (same process/AppDomain, so a plain static
+        // field is enough - no marshaling needed) and persisted into Config
+        // as ClaudeRateLimitedUntilUtc, so the NEXT launch's pre-flight
+        // availability check (Test-ClaudeAvailable) can skip straight to the
+        // Antigravity/local fallback instead of launching Claude Code only
+        // to immediately hit the same limit again.
+        public static bool RateLimitDetected;
+        public static string ResumeAtUtcIso;
+
         // Deliberately a plain file path, NOT a PowerShell scriptblock/delegate.
         // A PowerShell scriptblock invoked as an Action<string> from THIS class's
         // background Thread silently fails - PowerShell scriptblocks are bound to
@@ -1036,6 +1046,8 @@ namespace LLMTokenOptimizer {
         }
 
         static void Handle(string tail) {
+            RateLimitDetected = true;
+
             // Prefer Claude Code's own built-in "Stop and wait" flow over
             // reimplementing wait/retry - give it a few seconds to render.
             for (int i = 0; i < 5; i++) {
@@ -1043,6 +1055,10 @@ namespace LLMTokenOptimizer {
                 string screen = ConsoleIo.ReadVisibleScreen();
                 if (StopAndWaitPattern.IsMatch(screen)) {
                     SafeLog("Found 'Stop and wait' option - selecting it");
+                    // Unknown exact resume time in this path - assume the
+                    // documented 5-hour window so the next launch's
+                    // pre-flight check still has a conservative estimate.
+                    ResumeAtUtcIso = DateTime.UtcNow.AddHours(5).ToString("o");
                     ConsoleIo.SendEnter();
                     return;
                 }
@@ -1065,6 +1081,7 @@ namespace LLMTokenOptimizer {
             SafeLog("No 'Stop and wait' menu found - falling back to a timed wait of " + wait.ToString());
             wait = wait.Add(TimeSpan.FromSeconds(60)); // safety margin past reset
             DateTime resumeAt = DateTime.UtcNow.Add(wait);
+            ResumeAtUtcIso = resumeAt.ToString("o");
             while (_running && DateTime.UtcNow < resumeAt) {
                 Thread.Sleep(Math.Min(30000, (int)Math.Max(1000, (resumeAt - DateTime.UtcNow).TotalMilliseconds)));
             }
@@ -1376,6 +1393,13 @@ function Get-DefaultConfiguration {
         HermesGraphifyInstalled = $false
         WatchVideoSkillInstalled = $false
         PromptEngineeringSkillInstalled = $false
+        # v5.8: Claude -> Antigravity -> local-LM-Studio fallback chain - see
+        # Resolve-SessionBackend. Written by Start-ClaudeSession (from the
+        # RateLimitWatcher's static fields) and by Update-BestLocalModelFromBenchmarks.
+        ClaudeRateLimitedUntilUtc = ""
+        BestLocalModelId = ""
+        BestLocalModelTokensPerSec = 0
+        BestLocalModelUpdatedUtc = ""
     }
 }
 
@@ -4666,6 +4690,199 @@ function Invoke-AutoSkills {
 }
 
 # ============================================================================
+# SESSION BACKEND FALLBACK CHAIN (v5.8)
+#   Claude Code (primary) -> Antigravity IDE -> local LM Studio model, in that
+#   order. Checked once per launch - NOT a live mid-session hot-swap. v5.5
+#   deliberately removed OmniRoute (a gateway that rerouted Claude Code's own
+#   traffic through alternate providers/models) for the complexity/risk that
+#   added; doing a live swap here would reintroduce exactly that. Resolve-
+#   SessionBackend runs right before the launch call site in Invoke-
+#   ProjectMode and decides which of the three to actually start.
+# ============================================================================
+
+function Test-ClaudeAvailable {
+    # Two independent checks: is the CLI itself reachable at all (covers "not
+    # installed", "broken install", "can't reach Anthropic to authenticate"),
+    # and did the LAST session on this machine end because Claude Code's own
+    # usage limit was hit (persisted from RateLimitWatcher's static fields by
+    # Start-ClaudeSession below). The second is what actually answers "is
+    # main Claude up" in the sense this fallback chain cares about - a fast
+    # `claude --version` alone reports "available" seconds after a rate-limit
+    # message, since the binary itself is fine; the account just isn't.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ClaudePath)
+
+    if ($script:Config.ClaudeRateLimitedUntilUtc) {
+        try {
+            $until = [DateTime]::Parse($script:Config.ClaudeRateLimitedUntilUtc, $null, [System.Globalization.DateTimeStyles]::RoundtripKind)
+            if ((Get-Date).ToUniversalTime() -lt $until) {
+                Write-Log "Claude Code was rate-limited until $until (UTC) - treating as unavailable" -Level "INFO"
+                return $false
+            }
+        } catch { Write-Log "Could not parse ClaudeRateLimitedUntilUtc - ignoring: $_" -Level "DEBUG" }
+    }
+
+    if ($ClaudePath -eq "node" -and $script:ClaudeJsPath) { return (Test-Path $script:ClaudeJsPath -PathType Leaf) }
+    if (-not (Test-Path $ClaudePath -PathType Leaf) -and -not (Test-CommandAvailable $ClaudePath -UseCache)) { return $false }
+    $result = Invoke-ExternalCommand -Command $ClaudePath -Arguments "--version" -TimeoutSeconds 10 -Silent -NoLog
+    return $result.Success
+}
+
+function Find-AntigravityExecutable {
+    # Google Antigravity IDE - confirmed install locations (Aug 2026):
+    # per-user %LOCALAPPDATA%\Programs\Antigravity IDE\ (current) or
+    # %LOCALAPPDATA%\Programs\Antigravity\ (pre-rename), machine-wide
+    # C:\Program Files\Google\Antigravity\, plus the separate `agy` terminal
+    # CLI at %LOCALAPPDATA%\agy\bin\agy.exe. Any one being present counts as
+    # "Antigravity available" for this fallback chain.
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Antigravity IDE\Antigravity IDE.exe"),
+        (Join-Path $env:LOCALAPPDATA "Programs\Antigravity\Antigravity.exe"),
+        "$env:ProgramFiles\Google\Antigravity\Antigravity IDE.exe",
+        "$env:ProgramFiles\Google\Antigravity\Antigravity.exe",
+        (Join-Path $env:LOCALAPPDATA "agy\bin\agy.exe")
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c -PathType Leaf) { return $c }
+    }
+    if (Test-CommandAvailable "agy" -UseCache) { return (Get-Command "agy" -ErrorAction SilentlyContinue).Source }
+    return $null
+}
+
+function Test-AntigravityAvailable {
+    return [bool](Find-AntigravityExecutable)
+}
+
+function Start-AntigravitySession {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ProjectDirectory)
+    $exe = Find-AntigravityExecutable
+    if (-not $exe) { return $false }
+    Write-Info "Opening Antigravity for this project (Claude unavailable): $exe"
+    try {
+        if ($exe -like "*agy.exe") {
+            # Terminal CLI - runs attached to this console, matching Start-
+            # ClaudeSession's own synchronous/blocking launch shape.
+            & $exe $ProjectDirectory
+        } else {
+            # Desktop IDE - same "open a folder" convention as VS Code/Cursor.
+            Start-Process -FilePath $exe -ArgumentList "`"$ProjectDirectory`"" -ErrorAction Stop
+        }
+        Write-Success "Antigravity launched for $(Split-Path $ProjectDirectory -Leaf)"
+        return $true
+    } catch {
+        Write-Warning "Could not launch Antigravity: $_"
+        return $false
+    }
+}
+
+function Update-BestLocalModelFromBenchmarks {
+    # Reads benchmark_summary.json (written by run_benchmarks.py, see there)
+    # from this launcher script's own directory and records whichever model
+    # scored highest on composite_score - a SWE-bench-style capability score
+    # (does the generated code actually parse and cover the prompt's stated
+    # requirements) weighted 70/30 against raw speed, NOT pure tokens/second.
+    # A fast model that writes broken code is a bad coding agent regardless
+    # of how many tok/s it produces; see score_capability() and
+    # compute_composite_score() in run_benchmarks.py for the actual scoring.
+    # Falls back to avg_tokens_per_second alone only against an OLDER
+    # benchmark_summary.json that predates composite_score (re-run
+    # `uv run run_benchmarks.py --rescore` to backfill it without re-running
+    # any model calls).
+    [CmdletBinding()]
+    param()
+    $summaryPath = Join-Path (Split-Path $script:SelfPath -Parent) "benchmark_summary.json"
+    if (-not (Test-Path $summaryPath -PathType Leaf)) { return $false }
+    try {
+        $rows = Get-Content $summaryPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        Write-Log "Could not parse benchmark_summary.json: $_" -Level "WARN"
+        return $false
+    }
+    $candidates = @($rows | Where-Object { $_.stage -eq "benchmark" -and $_.status -in @("ok", "partial") -and $_.avg_tokens_per_second })
+    if ($candidates.Count -eq 0) {
+        Write-Log "benchmark_summary.json has no successful benchmark rows" -Level "DEBUG"
+        return $false
+    }
+    $hasCompositeScore = [bool]($candidates[0].PSObject.Properties.Name -contains "composite_score")
+    $best = if ($hasCompositeScore) {
+        $candidates | Sort-Object -Property composite_score -Descending | Select-Object -First 1
+    } else {
+        Write-Log "benchmark_summary.json predates composite_score - ranking by speed only (run --rescore to fix)" -Level "WARN"
+        $candidates | Sort-Object -Property avg_tokens_per_second -Descending | Select-Object -First 1
+    }
+    $script:Config.BestLocalModelId = $best.model
+    $script:Config.BestLocalModelTokensPerSec = $best.avg_tokens_per_second
+    $script:Config.BestLocalModelUpdatedUtc = (Get-Date).ToUniversalTime().ToString("o")
+    Save-Configuration
+    if ($hasCompositeScore) {
+        Write-Success "Best local coding agent per benchmark: $($best.model) (composite=$($best.composite_score), resolve_rate=$($best.resolve_rate), $($best.avg_tokens_per_second) tok/s)"
+    } else {
+        Write-Success "Best local model per benchmark: $($best.model) ($($best.avg_tokens_per_second) tok/s)"
+    }
+    return $true
+}
+
+function Test-LocalModelAvailable {
+    # LM Studio support + a benchmark result to act on. Doesn't require the
+    # server to be running right now - Start-LocalModelSession starts it.
+    if (-not $script:Config.LMStudioSupportInstalled) { return $false }
+    if (-not $script:Config.BestLocalModelId) {
+        Update-BestLocalModelFromBenchmarks | Out-Null
+    }
+    return [bool]$script:Config.BestLocalModelId
+}
+
+function Start-LocalModelSession {
+    # Last resort in the fallback chain: an interactive chat with the best
+    # locally-benchmarked model via LM Studio's own `lms chat` CLI. Deliberately
+    # NOT an attempt to make Claude Code itself talk to a local model through a
+    # hand-rolled Anthropic<->OpenAI translation proxy - v5.5 removed OmniRoute
+    # (which did exactly that kind of traffic rerouting) for the complexity/risk
+    # it added; `lms chat` is a real, already-built surface for exactly this.
+    [CmdletBinding()]
+    param()
+    $modelId = $script:Config.BestLocalModelId
+    if (-not $modelId) { Write-Warning "No benchmarked local model on record"; return $false }
+
+    $lmsPath = if (Test-CommandAvailable "lms" -UseCache) { "lms" } else {
+        $fallback = Join-Path $env:USERPROFILE ".lmstudio\bin\lms.exe"
+        if (Test-Path $fallback) { $fallback } else { $null }
+    }
+    if (-not $lmsPath) { Write-Warning "lms CLI not found - can't start a local session"; return $false }
+
+    Write-Section "Local model session (Claude and Antigravity both unavailable)"
+    Write-Info "Using $modelId - fastest in the last benchmark run ($($script:Config.BestLocalModelTokensPerSec) tok/s)"
+    $null = Invoke-ExternalCommand -Command $lmsPath -Arguments "load `"$modelId`" --gpu max -y" -TimeoutSeconds 600 -ShowSpinner -SpinnerLabel "Loading $modelId"
+    Write-Info "Starting interactive chat - type your request, Ctrl+C to exit."
+    & $lmsPath chat $modelId
+    $null = Invoke-ExternalCommand -Command $lmsPath -Arguments "unload --all" -TimeoutSeconds 30 -Silent
+    return $true
+}
+
+function Resolve-SessionBackend {
+    # Returns 'claude' | 'antigravity' | 'local' | 'none'. Pure decision
+    # logic, no side effects beyond logging - callers do the actual launch.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ClaudePath)
+
+    if (Test-ClaudeAvailable -ClaudePath $ClaudePath) { return 'claude' }
+    Write-Warning "Claude Code is not available right now."
+    if (Test-AntigravityAvailable) {
+        Write-Info "Falling back to Antigravity."
+        return 'antigravity'
+    }
+    Write-Info "Antigravity not found - checking for a local model fallback..."
+    if (Test-LocalModelAvailable) {
+        Write-Info "Falling back to the local model with the best benchmark result."
+        return 'local'
+    }
+    Write-Warning "No fallback available - Antigravity isn't installed and no local model has been benchmarked yet."
+    Write-Hint "Run 'uv run run_benchmarks.py' in this project's folder to enable the local fallback."
+    return 'none'
+}
+
+# ============================================================================
 # CLAUDE LAUNCH
 # ============================================================================
 
@@ -4748,6 +4965,19 @@ function Start-ClaudeSession {
         }
     } finally {
         Stop-RateLimitWatcher
+        # Persist what the watcher saw (if anything) so the NEXT launch's
+        # Test-ClaudeAvailable can skip straight to the Antigravity/local
+        # fallback instead of re-launching Claude only to hit the same limit
+        # again seconds later. Safe to read after Stop(): same process/
+        # AppDomain, and the watcher's background thread has already joined.
+        if ($script:RateLimitWatcherTypeLoaded -and [LLMTokenOptimizer.RateLimitWatcher]::RateLimitDetected) {
+            $resumeIso = [LLMTokenOptimizer.RateLimitWatcher]::ResumeAtUtcIso
+            if ($resumeIso) {
+                $script:Config.ClaudeRateLimitedUntilUtc = $resumeIso
+                Save-Configuration
+                Write-Log "Recorded Claude rate-limit until $resumeIso for next launch's fallback check" -Level "INFO"
+            }
+        }
     }
 
     Write-Success "Claude session ended"
@@ -4980,7 +5210,13 @@ function Invoke-ProjectMode {
         }
     }
 
-    Start-ClaudeSession -ClaudePath $claudePath -ResumeMode $resumeMode
+    $backend = Resolve-SessionBackend -ClaudePath $claudePath
+    switch ($backend) {
+        'antigravity' { $null = Start-AntigravitySession -ProjectDirectory $Path }
+        'local'       { $null = Start-LocalModelSession }
+        'none'        { Write-Warning "Skipping session launch - no backend available." }
+        default       { Start-ClaudeSession -ClaudePath $claudePath -ResumeMode $resumeMode }
+    }
     Show-SessionSummary -ProjectPath $Path -Resumed ($resumeMode -ne 'New')
 
     Write-Section "Done"

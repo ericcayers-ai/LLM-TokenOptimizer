@@ -24,9 +24,11 @@ at ~/.lmstudio/bin/lms.exe once LM Studio has been run at least once. Get it
 from https://lmstudio.ai if `lms` isn't found.
 """
 import argparse
+import ast
 import csv
 import io
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -53,26 +55,46 @@ for _stream in (sys.stdout, sys.stderr):
 LMS_BASE_URL = "http://localhost:1234/v1"
 LMS_SERVER_PORT = 1234
 DOWNLOAD_BATCH_SIZE = 2
-DEFAULT_MAX_TOKENS = 1536
+# 1536 originally - raised after a live run confirmed it's not enough for a
+# reasoning/"thinking" model: qwen3.6-35b-a3b spent its ENTIRE 1536-token
+# budget on reasoning_content and never reached a final answer on any of the
+# 4 prompts (0 completion tokens every time, ~3 minutes each). A follow-up
+# live probe measured the actual reasoning cost: even a trivial "write a
+# one-liner" prompt burned ~286 reasoning tokens before the model answered.
+# These benchmark prompts ask for a full class plus unit tests, so budget
+# needs real headroom for reasoning AND a complete answer, not just one.
+# Balanced against wall-clock cost: this model measured ~8 tok/s on this
+# machine (partial GPU offload for a 22 GB model), so pushing much higher
+# multiplies run time steeply. A response that still gets truncated at 4096
+# degrades gracefully (score_capability falls back to scoring whatever
+# reasoning text exists) rather than corrupting the run.
+DEFAULT_MAX_TOKENS = 4096
 DEFAULT_MIN_FREE_GB = 15  # safety buffer left after a model's estimated size
 
-# Model catalog IDs verified live against https://lmstudio.ai/models and
-# HuggingFace as of Aug 2026 - the original list had two wrong publisher/
-# slug combos (gpt-oss/gpt-oss-20b -> openai is the actual publisher;
-# zai-org/glm-4.6v -> the released variant is glm-4.6v-flash) that would
-# have made `lms get` fail outright. Kat-Coder and Nemotron were single
-# placeholder names in the original list; expanded to 3 models each per
-# family as requested, picked to span small/fast -> large/flagship so the
-# comparison is actually informative. Sizes are APPROXIMATE (default quant
-# for a typical consumer GPU) - used only for the disk-space preflight check
-# below, not for exact accounting.
+# Model catalog IDs - corrected against real `lms get` resolution failures,
+# not just web research (research alone got one wrong: qwen2.5-coder-7b-
+# instruct looked right but LM Studio's actual catalog slug drops
+# "-instruct", same as qwen3-coder-30b; confirmed live via `lms get
+# qwen/qwen2.5-coder-7b`, which resolved to a real 4.68 GB GGUF while the
+# "-instruct" form errored "does not exist"). Also fixed two wrong
+# publisher/slug combos found via web research (gpt-oss/gpt-oss-20b ->
+# openai is the actual publisher; zai-org/glm-4.6v -> the released variant
+# is glm-4.6v-flash). Kat-Coder and Nemotron were single placeholder names
+# in the original list; expanded to 3 models each per family as requested,
+# picked to span small/fast -> large/flagship so the comparison is actually
+# informative. Sizes are APPROXIMATE (default quant for a typical consumer
+# GPU) - used only for the disk-space preflight check below, not for exact
+# accounting. Given how easily one of these slugs was still wrong despite
+# research, treat every entry as "best effort" - a failed `lms get` for any
+# of them just skips that one model (see download_model) rather than
+# aborting the run.
 MODEL_LIST = [
     # --- Top 5 general/coding picks ---
     {"id": "qwen/qwen3.6-35b-a3b",          "size_gb": 22},
     {"id": "qwen/qwen3-coder-30b",          "size_gb": 19},
     {"id": "zai-org/glm-4.7-flash",         "size_gb": 18},
     {"id": "openai/gpt-oss-20b",            "size_gb": 12},
-    {"id": "qwen/qwen2.5-coder-7b-instruct","size_gb": 5},
+    {"id": "qwen/qwen2.5-coder-7b",         "size_gb": 5},
     # --- Models 6-10: multimodal-capable & variants ---
     {"id": "qwen/qwen3-vl-8b",              "size_gb": 6},
     {"id": "google/gemma-4-26b-a4b",        "size_gb": 15},
@@ -90,23 +112,61 @@ MODEL_LIST = [
 ]
 
 # Tailored test prompts derived from your GitHub architecture (Neiro & Restoration-Workflow)
+# Each "checks" list is a SWE-bench-style rubric for that prompt: regexes
+# matched against the model's response, standing in for "does this patch
+# actually address the spec" when there's no hidden test suite to execute
+# against. See score_capability() below for how these combine with a hard
+# syntax-validity gate into a per-test capability score.
 TEST_PROMPTS = [
     {
         "name": "1. Stream & Memory-Mapped Chunking",
-        "prompt": "Write a Python class using NumPy and memory-mapped files (mmap) that processes a large binary stream or multidimensional array in overlapping chunks. It must maintain an internal state for overlap-add buffering, accept a transformation function callback, and process the entire dataset iteratively without loading the full file into RAM. Include strict boundary handling for edge chunks, type hints, and a unit test simulating a stream larger than available memory."
+        "prompt": "Write a Python class using NumPy and memory-mapped files (mmap) that processes a large binary stream or multidimensional array in overlapping chunks. It must maintain an internal state for overlap-add buffering, accept a transformation function callback, and process the entire dataset iteratively without loading the full file into RAM. Include strict boundary handling for edge chunks, type hints, and a unit test simulating a stream larger than available memory.",
+        "checks": [
+            r"\bimport\s+numpy\b|\bimport\s+numpy\s+as\s+np\b",
+            r"\bimport\s+mmap\b|mmap\.mmap\(",
+            r"\bclass\s+\w+",
+            r"->\s*[\w\[\]\.]+|:\s*(int|float|str|bytes|np\.ndarray|Optional|Callable)",
+            r"overlap",
+            r"\bdef\s+test_\w+|\bunittest\b|\bassert\s",
+            r"boundary|edge[\s_-]?case",
+        ],
     },
     {
         "name": "2. Tauri-Python Subprocess & IPC Lifecycle",
-        "prompt": "Write a robust Python script using FastAPI or a lightweight HTTP server designed to act as a local sidecar engine. Implement a background worker thread with a thread-safe queue, a `/api/health` endpoint that reports active hardware state (RAM/VRAM usage), and graceful shutdown handling on SIGINT/SIGTERM. Then, write a corresponding Rust/Tauri or Node.js snippet that spawns this process, polls `/api/health` with exponential backoff until it responds, and safely handles unexpected process termination."
+        "prompt": "Write a robust Python script using FastAPI or a lightweight HTTP server designed to act as a local sidecar engine. Implement a background worker thread with a thread-safe queue, a `/api/health` endpoint that reports active hardware state (RAM/VRAM usage), and graceful shutdown handling on SIGINT/SIGTERM. Then, write a corresponding Rust/Tauri or Node.js snippet that spawns this process, polls `/api/health` with exponential backoff until it responds, and safely handles unexpected process termination.",
+        "checks": [
+            r"fastapi|FastAPI|BaseHTTPRequestHandler|http\.server|HTTPServer",
+            r"/api/health",
+            r"SIGINT|SIGTERM|signal\.signal",
+            r"\bQueue\(|queue\.Queue|Queue\[",
+            r"tauri|Tauri|spawn\(|child_process|Command::new",
+            r"backoff|exponential",
+        ],
     },
     {
         "name": "3. Dynamic Node Graph & Pipeline Orchestration",
-        "prompt": "Implement a lightweight Directed Acyclic Graph (DAG) pipeline orchestrator in Python. Nodes must carry execution stage ranks (e.g., pre-process -> transform -> post-process). The engine must support: 1. Auto-ordering a collection of nodes based on their stage constraints. 2. Dynamic insertion of intermediate nodes (e.g., injecting an auto-generated mask generator node if an inpainting node requires one). 3. A content-addressed caching mechanism where node outputs are hashed, and re-running a pipeline skips unchanged subgraph branches. Provide unit tests verifying topological sorting and cache invalidation."
+        "prompt": "Implement a lightweight Directed Acyclic Graph (DAG) pipeline orchestrator in Python. Nodes must carry execution stage ranks (e.g., pre-process -> transform -> post-process). The engine must support: 1. Auto-ordering a collection of nodes based on their stage constraints. 2. Dynamic insertion of intermediate nodes (e.g., injecting an auto-generated mask generator node if an inpainting node requires one). 3. A content-addressed caching mechanism where node outputs are hashed, and re-running a pipeline skips unchanged subgraph branches. Provide unit tests verifying topological sorting and cache invalidation.",
+        "checks": [
+            r"topological|toposort|topo_sort|topological_sort",
+            r"\bclass\s+\w*(Node|Pipeline|DAG|Graph)",
+            r"hash|sha256|md5|content[\s_-]?address",
+            r"cache|Cache",
+            r"\bdef\s+test_\w+|\bunittest\b|\bassert\s",
+            r"stage|rank",
+        ],
     },
     {
         "name": "4. Hardware Graceful Degradation & VRAM Fallback",
-        "prompt": "Design a Python VRAM/Memory Manager class for a local model runner. It should track active model weights and memory footprints. Implement a 'downgrade ladder' pattern: when a target VRAM threshold is breached or an OutOfMemoryError is caught during execution, the manager must automatically attempt: 1. Evicting idle/cached models. 2. Converting/reloading weights to a lower precision (e.g., fp16 to quantized/CPU). 3. Falling back to a pure CPU-based DSP or lighter fallback path while returning a structured warning object detailing why the fallback occurred. Include mock tests simulating low-VRAM exceptions."
-    }
+        "prompt": "Design a Python VRAM/Memory Manager class for a local model runner. It should track active model weights and memory footprints. Implement a 'downgrade ladder' pattern: when a target VRAM threshold is breached or an OutOfMemoryError is caught during execution, the manager must automatically attempt: 1. Evicting idle/cached models. 2. Converting/reloading weights to a lower precision (e.g., fp16 to quantized/CPU). 3. Falling back to a pure CPU-based DSP or lighter fallback path while returning a structured warning object detailing why the fallback occurred. Include mock tests simulating low-VRAM exceptions.",
+        "checks": [
+            r"\bclass\s+\w*(VRAM|Memory|Manager)",
+            r"evict",
+            r"quant|precision|fp16|int8|bfloat16",
+            r"OutOfMemory|OOM|MemoryError",
+            r"\bmock\b|Mock\(|unittest\.mock|MagicMock",
+            r"warning|Warning",
+        ],
+    },
 ]
 
 LOG_FILE = Path("run_benchmarks.log")
@@ -121,6 +181,65 @@ def log(message, level="INFO"):
             f.write(line + "\n")
     except OSError:
         pass  # logging to disk is best-effort; never let it break the run
+
+
+# ----------------------------------------------------------------------------
+# Capability scoring (SWE-bench-style: does the code actually work, not just
+# how fast it was generated)
+#
+# Real SWE-bench resolves a task by running the repo's hidden test suite
+# against the model's patch - pass or fail, no partial credit. We don't have
+# a hidden test suite for these four open-ended architecture prompts, so this
+# approximates the same spirit with what's actually checkable offline:
+#   1. A hard gate - does the returned code even PARSE as valid Python? A
+#      patch that doesn't run is a fail in SWE-bench regardless of how good
+#      the prose around it looks, and the same logic applies here.
+#   2. A requirement-coverage rubric (TEST_PROMPTS[i]["checks"]) - the
+#      fraction of the prompt's explicitly-stated requirements the response
+#      actually addresses, e.g. "did it implement the /api/health endpoint",
+#      "did it handle SIGTERM", "did it include a unit test".
+# ----------------------------------------------------------------------------
+def _extract_code_blocks(text):
+    blocks = re.findall(r"```(?:python|py)?\s*\n(.*?)```", text, re.DOTALL)
+    return blocks if blocks else ([text] if text and text.strip() else [])
+
+
+def _has_valid_python_syntax(code_blocks):
+    for block in code_blocks:
+        try:
+            ast.parse(block)
+            return True
+        except (SyntaxError, ValueError):
+            continue
+    return False
+
+
+def score_capability(test_name, response_text, checks):
+    """Returns (capability_score 0..1, detail dict) for one test's response."""
+    if not response_text or not response_text.strip():
+        return 0.0, {"syntax_valid": False, "rubric_hits": 0, "rubric_total": len(checks)}
+
+    code_blocks = _extract_code_blocks(response_text)
+    syntax_valid = _has_valid_python_syntax(code_blocks) if code_blocks else False
+    hits = sum(1 for pattern in checks if re.search(pattern, response_text, re.IGNORECASE))
+    rubric_fraction = (hits / len(checks)) if checks else 1.0
+
+    if not syntax_valid:
+        # SWE-bench-style hard gate: code that doesn't parse is a fail,
+        # regardless of how many keywords/requirements it happens to mention.
+        return 0.0, {"syntax_valid": False, "rubric_hits": hits, "rubric_total": len(checks)}
+    return round(rubric_fraction, 3), {"syntax_valid": True, "rubric_hits": hits, "rubric_total": len(checks)}
+
+
+def compute_composite_score(resolve_rate, tokens_per_second, max_tokens_per_second):
+    """Combines capability (SWE-bench-style resolve rate) with speed into one
+    ranking score. Capability-weighted 70/30: a fast model that writes broken
+    code is a bad coding agent no matter how many tokens/sec it produces, but
+    speed still matters for picking a genuinely usable interactive fallback -
+    it's the tiebreaker among models that are actually correct, not the other
+    way around."""
+    normalized_speed = (tokens_per_second / max_tokens_per_second) if max_tokens_per_second > 0 else 0.0
+    return round(0.7 * resolve_rate + 0.3 * normalized_speed, 4)
 
 
 # ----------------------------------------------------------------------------
@@ -213,16 +332,41 @@ def check_disk_space(size_gb, min_free_gb=DEFAULT_MIN_FREE_GB):
     return True, free_gb
 
 
+def get_installed_model_ids(lms_path):
+    """Model IDs already fully present on disk, per `lms ls --json`.
+
+    Without this, check_disk_space() ran unconditionally before every
+    download attempt - including for a model that's ALREADY on disk, where
+    `lms get` is a fast no-op verification, not a real download. On a
+    machine with limited free space that wrongly skipped models that needed
+    zero additional space (confirmed live: qwen/qwen3.6-35b-a3b, 22 GB,
+    already downloaded, on a machine with 19.7 GB free - the naive check
+    demanded 22+15=37 GB free and would have skipped it entirely).
+    """
+    ok, out = run_lms(lms_path, ["ls", "--json"])
+    if not ok:
+        return set()
+    try:
+        entries = json.loads(out)
+    except json.JSONDecodeError:
+        return set()
+    return {e.get("modelKey") for e in entries if e.get("type") == "llm"}
+
+
 # ----------------------------------------------------------------------------
 # Model lifecycle
 # ----------------------------------------------------------------------------
 
-def download_model(lms_path, model):
+def download_model(lms_path, model, installed_ids=None, min_free_gb=DEFAULT_MIN_FREE_GB):
     model_id = model["id"]
-    ok_space, free_gb = check_disk_space(model["size_gb"])
+    if installed_ids and model_id in installed_ids:
+        log(f"[{model_id}] Already on disk - skipping download.")
+        return model_id, True, ""
+
+    ok_space, free_gb = check_disk_space(model["size_gb"], min_free_gb)
     if not ok_space:
         msg = (f"Skipping download - only {free_gb:.1f} GB free, need ~"
-               f"{model['size_gb'] + DEFAULT_MIN_FREE_GB} GB (model + safety margin)")
+               f"{model['size_gb'] + min_free_gb} GB (model + safety margin)")
         log(f"[{model_id}] {msg}", "WARN")
         return model_id, False, msg
 
@@ -311,7 +455,9 @@ def run_benchmarks_for_model(model_id, max_tokens):
 
         start_time = time.time()
         first_token_time = None
+        reasoning_tokens = 0
         completion_tokens = 0
+        reasoning_parts = []
         full_response_parts = []
 
         try:
@@ -327,27 +473,68 @@ def run_benchmarks_for_model(model_id, max_tokens):
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
-                if delta and delta.content:
+                if not delta:
+                    continue
+                # "Thinking"/reasoning models (confirmed live: qwen3.6-35b-a3b)
+                # stream their chain-of-thought via a non-standard
+                # `reasoning_content` delta field BEFORE any `content` field
+                # ever appears - LM Studio's OpenAI-compat server exposes it
+                # even though the official OpenAI schema doesn't define it.
+                # Reading only `delta.content` (the original version of this
+                # script) silently measured 0 tokens / 0 tok/s for every
+                # reasoning model: the model was genuinely generating for
+                # 3+ minutes per prompt, none of it ever landed anywhere.
+                # getattr(..., None) instead of a direct attribute access
+                # because the openai SDK's ChoiceDelta type doesn't declare
+                # this field - it's only present as a pydantic "extra" attr.
+                reasoning_piece = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                content_piece = delta.content
+                if reasoning_piece or content_piece:
                     if first_token_time is None:
                         first_token_time = time.time()
-                    full_response_parts.append(delta.content)
+                if reasoning_piece:
+                    reasoning_parts.append(reasoning_piece)
+                    reasoning_tokens += 1
+                if content_piece:
+                    full_response_parts.append(content_piece)
                     completion_tokens += 1
 
             end_time = time.time()
             ttft = (first_token_time - start_time) if first_token_time else 0
             generation_time = (end_time - first_token_time) if first_token_time else (end_time - start_time)
-            tok_per_sec = (completion_tokens / generation_time) if generation_time > 0 else 0
+            total_tokens = reasoning_tokens + completion_tokens
+            tok_per_sec = (total_tokens / generation_time) if generation_time > 0 else 0
 
-            log(f"[{model_id}]     TTFT: {ttft:.3f}s | Speed: {tok_per_sec:.2f} tok/s | Tokens: {completion_tokens}")
+            reasoning_text = "".join(reasoning_parts)
+            content_text = "".join(full_response_parts)
+            # Score against content if the model actually finished thinking
+            # and answered; otherwise fall back to the reasoning trace itself
+            # (reasoning models often draft/refine code IN their thinking
+            # before ever reaching a final answer - a response truncated
+            # mid-thought is itself a real failure mode worth scoring, not
+            # something to hide by only looking at an empty `content`).
+            scoring_text = content_text if content_text.strip() else reasoning_text
+            full_output = (f"<think>\n{reasoning_text}\n</think>\n\n{content_text}"
+                           if reasoning_text else content_text)
+            capability_score, capability_detail = score_capability(test["name"], scoring_text, test.get("checks", []))
+
+            log(f"[{model_id}]     TTFT: {ttft:.3f}s | Speed: {tok_per_sec:.2f} tok/s | "
+                f"Tokens: {total_tokens} (reasoning={reasoning_tokens}, answer={completion_tokens}) | "
+                f"Capability: {capability_score:.2f} (syntax_valid={capability_detail['syntax_valid']}, "
+                f"rubric={capability_detail['rubric_hits']}/{capability_detail['rubric_total']})")
 
             results.append({
                 "test_name": test["name"],
                 "model": model_id,
                 "status": "ok",
                 "ttft_seconds": round(ttft, 3),
+                "reasoning_tokens": reasoning_tokens,
+                "completion_tokens": completion_tokens,
                 "tokens_per_second": round(tok_per_sec, 2),
-                "total_tokens": completion_tokens,
-                "full_code_output": "".join(full_response_parts),
+                "total_tokens": total_tokens,
+                "capability_score": capability_score,
+                "capability_detail": capability_detail,
+                "full_code_output": full_output,
             })
         except Exception as e:
             log(f"[{model_id}]     FAILED: {e}", "ERROR")
@@ -376,14 +563,107 @@ def parse_args():
     p.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
     p.add_argument("--context-length", type=int, default=8192)
     p.add_argument("--batch-size", type=int, default=DOWNLOAD_BATCH_SIZE)
+    p.add_argument("--min-free-gb", type=int, default=DEFAULT_MIN_FREE_GB,
+                    help="Safety margin left free after each download (default: %(default)s GB)")
     p.add_argument("--keep-on-disk", action="store_true", help="Don't delete models after benchmarking")
     p.add_argument("--skip-download", action="store_true", help="Assume models are already on disk")
     p.add_argument("--dry-run", action="store_true", help="Print the execution plan and exit")
+    p.add_argument("--rescore", action="store_true",
+                    help="Recompute capability/composite scores from already-saved benchmark_*.json "
+                         "files in the current directory - no LM Studio calls, no downloads.")
     return p.parse_args()
+
+
+def rescore_existing_results():
+    """Recomputes capability_score/resolve_rate/composite_score from
+    benchmark_<model>.json files already on disk (each holds the full saved
+    model responses), and rewrites benchmark_summary.json/.csv from them.
+
+    Exists so a scoring-logic change (like this one) can be applied to a run
+    that's already in flight or already finished, WITHOUT re-running any LLM
+    calls - the responses are already saved, only the scoring is new.
+    """
+    result_files = sorted(Path(".").glob("benchmark_*.json"))
+    result_files = [f for f in result_files if f.name != "benchmark_summary.json"]
+    if not result_files:
+        log("No benchmark_<model>.json files found in the current directory - nothing to rescore.", "WARN")
+        return
+
+    summary = []
+    for f in result_files:
+        try:
+            results = json.loads(f.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            log(f"Skipping {f.name}: {e}", "WARN")
+            continue
+        if not results:
+            continue
+        model_id = results[0].get("model", f.stem.replace("benchmark_", "").replace("_", "/", 1))
+
+        changed = False
+        for r in results:
+            if r.get("status") != "ok":
+                continue
+            test = next((t for t in TEST_PROMPTS if t["name"] == r["test_name"]), None)
+            checks = test["checks"] if test else []
+            score, detail = score_capability(r["test_name"], r.get("full_code_output", ""), checks)
+            r["capability_score"] = score
+            r["capability_detail"] = detail
+            changed = True
+        if changed:
+            f.write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        ok_count = sum(1 for r in results if r["status"] == "ok")
+        resolve_rate = round(
+            sum(r.get("capability_score", 0) for r in results if r["status"] == "ok") / ok_count, 3
+        ) if ok_count else 0
+        avg_tps = round(
+            sum(r["tokens_per_second"] for r in results if r["status"] == "ok") / ok_count, 2
+        ) if ok_count else 0
+        summary.append({
+            "model": model_id, "stage": "benchmark",
+            "status": "ok" if ok_count == len(results) else "partial",
+            "tests_ok": ok_count, "tests_total": len(results),
+            "avg_tokens_per_second": avg_tps,
+            "resolve_rate": resolve_rate,
+        })
+        log(f"[{model_id}] Rescored: resolve_rate={resolve_rate:.2f}, avg {avg_tps:.2f} tok/s "
+            f"({ok_count}/{len(results)} tests ok)")
+
+    max_tps = max((r["avg_tokens_per_second"] for r in summary if r["avg_tokens_per_second"]), default=0)
+    for r in summary:
+        r["composite_score"] = compute_composite_score(r.get("resolve_rate", 0), r["avg_tokens_per_second"], max_tps)
+
+    with open("benchmark_summary.json", "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+    with open("benchmark_summary.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["model", "stage", "status", "tests_ok", "tests_total",
+                                                "avg_tokens_per_second", "resolve_rate", "composite_score", "detail"])
+        writer.writeheader()
+        for row in summary:
+            writer.writerow({k: row.get(k, "") for k in writer.fieldnames})
+
+    print("\n" + "=" * 60)
+    print(" RESCORED RESULTS (ranked by composite score: 70% capability, 30% speed)")
+    print("=" * 60)
+    ranked = sorted(summary, key=lambda r: r["composite_score"], reverse=True)
+    for r in ranked:
+        print(f"  {r['model']:<38} composite={r['composite_score']:.3f}  "
+              f"resolve_rate={r['resolve_rate']:.2f}  {r['avg_tokens_per_second']:>7.2f} tok/s  "
+              f"({r['tests_ok']}/{r['tests_total']} tests ok)")
+    if ranked:
+        best = ranked[0]
+        print(f"\n  BEST CODING AGENT: {best['model']} "
+              f"(composite={best['composite_score']:.3f}, resolve_rate={best['resolve_rate']:.2f}, "
+              f"{best['avg_tokens_per_second']:.2f} tok/s)")
 
 
 def main():
     args = parse_args()
+
+    if args.rescore:
+        rescore_existing_results()
+        return
 
     models = MODEL_LIST
     if args.models:
@@ -415,6 +695,9 @@ def main():
         sys.exit(1)
 
     summary = []
+    installed_ids = get_installed_model_ids(lms_path)
+    if installed_ids:
+        log(f"Already on disk (will skip download, benchmark directly): {sorted(installed_ids & {m['id'] for m in models})}")
 
     try:
         for i in range(0, len(models), args.batch_size):
@@ -425,7 +708,8 @@ def main():
             download_ok = {m["id"]: True for m in batch}
             if not args.skip_download:
                 with ThreadPoolExecutor(max_workers=len(batch)) as executor:
-                    for model_id, ok, err in executor.map(lambda m: download_model(lms_path, m), batch):
+                    dl = lambda m: download_model(lms_path, m, installed_ids, args.min_free_gb)
+                    for model_id, ok, err in executor.map(dl, batch):
                         download_ok[model_id] = ok
                         if not ok:
                             summary.append({"model": model_id, "stage": "download", "status": "failed", "detail": err})
@@ -446,6 +730,12 @@ def main():
                 try:
                     results = run_benchmarks_for_model(model_id, args.max_tokens)
                     ok_count = sum(1 for r in results if r["status"] == "ok")
+                    # resolve_rate mirrors SWE-bench's headline "% resolved" -
+                    # the average capability_score (syntax-valid AND rubric-
+                    # covered) across this model's benchmark prompts.
+                    resolve_rate = round(
+                        sum(r.get("capability_score", 0) for r in results if r["status"] == "ok") / ok_count, 3
+                    ) if ok_count else 0
                     summary.append({
                         "model": model_id, "stage": "benchmark",
                         "status": "ok" if ok_count == len(results) else "partial",
@@ -453,6 +743,7 @@ def main():
                         "avg_tokens_per_second": round(
                             sum(r["tokens_per_second"] for r in results if r["status"] == "ok") / ok_count, 2
                         ) if ok_count else 0,
+                        "resolve_rate": resolve_rate,
                     })
                 except Exception as e:
                     log(f"[{model_id}] Unexpected benchmark failure: {e}", "ERROR")
@@ -461,10 +752,17 @@ def main():
                     unload_all(lms_path)
 
             if not args.keep_on_disk:
-                log(f"### PURGING BATCH FROM DISK: {ids} ###")
-                for model in batch:
-                    if download_ok.get(model["id"]):
-                        delete_model_from_disk(lms_path, model["id"])
+                # Never purge a model that was already on disk before this run
+                # started - it's the user's own model, not something this
+                # script downloaded and is responsible for cleaning up.
+                purge_ids = [m["id"] for m in batch if download_ok.get(m["id"]) and m["id"] not in installed_ids]
+                if purge_ids:
+                    log(f"### PURGING BATCH FROM DISK: {purge_ids} ###")
+                    for model_id in purge_ids:
+                        delete_model_from_disk(lms_path, model_id)
+                skipped_purge = [m["id"] for m in batch if m["id"] in installed_ids]
+                if skipped_purge:
+                    log(f"Leaving pre-existing model(s) on disk (not purging): {skipped_purge}")
     except KeyboardInterrupt:
         log("Interrupted by user - cleaning up before exit...", "WARN")
         unload_all(lms_path)
@@ -472,27 +770,37 @@ def main():
         run_lms(lms_path, ["server", "stop"], timeout=15)
 
     # ------------------------------------------------------------------
-    # Final diagnostic report
+    # Final diagnostic report - composite_score needs the fastest model's
+    # tokens/sec across the WHOLE run to normalize speed, so it's computed
+    # here as a post-pass rather than inline per-model above.
     # ------------------------------------------------------------------
+    bench_rows = [r for r in summary if r.get("stage") == "benchmark" and r.get("avg_tokens_per_second")]
+    max_tps = max((r["avg_tokens_per_second"] for r in bench_rows), default=0)
+    for r in bench_rows:
+        r["composite_score"] = compute_composite_score(r.get("resolve_rate", 0), r["avg_tokens_per_second"], max_tps)
+
     with open("benchmark_summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
     with open("benchmark_summary.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=["model", "stage", "status", "tests_ok", "tests_total",
-                                                "avg_tokens_per_second", "detail"])
+                                                "avg_tokens_per_second", "resolve_rate", "composite_score", "detail"])
         writer.writeheader()
         for row in summary:
             writer.writerow({k: row.get(k, "") for k in writer.fieldnames})
 
     print("\n" + "=" * 60)
-    print(" PIPELINE COMPLETE - SUMMARY")
+    print(" PIPELINE COMPLETE - SUMMARY (ranked by composite score: 70% capability, 30% speed)")
     print("=" * 60)
-    ranked = sorted(
-        (r for r in summary if r.get("stage") == "benchmark" and r.get("avg_tokens_per_second")),
-        key=lambda r: r["avg_tokens_per_second"], reverse=True,
-    )
+    ranked = sorted(bench_rows, key=lambda r: r["composite_score"], reverse=True)
     for r in ranked:
-        print(f"  {r['model']:<38} {r['avg_tokens_per_second']:>8.2f} tok/s  "
+        print(f"  {r['model']:<38} composite={r['composite_score']:.3f}  "
+              f"resolve_rate={r['resolve_rate']:.2f}  {r['avg_tokens_per_second']:>7.2f} tok/s  "
               f"({r['tests_ok']}/{r['tests_total']} tests ok)")
+    if ranked:
+        best = ranked[0]
+        print(f"\n  BEST CODING AGENT: {best['model']} "
+              f"(composite={best['composite_score']:.3f}, resolve_rate={best['resolve_rate']:.2f}, "
+              f"{best['avg_tokens_per_second']:.2f} tok/s)")
     failed = [r for r in summary if r["status"] == "failed"]
     if failed:
         print(f"\n  {len(failed)} model(s) failed - see run_benchmarks.log and benchmark_summary.json:")
