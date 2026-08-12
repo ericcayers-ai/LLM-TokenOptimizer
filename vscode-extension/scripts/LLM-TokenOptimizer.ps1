@@ -598,8 +598,37 @@
       once, automatically, whenever OmniRoute routing is off. Live-tested
       on that same real registration: confirmed removed via `claude mcp
       remove`, confirmed gone from `claude mcp list` afterward.
+    v5.5 - OmniRoute removed entirely; replaced with the real open-source
+    tools it wrapped:
+    - Every OmniRoute-specific function, config field, and CLI param
+      (-CompressionMode, -ReconfigureOmniRoute) is gone: the local gateway
+      server, its headless-dashboard-login/API-key machinery, its MCP
+      registration, and its 1M-context model-catalog resolution/availableModels
+      picker restriction. Claude Code now launches with its own native model
+      defaults - there is no gateway to configure. -Model sonnet|opus still
+      works (now applied directly in Start-ClaudeSession).
+    - OmniRoute's Stacked pipeline (RTK -> Caveman) is replaced by the actual
+      upstream projects it reimplemented, installed directly instead of
+      through a third-party gateway:
+        - Caveman (github.com/JuliusBrussee/caveman, MIT) - a real Claude
+          Code plugin (SessionStart hook, active from message one) that
+          makes the MODEL's own responses terser. See Install-CavemanPlugin.
+        - RTK (github.com/rtk-ai/rtk, Apache-2.0) - a real standalone local
+          binary, wired in as a Claude Code PreToolUse hook that compresses
+          terminal/tool output (git, test runners, build tools, etc.) before
+          it reaches the model. No winget package exists yet upstream, so
+          this downloads the official Windows release .zip directly; the
+          hook itself is a bash+jq script, run through Git Bash (already a
+          required dependency here for headroom). See Install-RtkCli.
+      Both are genuinely functional installs (verified against the real
+      marketplace.json/plugin.json and release assets before wiring them
+      in), not stubs, and both are fully local - no API key, no gateway
+      server, no proxying of Claude's own traffic. This also resolves
+      AUDIT.md Finding 0 (OmniRoute's Claude-routing violated Anthropic's
+      Consumer ToS) by removing the mechanism entirely rather than just
+      defaulting it off.
 .NOTES
-    Version: 5.4.0
+    Version: 5.5.0
     Exit Codes:
         0   - Success
         99  - Unexpected error
@@ -637,26 +666,12 @@ param(
     [string]$ProjectPath,
     # Internal marker set on spawned windows so they skip the shared,
     # already-completed setup work (winget dependency installs, update
-    # prompts, starting OmniRoute) that the launcher window already did.
+    # prompts) that the launcher window already did.
     [switch]$ChildWindow,
     # Give this project its own CLAUDE_CONFIG_DIR (separate settings,
     # credentials, history and cache). Off by default so windows keep sharing
     # your normal ~/.claude setup - MCP servers, custom settings and all.
-    [switch]$IsolateClaudeConfig,
-    # Deliberately redo the OmniRoute onboarding: forget the saved API key and
-    # the "provider already connected" flag, then ask again.
-    [switch]$ReconfigureOmniRoute,
-
-    # Session-only override for OmniRoute's compression mode. Default (no
-    # value passed) keeps the existing pinned-Stacked behavior. See AUDIT.md
-    # Finding 3: Stacked's compression may rewrite prompt bytes turn-to-turn
-    # and forfeit Anthropic's ~90%-off prompt-cache discount on long
-    # multi-turn sessions in exchange for Stacked's own 20-40%-off discount -
-    # unmeasured until now, so this exists to let anyone A/B it (or opt out
-    # entirely on sessions with a large stable/cacheable prefix) without
-    # editing the script.
-    [ValidateSet('stacked', 'ultra', 'off')]
-    [string]$CompressionMode
+    [switch]$IsolateClaudeConfig
 )
 
 # ============================================================================
@@ -669,7 +684,8 @@ $ProgressPreference = "SilentlyContinue"
 # A clean Windows 11 install's .NET networking stack sometimes still starts a
 # PowerShell 5.1 host on SystemDefault / TLS 1.0-1.1 until something forces
 # it up. winget itself doesn't need this, but the script's own web calls
-# (OmniRoute health checks, any Invoke-WebRequest/Invoke-RestMethod use) do.
+# (task-observer/headroom downloads, any Invoke-WebRequest/Invoke-RestMethod
+# use) do.
 # Best-effort - never fatal.
 try {
     [System.Net.ServicePointManager]::SecurityProtocol = `
@@ -684,45 +700,12 @@ try {
 
 # Application constants
 $script:APP_NAME = "LLM-TokenOptimizer"
-$script:APP_VERSION = "5.4.0"
+$script:APP_VERSION = "5.5.0"
 $script:MAX_HISTORY = 20
 $script:MAX_LOG_FILES = 10
-$script:OMNIROUTE_URL = "http://localhost:20128"
-# v5.2: routing Claude Code through OmniRoute's "cc/" provider works by using
-# Claude Code's own subscription OAuth token inside a third-party gateway.
-# Anthropic's Consumer Terms of Service (updated 2026-02-20, enforced since
-# 2026-04-04) explicitly prohibit this: "Using OAuth tokens obtained through
-# Claude Free, Pro, or Max accounts in any other product, tool, or service...
-# is not permitted." OmniRoute's own project still ships and patches this
-# code path, but using it risks the Claude subscription itself being
-# restricted - a cost that dwarfs any compression savings. Default is OFF:
-# Claude Code launches natively, with none of its traffic touched by
-# OmniRoute. This does NOT delete the OmniRoute integration - flip this back
-# to $true only if you've switched OmniRoute to a real, metered Anthropic
-# Console API key (the path Anthropic's policy actually permits) rather than
-# subscription OAuth; the code doesn't distinguish the two automatically, so
-# that's on you to have actually done. See AUDIT.md.
-$script:OMNIROUTE_ROUTE_CLAUDE = $false
 # Upper bound on Stop-Script's "press Enter to close" wait, so a window
 # nobody comes back to still exits eventually instead of hanging forever.
 $script:STOP_SCRIPT_MAX_WAIT_SECONDS = 900
-# OmniRoute compression: mode pinned + how often an already-configured
-# machine gets re-verified (not re-forced) rather than trusted forever.
-# -CompressionMode overrides this for the session (see its param comment and
-# AUDIT.md Finding 3) - 'off' skips OmniRoute compression setup entirely so a
-# long multi-turn session can keep its prompt-cache prefix byte-identical.
-$script:OMNIROUTE_COMPRESSION_MODE = if ($CompressionMode) { $CompressionMode } else { "stacked" }
-$script:OMNIROUTE_COMPRESSION_RECHECK_DAYS = 7
-
-# Claude Opus 5 and Claude Sonnet 5 both have a 1M-token context window as
-# both the default AND the maximum, with no smaller context variant. These
-# numbers exist so we can (a) sanity-check a catalog entry actually offers the
-# full window and (b) stop Claude Code auto-compacting at its normal ~190k
-# threshold, which would waste most of the window.
-$script:CONTEXT_1M = 1000000
-$script:MIN_1M_CONTEXT = 900000       # tolerance for catalogs reporting 1048576, 999424, etc.
-$script:AUTO_COMPACT_WINDOW = 900000  # compact only near the top of the 1M window
-$script:MAX_OUTPUT_TOKENS = 128000    # both models support 128k max output
 
 # Paths (computed once, never hardcoded)
 $script:AppDataDir = Join-Path $env:LOCALAPPDATA $script:APP_NAME
@@ -737,12 +720,8 @@ $script:InstanceMutex = $null
 $script:StartTime = Get-Date
 $script:DependencyCache = @{}
 $script:CleanupRegistered = $false
-# Session-only "-Model sonnet|opus" override; set inside Set-OmniRouteLaunchEnvironment.
+# Session-only "-Model sonnet|opus" override; set inside Start-ClaudeSession.
 $script:ForcedModelAlias = $null
-# Whether this window actually ended up routed through OmniRoute. Kept on the
-# script scope because Start-ClaudeSession can't return it - the interactive
-# `claude` process it runs owns the pipeline.
-$script:OmniRouteRouted = $false
 # True when this process is one of the per-project windows the launcher spawned
 # (or was started by hand with -ProjectPath). Child windows skip the shared
 # environment bootstrap the launcher window already completed.
@@ -1110,7 +1089,7 @@ function Write-Title {
     if ($Subtitle) {
         Write-Host "   $Subtitle" -ForegroundColor DarkGray
     } else {
-        Write-Host "   Self-bootstrapping environment for Claude Code + OmniRoute" -ForegroundColor DarkGray
+        Write-Host "   Self-bootstrapping environment for Claude Code" -ForegroundColor DarkGray
     }
     Write-Host "  $bar" -ForegroundColor DarkCyan
 }
@@ -1290,17 +1269,6 @@ function Get-DefaultConfiguration {
         MasterFolderHistory = [array]@()
         LastProject = ""
         ProjectHistory = [array]@()
-        OmniRouteApiKeyEnc = ""
-        # Set once the saved key has actually been accepted by OmniRoute, so
-        # a working key is never re-prompted for on later launches.
-        OmniRouteKeyVerifiedUtc = ""
-        # Set once a Claude-family model has been seen in OmniRoute's catalog
-        # (i.e. the Claude Code provider really is connected). This is the flag
-        # that stops the launcher sending you back to the OmniRoute dashboard
-        # every single time it starts.
-        OmniRouteProviderVerifiedUtc = ""
-        # Set if you tell the launcher to stop asking about the provider.
-        OmniRouteProviderPromptSuppressed = $false
         ClaudePath = ""
         # Unlike most flags in this config (which record "have we already
         # done X"), this one is a standing "should we auto-do X" toggle: when
@@ -1313,16 +1281,6 @@ function Get-DefaultConfiguration {
         AutoUpdateGraphify = $false
         FirstRunComplete = $false
         LastGraphifyVersion = ""
-        # Set once OmniRoute's compression has been pushed to its strongest
-        # documented combo (Stacked: RTK -> Caveman) AND a GET read-back has
-        # confirmed it's actually active - see Set-OmniRouteBestCompression.
-        # Not re-forced every launch (so a later manual dashboard change
-        # isn't fought), but OmniRouteCompressionLastCheckedUtc below drives
-        # a periodic re-verify so a setting that silently reverted, or never
-        # actually took despite a successful-looking PUT, doesn't stay
-        # trusted forever.
-        OmniRouteCompressionConfigured = $false
-        OmniRouteCompressionLastCheckedUtc = ""
         # Companion tooling installed once at user scope so every project
         # gets it automatically - see Install-CompanionTooling.
         ClaudeMemInstalled = $false
@@ -1330,17 +1288,14 @@ function Get-DefaultConfiguration {
         ClaudeCodeSetupPluginInstalled = $false
         TaskObserverInstalled = $false
         ClaudeMdManagementPluginInstalled = $false
-        # DPAPI-encrypted OmniRoute dashboard password (same protection as
-        # OmniRouteApiKeyEnc) - only ever set by a SUCCESSFUL headless login,
-        # so a stale/wrong guess is never persisted. See
-        # Request-OmniRouteApiKeyAutomatically.
-        OmniRouteDashboardPasswordEnc = ""
-        OmniRouteDashboardLoginVerifiedUtc = ""
-        # Set once `claude mcp add ... omniroute` has been run at user scope
-        # so OmniRoute's own routing/compression/quota tools are available
-        # inside Claude Code sessions - see Register-OmniRouteMcpServer. Only
-        # ever set when $script:OMNIROUTE_ROUTE_CLAUDE is true (v5.2+).
-        OmniRouteMcpRegistered = $false
+        # v5.5: Caveman (JuliusBrussee/caveman, MIT) - Claude Code plugin that
+        # makes the model's own responses terser (SessionStart hook, active
+        # from message one). Local only, no API key. See Install-CavemanPlugin.
+        CavemanInstalled = $false
+        # v5.5: RTK (rtk-ai/rtk, Apache-2.0) - standalone local binary that
+        # compresses terminal/tool output via a Claude Code PreToolUse hook.
+        # No API key, no network service. See Install-RtkCli.
+        RtkInstalled = $false
         # v5.4: Context7 (upstash/context7-mcp) - version-specific library docs
         # injected on demand, reduces tokens wasted on Claude guessing at or
         # re-deriving API usage from source. Pure stdio MCP server, no
@@ -1448,14 +1403,6 @@ function Initialize-Configuration {
         Write-Log "No usable configuration found, using defaults"
     }
 
-    if ($ReconfigureOmniRoute) {
-        Write-Info "-ReconfigureOmniRoute: forgetting the saved OmniRoute key and setup state"
-        $script:Config.OmniRouteApiKeyEnc = ""
-        $script:Config.OmniRouteKeyVerifiedUtc = ""
-        $script:Config.OmniRouteProviderVerifiedUtc = ""
-        $script:Config.OmniRouteProviderPromptSuppressed = $false
-        Save-Configuration
-    }
 }
 
 function Merge-ConfigurationLists {
@@ -1486,16 +1433,7 @@ function Save-Configuration {
                 $toWrite.ProjectHistory = Merge-ConfigurationLists -Ours @($script:Config.ProjectHistory) -Theirs @($onDisk.ProjectHistory)
                 $toWrite.MasterFolderHistory = Merge-ConfigurationLists -Ours @($script:Config.MasterFolderHistory) -Theirs @($onDisk.MasterFolderHistory)
                 foreach ($name in @(
-                    'OmniRouteApiKeyEnc', 'OmniRouteKeyVerifiedUtc', 'OmniRouteProviderVerifiedUtc',
-                    'ClaudePath', 'LastGraphifyVersion', 'MasterFolder', 'LastProject',
-                    # Same "never regress to blank" protection as the above -
-                    # these are written by Request-OmniRouteApiKeyAutomatically /
-                    # Set-OmniRouteBestCompression and must survive a later save
-                    # from a window whose in-memory copy still has the old blank
-                    # value, or a headless-login password / recheck timestamp
-                    # another window just earned would silently vanish again.
-                    'OmniRouteDashboardPasswordEnc', 'OmniRouteDashboardLoginVerifiedUtc',
-                    'OmniRouteCompressionLastCheckedUtc')) {
+                    'ClaudePath', 'LastGraphifyVersion', 'MasterFolder', 'LastProject')) {
                     $ours = $toWrite.$name
                     $theirs = $onDisk.$name
                     if ([string]::IsNullOrWhiteSpace([string]$ours) -and -not [string]::IsNullOrWhiteSpace([string]$theirs)) {
@@ -1508,10 +1446,10 @@ function Save-Configuration {
                 # false with its own stale copy on its own later save. Same
                 # idea as the string fields above, just for booleans.
                 foreach ($flagName in @(
-                    'OmniRouteProviderPromptSuppressed', 'OmniRouteCompressionConfigured',
                     'ClaudeMemInstalled', 'HeadroomInstalled', 'ClaudeCodeSetupPluginInstalled',
                     'TaskObserverInstalled', 'ClaudeMdManagementPluginInstalled',
-                    'OmniRouteMcpRegistered', 'FirstRunComplete', 'Context7McpRegistered')) {
+                    'CavemanInstalled', 'RtkInstalled',
+                    'FirstRunComplete', 'Context7McpRegistered')) {
                     if ($onDisk.$flagName) { $toWrite.$flagName = $true }
                 }
             }
@@ -1595,9 +1533,6 @@ function Register-CleanupHandlers {
 }
 
 function Invoke-Cleanup {
-    # OmniRoute is a standalone app shared by every window - we never stop it
-    # on exit, and a closing project window must not take its siblings' router
-    # down with it.
     Write-Log "Cleanup initiated"
     Unlock-InstanceLock
     Save-Configuration
@@ -1807,8 +1742,7 @@ function Invoke-UpdateCheckIfRequested {
     # after dependency detection/install and Graphify/Claude Code detection -
     # see the phase order in Invoke-LauncherMode. Deliberately NOT a numbered
     # step (no -Step/-TotalSteps) since it's opt-in - Install-CompanionTooling
-    # is [5/6] and OmniRoute setup is [6/6]; this sits between them without
-    # taking a number of its own.
+    # is [5/5]; this runs right after it without taking a number of its own.
     Write-Section -Name "Update checks"
     if ($SkipUpdateCheck -and -not $ForceUpdate) {
         Write-Info "Skipping update check (-SkipUpdateCheck)"
@@ -1817,11 +1751,11 @@ function Invoke-UpdateCheckIfRequested {
         # someone who's turned it on (by editing config.json; there's no
         # prompt for it) still wants Graphify's own lightweight pip-based
         # update even when skipping the general Git/Node/Python/npm/Claude
-        # Code/OmniRoute check.
+        # Code check.
         if ($script:Config.AutoUpdateGraphify) { Update-GraphifyIfNeeded }
         return
     }
-    Write-Hint "Checks Git/Node/Python/npm/Graphify/Claude Code/OmniRoute for newer versions."
+    Write-Hint "Checks Git/Node/Python/npm/Graphify/Claude Code for newer versions."
     if (-not $ForceUpdate -and -not (Read-YesNo "Check for updates now?" $false)) {
         Write-Info "Skipping update check"
         if ($script:Config.AutoUpdateGraphify) { Update-GraphifyIfNeeded }
@@ -1853,7 +1787,6 @@ function Update-AllDependencies {
         $result = Invoke-ExternalCommand -Command "npm" -Arguments "update -g @anthropic-ai/claude-code" -TimeoutSeconds 120 -ShowSpinner -SpinnerLabel "Updating Claude Code"
         if ($result.Success) { Write-Success "Claude Code up to date" }
     }
-    if (Test-CommandAvailable "omniroute" -UseCache) { Update-OmniRouteCli }
     if (Test-CommandAvailable "autoskills" -UseCache) {
         $result = Invoke-ExternalCommand -Command "npm" -Arguments "update -g autoskills" -TimeoutSeconds 60 -ShowSpinner -SpinnerLabel "Updating autoskills"
         if ($result.Success) { Write-Success "autoskills up to date" }
@@ -2767,16 +2700,121 @@ function Install-TaskObserverSkill {
     }
 }
 
+function Install-CavemanPlugin {
+    # Caveman (github.com/JuliusBrussee/caveman, MIT) - a real Claude Code
+    # plugin, not a stub: registers a SessionStart hook (src/hooks/caveman-
+    # activate.js) that's active from message one with no manual enable step,
+    # plus a UserPromptSubmit tracker hook. Makes the MODEL's own responses
+    # terser (measured ~65% output-token reduction) - this is the "Caveman"
+    # half of OmniRoute's old Stacked pipeline, used directly instead of
+    # OmniRoute's own regex reimplementation of the idea. Fully local: no API
+    # key, and the README states zero network calls after install. Verified
+    # against the real marketplace.json/plugin.json before wiring this in -
+    # both the marketplace and plugin are named "caveman".
+    if ($script:Config.CavemanInstalled) { Write-Success "Caveman plugin already installed"; return $true }
+    if (-not (Test-CommandAvailable "claude" -UseCache)) { return $false }
+
+    Write-Info "Installing the Caveman plugin (terser model output, JuliusBrussee/caveman)..."
+    $null = Invoke-ExternalCommand -Command "claude" -Arguments "plugin marketplace add JuliusBrussee/caveman" -TimeoutSeconds 30 -Silent
+    $result = Invoke-ExternalCommand -Command "claude" -Arguments "plugin install caveman@caveman --scope user" -TimeoutSeconds 60
+    $reportedSuccess = [bool]($result.Success -or $result.Output -match "already installed")
+    if (Test-ClaudePluginInstalled -PluginId "caveman" -InstallReportedSuccess $reportedSuccess) {
+        Write-Success "Caveman plugin installed - terse mode active from message one"
+        Write-Hint "Adjust anytime inside a session: /caveman [lite|full|ultra|off]"
+        $script:Config.CavemanInstalled = $true
+        Save-Configuration
+        return $true
+    }
+    Write-Warning "Caveman plugin install did not confirm success"
+    Write-Log "Caveman install output: $(Get-Truncated $result.Output 300)" -Level "WARN"
+    return $false
+}
+
+function Install-RtkCli {
+    # RTK ("Rust Token Killer", github.com/rtk-ai/rtk, Apache-2.0) - a real,
+    # standalone, single-binary local CLI, not a stub: it registers a Claude
+    # Code PreToolUse hook that transparently rewrites Bash tool calls (e.g.
+    # `git log` -> `rtk git log`) so command/tool output (git, test runners,
+    # build tools, Docker, etc.) is filtered/compressed before it reaches the
+    # model - this is the "RTK" half of OmniRoute's old Stacked pipeline,
+    # used directly instead of OmniRoute's own reimplementation. No API key,
+    # no network service, fully local.
+    #
+    # No winget package exists yet for RTK (github.com/rtk-ai/rtk/issues/383
+    # - confirmed, not guessed), so this downloads the official signed
+    # Windows release .zip directly instead of assuming a package manager.
+    # RTK's own hook (~/.claude/hooks/rtk-rewrite.sh, written by `rtk init
+    # -g`) is a bash script requiring jq - Git Bash (already a required
+    # dependency of this script, used for headroom) supplies bash.exe; jq is
+    # installed via winget if missing, the same pattern as every other
+    # winget-installed dependency here.
+    if ($script:Config.RtkInstalled) { Write-Success "RTK already installed"; return $true }
+
+    $rtkDir = Join-Path $env:LOCALAPPDATA "rtk"
+    $rtkExe = Join-Path $rtkDir "rtk.exe"
+    if (-not (Test-Path $rtkExe)) {
+        Write-Info "Downloading RTK (terminal/tool-output compression)..."
+        $zipPath = Join-Path $env:TEMP "rtk-windows-$PID.zip"
+        try {
+            if (-not (Test-Path $rtkDir)) { New-Item -ItemType Directory -Path $rtkDir -Force | Out-Null }
+            Invoke-WebRequest -Uri "https://github.com/rtk-ai/rtk/releases/latest/download/rtk-x86_64-pc-windows-msvc.zip" `
+                -OutFile $zipPath -TimeoutSec 60 -UseBasicParsing -ErrorAction Stop
+            Expand-Archive -Path $zipPath -DestinationPath $rtkDir -Force
+        } catch {
+            Write-Warning "Could not download RTK - continuing without it"
+            Write-Log "RTK download failed: $_" -Level "WARN"
+            return $false
+        } finally {
+            Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+    if (-not (Test-Path $rtkExe)) {
+        Write-Warning "RTK download did not produce rtk.exe - continuing without it"
+        return $false
+    }
+    $script:DependencyCache.Remove("rtk")
+    Sync-ProcessPathFromRegistry
+    if ($env:PATH -notlike "*$rtkDir*") { $env:PATH = "$rtkDir;$env:PATH" }
+
+    $bash = Find-ExecutableInPaths -Name "bash" -SearchPaths @(
+        "$env:ProgramFiles\Git\bin", "${env:ProgramFiles(x86)}\Git\bin", "$env:ProgramFiles\Git\usr\bin"
+    )
+    if (-not $bash) {
+        Write-Warning "Git Bash not found - RTK's Claude Code hook needs it, skipping hook registration"
+        return $false
+    }
+    if (-not (Test-CommandAvailable "jq" -UseCache)) {
+        Write-Info "Installing jq (required by RTK's Claude Code hook)..."
+        $null = Install-ViaWinget -WingetId "jqlang.jq" -FriendlyName "jq" -TimeoutSeconds 120
+    }
+
+    Write-Info "Registering RTK as a Claude Code hook..."
+    $bashRtkDir = ($rtkDir -replace '\\', '/') -replace '^([A-Za-z]):', '/$1'
+    $result = Invoke-ExternalCommand -Command $bash `
+        -Arguments "-lc `"export PATH='$bashRtkDir':`$PATH; rtk init -g`"" `
+        -TimeoutSeconds 30 -ShowSpinner -SpinnerLabel "Registering RTK hook"
+    if ($result.Success) {
+        Write-Success "RTK installed and registered as a Claude Code hook"
+        $script:Config.RtkInstalled = $true
+        Save-Configuration
+        return $true
+    }
+    Write-Warning "RTK hook registration did not confirm success"
+    Write-Log "rtk init -g output: $(Get-Truncated $result.Output 300)" -Level "WARN"
+    return $false
+}
+
 function Test-CompanionToolingComplete {
-    # All six recorded present - lets callers skip the section (and its
-    # noise) entirely once there's nothing left to do, the same idea as the
-    # OmniRoute "already verified" short-circuit elsewhere in the script.
+    # All eight recorded present - lets callers skip the section (and its
+    # noise) entirely once there's nothing left to do.
     return [bool](
         $script:Config.ClaudeMemInstalled -and
         $script:Config.HeadroomInstalled -and
         $script:Config.ClaudeCodeSetupPluginInstalled -and
         $script:Config.TaskObserverInstalled -and
         $script:Config.ClaudeMdManagementPluginInstalled -and
+        $script:Config.CavemanInstalled -and
+        $script:Config.RtkInstalled -and
         $script:Config.Context7McpRegistered
     )
 }
@@ -2786,528 +2824,34 @@ function Install-CompanionTooling {
     param([int]$Step = 0, [int]$TotalSteps = 0)
     if (Test-CompanionToolingComplete) {
         Write-Section -Name "Companion tooling" -Step $Step -TotalSteps $TotalSteps
-        Write-Success "claude-mem, headroom, claude-code-setup, task-observer, claude-md-management, context7 - all present"
+        Write-Success "claude-mem, headroom, claude-code-setup, task-observer, claude-md-management, caveman, rtk, context7 - all present"
         return
     }
     Write-Section -Name "Companion tooling" -Step $Step -TotalSteps $TotalSteps
     Write-Hint "claude-mem (memory), headroom (context bar), claude-code-setup"
     Write-Hint "(auto-recommendations), task-observer (skill improvement),"
-    Write-Hint "claude-md-management (keeps CLAUDE.md itself current), and"
-    Write-Hint "context7 (on-demand library docs) - installed once at user"
-    Write-Hint "scope, so every project gets all six."
+    Write-Hint "claude-md-management (keeps CLAUDE.md itself current), caveman"
+    Write-Hint "(terser model output), rtk (terminal/tool-output compression),"
+    Write-Hint "and context7 (on-demand library docs) - installed once at user"
+    Write-Hint "scope, so every project gets all eight."
     $null = Install-ClaudeMem
     $null = Install-HeadroomStatusline
     $null = Install-ClaudeCodeSetupPlugin
     $null = Install-TaskObserverSkill
     $null = Install-ClaudeMdManagementPlugin
+    $null = Install-CavemanPlugin
+    $null = Install-RtkCli
     Register-Context7Mcp
     Install-ClaudePluginsAndSkills -Quiet
 }
 
 # ============================================================================
-# OMNIROUTE MANAGEMENT
-#   OmniRoute is a standalone local gateway (http://localhost:20128) that
-#   Claude Code is pointed at via environment variables. Compression happens
-#   inside OmniRoute itself, via one of its named modes (Off/Lite/Standard/
-#   Aggressive/Ultra/RTK/Stacked). Set-OmniRouteBestCompression below pushes
-#   every project onto Stacked - the strongest documented combo, RTK's
-#   command/tool-output filtering feeding into Caveman's filler-removal
-#   pass on what's left, for a documented ~78-95% eligible-token range.
-#
-#   Per OmniRoute's own Claude Code guide:
-#     ANTHROPIC_BASE_URL     gateway root, NO /v1 suffix
-#     ANTHROPIC_AUTH_TOKEN   sent as Authorization: Bearer ...; wins over
-#                            ANTHROPIC_API_KEY when both are set
-#     CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
-#                            makes the native /model picker list claude*/
-#                            anthropic*-prefixed IDs from /v1/models
-#     ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL
-#                            map Claude Code's capability tiers onto specific
-#                            gateway model IDs (any ID, prefixed or not)
-#   Env vars are read once at Claude Code startup, which is why everything
-#   below happens before the `claude` process is spawned.
+# (OmniRoute removed in v5.5 - see AUDIT.md. Its role is now filled directly
+# by the real open-source tools it wrapped: Install-CavemanPlugin and
+# Install-RtkCli above, both called from Install-CompanionTooling. Claude
+# Code launches with its own native model defaults; there is no gateway/
+# 1M-context model-picker restriction to configure.)
 # ============================================================================
-
-function Test-OmniRouteRunning {
-    try {
-        $null = Invoke-RestMethod -Uri "$script:OMNIROUTE_URL/v1/models" -Method Get -TimeoutSec 3 -ErrorAction Stop
-        return $true
-    } catch {
-        # A 401/403 still proves the server is up and listening - it just
-        # wanted credentials. Only a connection failure means "not running".
-        $status = Get-HttpStatusCode $_
-        if ($status -in @(401, 403)) { return $true }
-        return $false
-    }
-}
-
-function Get-HttpStatusCode {
-    # Pulls the numeric HTTP status out of a terminating web error, across
-    # both the WebException (PS 5.1) and HttpResponseException (PS 7) shapes.
-    [CmdletBinding()]
-    param([Parameter(Mandatory)]$ErrorRecord)
-    try {
-        $resp = $ErrorRecord.Exception.Response
-        if ($resp) {
-            if ($resp.PSObject.Properties.Name -contains 'StatusCode') {
-                return [int]$resp.StatusCode
-            }
-        }
-    } catch {}
-    try {
-        if ($ErrorRecord.PSObject.Properties.Name -contains 'Exception' -and
-            $ErrorRecord.Exception.PSObject.Properties.Name -contains 'StatusCode') {
-            return [int]$ErrorRecord.Exception.StatusCode
-        }
-    } catch {}
-    return 0
-}
-
-function Install-OmniRouteCli {
-    if (-not (Test-CommandAvailable "npm" -UseCache)) {
-        return $false
-    }
-
-    $npmGlobal = Join-Path $env:APPDATA "npm"
-    $omniRoot = Join-Path $npmGlobal "node_modules\omniroute"
-    $omniCmd = Join-Path $npmGlobal "omniroute.cmd"
-    $omniEntry = Join-Path $omniRoot "bin\omniroute.mjs"
-
-    # Already healthy
-    if ((Test-Path $omniCmd) -and (Test-Path $omniEntry)) {
-        $script:DependencyCache.Remove("omniroute")
-        return $true
-    }
-
-    Write-Info "Repairing OmniRoute installation..."
-
-    # Remove npm registration first
-    $null = Invoke-ExternalCommand `
-        -Command "npm" `
-        -Arguments "uninstall -g omniroute" `
-        -TimeoutSeconds 120 `
-        -Silent
-
-    # Remove corrupted leftovers
-    try {
-        @(
-            "omniroute",
-            "omniroute.cmd",
-            "omniroute.ps1"
-        ) | ForEach-Object {
-            Remove-Item `
-                (Join-Path $npmGlobal $_) `
-                -Force `
-                -ErrorAction SilentlyContinue
-        }
-
-        if (Test-Path $omniRoot) {
-            Remove-Item `
-                $omniRoot `
-                -Recurse `
-                -Force `
-                -ErrorAction SilentlyContinue
-        }
-    } catch {
-        Write-Log "OmniRoute cleanup failed: $_" -Level "DEBUG"
-    }
-
-    Write-Info "Installing OmniRoute..."
-
-    $result = Invoke-ExternalCommand `
-        -Command "npm" `
-        -Arguments "install -g omniroute@latest --no-audit --no-fund" `
-        -TimeoutSeconds 300 `
-        -ShowSpinner `
-        -SpinnerLabel "Installing OmniRoute"
-
-    Sync-ProcessPathFromRegistry
-    $script:DependencyCache.Remove("omniroute")
-
-    if ((Test-Path $omniCmd) -and (Test-Path $omniEntry)) {
-        Write-Success "OmniRoute CLI installed"
-        return $true
-    }
-
-    Write-Warning "Could not install the OmniRoute CLI automatically"
-    return $false
-}
-
-function Update-OmniRouteCli {
-    if (-not (Test-CommandAvailable "npm" -UseCache)) {
-        return
-    }
-
-    Write-Info "Checking OmniRoute for updates..."
-
-    $npmGlobal = Join-Path $env:APPDATA "npm"
-    $omniRoot = Join-Path $npmGlobal "node_modules\omniroute"
-
-    $result = Invoke-ExternalCommand `
-        -Command "npm" `
-        -Arguments "install -g omniroute@latest --no-audit --no-fund" `
-        -TimeoutSeconds 300 `
-        -Silent
-
-    Sync-ProcessPathFromRegistry
-    $script:DependencyCache.Remove("omniroute")
-
-    $omniEntry = Join-Path $omniRoot "bin\omniroute.mjs"
-
-    if (Test-Path $omniEntry) {
-        Write-Success "OmniRoute up to date"
-        return
-    }
-
-    Write-Warning "OmniRoute update failed, attempting repair..."
-
-    Install-OmniRouteCli
-}
-
-function Start-OmniRoute {
-    Write-Section "OmniRoute"
-    if (Test-OmniRouteRunning) { Write-Success "Already running at $script:OMNIROUTE_URL"; return $true }
-
-    if (-not (Test-CommandAvailable "omniroute" -UseCache)) {
-        if (-not (Install-OmniRouteCli)) {
-            Write-Warning "Could not install the OmniRoute CLI automatically"
-            Write-Hint "Install it manually: npm install -g omniroute@latest"
-            if ($script:IsChild) {
-                # Never block a spawned project window on a wait nobody may be
-                # watching - the multi-window picker can open several at once.
-                Write-Hint "Skipping the wait in this project window - rerun the launcher once it's installed."
-            } else {
-                Write-Hint "After the install, press Enter to continue..."
-                try { $null = Read-Host } catch {}
-                Sync-ProcessPathFromRegistry
-                $script:DependencyCache.Remove("omniroute")
-            }
-        }
-    }
-
-    $started = $false
-
-    try {
-        # A real PowerShell window (not cmd.exe) so it looks and behaves like
-        # every other window this launcher opens - minimized so it stays out
-        # of the way while still being a real, inspectable window if you need
-        # to check on it (Get-Process, or un-minimize it) rather than a
-        # background process with no window at all.
-        $npmRoot = (Invoke-ExternalCommand -Command "npm" -Arguments "root -g" -TimeoutSeconds 5 -Silent -NoLog).Output.Trim()
-        $omniMjs = Join-Path $npmRoot "omniroute/bin/omniroute.mjs"
-        $innerCommand = if (Test-Path $omniMjs) { "node `"$omniMjs`"" } else { "omniroute" }
-        $psCommand = "`$host.UI.RawUI.WindowTitle = 'OmniRoute Server'; $innerCommand"
-
-        Start-Process -FilePath "powershell.exe" `
-            -ArgumentList @('-NoProfile', '-NoExit', '-Command', $psCommand) `
-            -WindowStyle Minimized -ErrorAction Stop
-        $started = $true
-        Write-Log "Started OmniRoute in a minimized PowerShell window ($innerCommand)"
-    } catch {
-        Write-Log "omniroute launch failed: $_" -Level "DEBUG"
-    }
-
-    if (-not $started) {
-        Write-Warning "Could not auto-launch OmniRoute"
-        if ($script:IsChild) {
-            Write-Hint "Start it manually by running 'omniroute' (from the launcher window, or any shell)."
-            return (Test-OmniRouteRunning)
-        }
-        Write-Hint "Start it manually by running 'omniroute', then press Enter"
-        try { $null = Read-Host } catch {}
-        return (Test-OmniRouteRunning)
-    }
-
-    Write-Success "OmniRoute launching in its own window - continuing without waiting"
-    return $true
-}
-
-function Wait-OmniRouteReady {
-    [CmdletBinding()]
-    param([int]$MaxWaitSeconds = 25)
-    if (Test-OmniRouteRunning) { return $true }
-    Write-Info "Waiting for OmniRoute to finish booting..."
-    for ($waited = 0; $waited -lt $MaxWaitSeconds; $waited++) {
-        Start-Sleep -Seconds 1
-        if (Test-OmniRouteRunning) { return $true }
-    }
-    return $false
-}
-
-# ----------------------------------------------------------------------------
-# API KEY STORAGE AND VALIDATION
-#
-# The v3 behaviour that sent you back through onboarding on every launch had
-# two causes, both fixed here:
-#   1. The only "is this set up?" probe was `omniroute providers list --json`.
-#      If that subcommand was missing, renamed, slow, or printed anything
-#      unparseable, the answer read as "not connected" and the dashboard was
-#      opened again.
-#   2. Nothing was ever recorded once setup HAD succeeded, so there was no
-#      memory to consult on the next run.
-# Now: a saved key is trusted unless OmniRoute actively rejects it (401/403),
-# an unreachable server never discards it, and both "key works" and "Claude
-# provider is connected" are written to config.json the first time they're
-# observed and short-circuit every later launch.
-# ----------------------------------------------------------------------------
-
-function Protect-OmniRouteApiKey {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$PlainKey)
-    $secure = ConvertTo-SecureString -String $PlainKey -AsPlainText -Force
-    return ($secure | ConvertFrom-SecureString)
-}
-
-function Get-OmniRouteApiKey {
-    # Environment beats config: `omniroute launch` and CI setups export this,
-    # and honouring it means those callers are never asked for a key at all.
-    if ($env:OMNIROUTE_API_KEY) { return $env:OMNIROUTE_API_KEY }
-    if (-not $script:Config.OmniRouteApiKeyEnc) { return $null }
-    try {
-        $secure = $script:Config.OmniRouteApiKeyEnc | ConvertTo-SecureString
-        $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-        try { return [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr) }
-        finally { [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
-    } catch {
-        # DPAPI is account-bound: this fires when config.json was copied from
-        # another Windows account or machine, not when the key is wrong.
-        Write-Log "Failed to decrypt OmniRoute API key (different Windows account?): $_" -Level "WARN"
-        return $null
-    }
-}
-
-function Read-OmniRouteApiKey {
-    [CmdletBinding()]
-    param([string]$Prompt = "OmniRoute API key")
-    Write-Hint "Grab your key from the OmniRoute dashboard (Settings -> API Keys)."
-    $secure = Read-Host "  $Prompt" -AsSecureString
-    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-    try { $plain = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr) }
-    finally { [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
-    if ([string]::IsNullOrWhiteSpace($plain)) { return $null }
-    return $plain.Trim()
-}
-
-function Save-OmniRouteApiKey {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$PlainKey, [switch]$Verified)
-    $script:Config.OmniRouteApiKeyEnc = Protect-OmniRouteApiKey -PlainKey $PlainKey
-    if ($Verified) { $script:Config.OmniRouteKeyVerifiedUtc = (Get-Date).ToUniversalTime().ToString('o') }
-    Save-Configuration
-}
-
-# ----------------------------------------------------------------------------
-# HEADLESS DASHBOARD LOGIN - gets an API key without ever opening a browser
-#
-# OmniRoute's dashboard and its REST API are the same server on the same
-# port; POST /api/auth/login (src/app/api/auth/login/route.ts) is the exact
-# endpoint the dashboard's own login form submits to, and it mints a 30-day
-# session JWT in an auth_token cookie. POST /api/keys, with that cookie
-# attached, is the same endpoint the dashboard's "create API key" button
-# calls (confirmed independently by an OmniRoute issue report: "create an
-# API key (or create via POST /api/keys)"). Chaining the two headlessly is
-# exactly what a person clicking through the dashboard would produce - this
-# isn't a bypass of anything, it's the same two HTTP calls without the UI.
-#
-# This is ONLY for OmniRoute's own local admin login (its default first-run
-# password, which OmniRoute's own login screen prints as "CHANGEME" unless
-# INITIAL_PASSWORD was set) - never confused with, and never used for, the
-# separate Claude Code PROVIDER connection inside OmniRoute, which is a real
-# OAuth sign-in to your actual Claude.ai account and stays a manual browser
-# step (see Confirm-ClaudeCodeProvider below).
-# ----------------------------------------------------------------------------
-
-function Get-OmniRouteDashboardPassword {
-    if ($env:OMNIROUTE_PASSWORD) { return $env:OMNIROUTE_PASSWORD }
-    if (-not $script:Config.OmniRouteDashboardPasswordEnc) { return $null }
-    try {
-        $secure = $script:Config.OmniRouteDashboardPasswordEnc | ConvertTo-SecureString
-        $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-        try { return [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr) }
-        finally { [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
-    } catch {
-        Write-Log "Failed to decrypt OmniRoute dashboard password (different Windows account?): $_" -Level "WARN"
-        return $null
-    }
-}
-
-function Save-OmniRouteDashboardPassword {
-    # Only ever called after a login that actually succeeded - see
-    # Request-OmniRouteApiKeyAutomatically. A guess that failed is never
-    # written here, so this file never remembers a wrong password.
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$PlainPassword)
-    $script:Config.OmniRouteDashboardPasswordEnc = Protect-OmniRouteApiKey -PlainKey $PlainPassword
-    $script:Config.OmniRouteDashboardLoginVerifiedUtc = (Get-Date).ToUniversalTime().ToString('o')
-    Save-Configuration
-}
-
-function Connect-OmniRouteDashboardSession {
-    # Logs in with a password and returns the resulting WebRequestSession
-    # (carries the auth_token cookie) on success, or $null on anything else -
-    # wrong password, server not reachable, unexpected response shape. Never
-    # throws; every caller treats $null as "try the next thing".
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Password)
-    try {
-        $session = $null
-        $body = @{ password = $Password } | ConvertTo-Json
-        $resp = Invoke-WebRequest -Uri "$script:OMNIROUTE_URL/api/auth/login" -Method Post -Body $body `
-            -ContentType "application/json" -SessionVariable session -TimeoutSec 10 -ErrorAction Stop
-        if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 300 -and $session) {
-            return $session
-        }
-        return $null
-    } catch {
-        $status = Get-HttpStatusCode $_
-        if ($status -in @(401, 403)) {
-            Write-Log "OmniRoute dashboard login rejected (wrong password)" -Level "DEBUG"
-        } else {
-            Write-Log "OmniRoute dashboard login failed (status $status): $(Get-Truncated $_.Exception.Message 150)" -Level "DEBUG"
-        }
-        return $null
-    }
-}
-
-function New-OmniRouteApiKeyViaDashboard {
-    # Mints a fresh API key using an already-authenticated dashboard
-    # session. Field name and nesting for the raw secret vary across
-    # OmniRoute versions in the sources checked, so - same defensive-parsing
-    # spirit as Get-OmniRouteCatalog above - every shape seen in the wild is
-    # tried: a bare string field on the top-level response, and the same
-    # field names one level down inside common wrapper containers.
-    [CmdletBinding()]
-    param([Parameter(Mandatory)]$WebSession)
-    try {
-        $label = "LLM-TokenOptimizer ($env:COMPUTERNAME)"
-        $body = @{ name = $label; label = $label } | ConvertTo-Json
-        $resp = Invoke-RestMethod -Uri "$script:OMNIROUTE_URL/api/keys" -Method Post -Body $body `
-            -ContentType "application/json" -WebSession $WebSession -TimeoutSec 15 -ErrorAction Stop
-
-        $fieldNames = @('key', 'apiKey', 'value', 'token', 'secret')
-        # Start with the response itself (covers a bare {"key": "sk-..."}
-        # shape), then add any wrapper property that's an OBJECT rather than
-        # already a string - a string wrapper would just duplicate a
-        # top-level field check and isn't itself a container to dig into.
-        $containers = [System.Collections.ArrayList]::new()
-        $null = $containers.Add($resp)
-        foreach ($wrapper in @('data', 'key', 'apiKey', 'result')) {
-            try {
-                if ($resp.PSObject.Properties.Name -contains $wrapper -and $resp.$wrapper -and ($resp.$wrapper -isnot [string])) {
-                    $null = $containers.Add($resp.$wrapper)
-                }
-            } catch {}
-        }
-        foreach ($container in $containers) {
-            if (-not $container) { continue }
-            foreach ($prop in $fieldNames) {
-                try {
-                    if ($container.PSObject.Properties.Name -contains $prop -and $container.$prop -and ($container.$prop -is [string])) {
-                        return $container.$prop
-                    }
-                } catch {}
-            }
-        }
-        Write-Log "POST /api/keys succeeded but no key field was recognized in the response" -Level "WARN"
-        return $null
-    } catch {
-        Write-Log "POST /api/keys failed: $(Get-Truncated $_.Exception.Message 200)" -Level "DEBUG"
-        return $null
-    }
-}
-
-function Request-OmniRouteApiKeyAutomatically {
-    # Orchestrator: try every password worth trying, and on the first one
-    # that logs in, mint and return a key - all without a browser. Returns
-    # $null (never throws) if nothing works, which is the signal for
-    # Initialize-OmniRoute to fall back to the original interactive prompt,
-    # so a machine where the dashboard password was already changed by hand
-    # degrades exactly the way it did before this existed.
-    [CmdletBinding()]
-    param()
-
-    $candidates = [System.Collections.ArrayList]::new()
-    $remembered = Get-OmniRouteDashboardPassword
-    if ($remembered) { $null = $candidates.Add($remembered) }
-    # If the user set OmniRoute's OWN server-side env var when they started
-    # it themselves (INITIAL_PASSWORD - see OmniRoute's environment docs),
-    # that's the real password and takes priority over guessing the default.
-    if ($env:INITIAL_PASSWORD -and -not $candidates.Contains($env:INITIAL_PASSWORD)) {
-        $null = $candidates.Add($env:INITIAL_PASSWORD)
-    }
-    # OmniRoute's own login screen prints this as the first-run default
-    # unless INITIAL_PASSWORD was set - see the doc header above.
-    if (-not $candidates.Contains("CHANGEME")) { $null = $candidates.Add("CHANGEME") }
-
-    foreach ($password in $candidates) {
-        $session = Connect-OmniRouteDashboardSession -Password $password
-        if (-not $session) { continue }
-        $key = New-OmniRouteApiKeyViaDashboard -WebSession $session
-        if (-not $key) {
-            Write-Log "Logged into the OmniRoute dashboard but key creation failed - trying next candidate" -Level "DEBUG"
-            continue
-        }
-        Save-OmniRouteDashboardPassword -PlainPassword $password
-        Write-Success "Logged into OmniRoute and created an API key automatically - no browser needed"
-        if ($password -eq "CHANGEME") {
-            Write-Hint "Still on OmniRoute's default dashboard password (CHANGEME)."
-            Write-Hint "Fine for a loopback-only local server; change it any time under"
-            Write-Hint "Dashboard -> Settings -> Security if you'd rather not leave it."
-        }
-        return $key
-    }
-    Write-Log "Headless OmniRoute login did not succeed with any candidate password" -Level "DEBUG"
-    return $null
-}
-
-function Register-OmniRouteMcpServer {
-    # Gives a Claude Code session OmniRoute's own management tools (routing,
-    # providers, combos, compression, quota, memory) as first-class tools
-    # instead of only ever being a client routed through it. Needs both
-    # `claude` and a working key, so this only runs after both are confirmed
-    # - see the call site in Initialize-OmniRoute.
-    if ($script:Config.OmniRouteMcpRegistered) { return }
-    if (-not (Test-CommandAvailable "claude" -UseCache)) { return }
-    $key = Get-OmniRouteApiKey
-    if (-not $key) { return }
-
-    Write-Info "Registering OmniRoute as an MCP server for Claude Code..."
-    $mcpUrl = "$script:OMNIROUTE_URL/api/mcp/stream"
-    $mcpArgs = "mcp add --transport http --scope user omniroute `"$mcpUrl`" --header `"Authorization: Bearer $key`""
-    # -NoLog: the key is embedded in $mcpArgs above and Invoke-ExternalCommand
-    # otherwise logs the full argument string verbatim.
-    $result = Invoke-ExternalCommand -Command "claude" -Arguments $mcpArgs -TimeoutSeconds 30 -Silent -NoLog
-    if ($result.Success -or $result.Output -match "already exists|already added") {
-        Write-Success "OmniRoute registered as an MCP server (user scope)"
-        $script:Config.OmniRouteMcpRegistered = $true
-        Save-Configuration
-    } else {
-        Write-Log "claude mcp add omniroute did not confirm success" -Level "DEBUG"
-    }
-}
-
-function Remove-StaleOmniRouteMcpServer {
-    # v5.2 disabled OmniRoute's Claude routing by default, but a machine that
-    # ran an earlier version (or had -ReconfigureOmniRoute / manual setup
-    # done before upgrading) can still have the omniroute MCP server
-    # registered from back when $script:OMNIROUTE_ROUTE_CLAUDE was true.
-    # Left alone, that's a dead "✘ Failed to connect" entry in every future
-    # `claude mcp list` for a server that's never coming back by default -
-    # confirmed live on a real machine carrying this exact leftover. Cleans
-    # up once; harmless if OmniRoute was never registered.
-    if ($script:OMNIROUTE_ROUTE_CLAUDE) { return }
-    if (-not (Test-CommandAvailable "claude" -UseCache)) { return }
-    $listResult = Invoke-ExternalCommand -Command "claude" -Arguments "mcp list" -TimeoutSeconds 15 -Silent -NoLog
-    if (-not $listResult.Success -or $listResult.Output -notmatch '(?m)^omniroute:') { return }
-
-    Write-Info "Removing stale 'omniroute' MCP server registration (OmniRoute routing is off by default - see AUDIT.md)"
-    $removeResult = Invoke-ExternalCommand -Command "claude" -Arguments "mcp remove omniroute --scope user" -TimeoutSeconds 15 -Silent
-    if ($removeResult.Success -or $removeResult.Output -match "removed|not found") {
-        Write-Success "Removed the stale omniroute MCP registration"
-    } else {
-        Write-Log "claude mcp remove omniroute did not confirm success: $(Get-Truncated $removeResult.Output 200)" -Level "DEBUG"
-    }
-}
 
 function Register-Context7Mcp {
     # Context7 (upstash/context7-mcp): injects version-specific library/API
@@ -3335,303 +2879,6 @@ function Register-Context7Mcp {
         Write-Log "claude mcp add context7 did not confirm success: $(Get-Truncated $result.Output 200)" -Level "DEBUG"
     }
 }
-
-function Get-ModelContextLength {
-    # Catalogs disagree on where the context window lives. Check every spelling
-    # we've seen before concluding "unknown" (0), which callers treat as
-    # "can't confirm 1M" rather than "not 1M".
-    [CmdletBinding()]
-    param($ModelEntry)
-    $candidates = @(
-        'context_length', 'context_window', 'context_size', 'max_context_tokens',
-        'max_context_length', 'max_input_tokens', 'contextLength', 'contextWindow'
-    )
-    foreach ($name in $candidates) {
-        try {
-            if ($ModelEntry.PSObject.Properties.Name -contains $name) {
-                $value = $ModelEntry.$name
-                if ($value -and ([int64]$value) -gt 0) { return [int64]$value }
-            }
-        } catch {}
-    }
-    # OpenRouter-style nesting, which some OmniRoute providers mirror.
-    foreach ($container in @('top_provider', 'limits', 'capabilities', 'architecture')) {
-        try {
-            if ($ModelEntry.PSObject.Properties.Name -contains $container -and $ModelEntry.$container) {
-                $nested = Get-ModelContextLength -ModelEntry $ModelEntry.$container
-                if ($nested -gt 0) { return $nested }
-            }
-        } catch {}
-    }
-    return [int64]0
-}
-
-function Get-OmniRouteCatalog {
-    # Single source of truth for "what can OmniRoute actually serve right now".
-    # Returns Reachable / Authorized so callers can tell a wrong key apart from
-    # a server that simply isn't up yet - the distinction v3 collapsed, which
-    # is what made it throw away good keys.
-    [CmdletBinding()]
-    param([string]$ApiKey)
-    $result = @{ Reachable = $false; Authorized = $false; Models = @(); Error = "" }
-    $headers = @{}
-    if ($ApiKey) { $headers["Authorization"] = "Bearer $ApiKey" }
-    try {
-        $resp = Invoke-RestMethod -Uri "$script:OMNIROUTE_URL/v1/models" -Headers $headers -Method Get -TimeoutSec 10 -ErrorAction Stop
-        $result.Reachable = $true
-        $result.Authorized = $true
-        $entries = @()
-        foreach ($container in @('data', 'models')) {
-            try {
-                if ($resp -and ($resp.PSObject.Properties.Name -contains $container) -and $resp.$container) {
-                    $entries += @($resp.$container)
-                }
-            } catch {}
-        }
-        if ($entries.Count -eq 0 -and $resp -is [System.Array]) { $entries = @($resp) }
-        $models = [System.Collections.ArrayList]::new()
-        foreach ($entry in $entries) {
-            $id = $null
-            foreach ($idProp in @('id', 'name', 'model')) {
-                try {
-                    if ($entry.PSObject.Properties.Name -contains $idProp -and $entry.$idProp) { $id = [string]$entry.$idProp; break }
-                } catch {}
-            }
-            if (-not $id) { continue }
-            $null = $models.Add([PSCustomObject]@{
-                Id = $id
-                Context = (Get-ModelContextLength -ModelEntry $entry)
-            })
-        }
-        $result.Models = @($models)
-    } catch {
-        $status = Get-HttpStatusCode $_
-        $result.Error = $_.Exception.Message
-        if ($status -in @(401, 403)) {
-            # Server answered - it just refused these credentials.
-            $result.Reachable = $true
-            $result.Authorized = $false
-        } elseif ($status -gt 0) {
-            # Some other HTTP error: server is up, catalog call misbehaved.
-            $result.Reachable = $true
-            $result.Authorized = $true
-        }
-        Write-Log "Catalog fetch failed (status $status): $(Get-Truncated $result.Error 200)" -Level "DEBUG"
-    }
-    return $result
-}
-
-# ----------------------------------------------------------------------------
-# 1M-CONTEXT MODEL RESOLUTION
-#
-# Claude Opus 5 (`claude-opus-5`) and Claude Sonnet 5 (`claude-sonnet-5`) each
-# carry a 1M-token context window as BOTH the default and the maximum, and
-# Anthropic's model docs are explicit that there is no smaller context variant
-# of either. That means:
-#   - there is no separate "-1m" / "[1m]" model ID to hunt for on the -5
-#     models the way there was on the 4.x generation, and
-#   - v3's `claude-sonnet-5(?!.*1m)` pattern was excluding a variant that does
-#     not exist, while v3's literal-only `claude-opus-5` match meant Opus
-#     silently never appeared at all.
-# So: a -5 model is accepted as 1M on sight. Anything else is accepted only if
-# the catalog itself reports a >=1M window (this is the escape hatch for an
-# explicitly long-context 4.x entry). Nothing shorter is ever pinned.
-#
-# Provider prefix: OmniRoute serves Claude-family models under `cc/` (its
-# Claude Code OAuth provider). Unprefixed `claude-*` IDs can come back as
-# "Ambiguous model ..." when more than one connected provider exposes the same
-# Claude model, so the prefixed form is preferred for the env-var pins, which
-# accept any ID. The bare form is kept as a fallback.
-# ----------------------------------------------------------------------------
-
-function Test-Is1MContextModel {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)]$Model)
-    if ($Model.Id -match '(^|/)claude-(opus|sonnet)-5(\b|$|[-.])') { return $true }
-    return ($Model.Context -ge $script:MIN_1M_CONTEXT)
-}
-
-function Resolve-OmniRoute1MModel {
-    # Picks the best OmniRoute catalog entry for one Claude family, scoring
-    # candidates rather than taking the first regex hit, so the choice is
-    # stable and explainable in the log.
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][ValidateSet('opus', 'sonnet')][string]$Family,
-        [Parameter(Mandatory)][array]$Models
-    )
-    # "auto/*" is OmniRoute's combo/router pseudo-model, not a real Claude
-    # model - never pin one, we want a specific 1M model or nothing.
-    $candidates = @($Models | Where-Object { $_.Id -and $_.Id -notmatch '^auto/' })
-    if ($candidates.Count -eq 0) { return $null }
-
-    # Built by concatenation, not interpolation: the pattern contains regex
-    # '$' anchors, and burying those in a double-quoted PowerShell string is
-    # asking for a subtle mis-parse the day someone edits it.
-    $familyPattern = '(^|/)claude-' + $Family + '-5(\b|$|[-.])'
-    $familyLoose = '(^|/)claude-' + $Family
-    $familyAlias = '(^|/)claude-' + $Family + '-5(-\d{8})?$'
-    $exact = @($candidates | Where-Object { $_.Id -match $familyPattern })
-
-    if ($exact.Count -eq 0) {
-        # No -5 in the catalog. Only consider this family's other members if
-        # the catalog explicitly reports a >=1M window for them.
-        $exact = @($candidates | Where-Object {
-            $_.Id -match $familyLoose -and $_.Context -ge $script:MIN_1M_CONTEXT
-        })
-        if ($exact.Count -eq 0) {
-            Write-Log "No 1M-context $Family model in OmniRoute's catalog" -Level "DEBUG"
-            return $null
-        }
-        Write-Log "No claude-$Family-5 in catalog; using a 1M-context $Family fallback" -Level "DEBUG"
-    }
-
-    $scored = foreach ($model in $exact) {
-        $score = 0
-        # Claude Code OAuth provider: the unambiguous route for Claude models.
-        if ($model.Id -match '^cc/') { $score += 100 }
-        elseif ($model.Id -match '^anthropic/') { $score += 60 }
-        elseif ($model.Id -notmatch '/') { $score += 40 }   # bare id, may be ambiguous
-        else { $score += 10 }                                # some other provider's mirror
-        if ($model.Context -ge $script:MIN_1M_CONTEXT) { $score += 30 }
-        # Prefer the clean, undated alias over a pinned snapshot so the pin
-        # keeps working when the snapshot rolls.
-        if ($model.Id -match $familyAlias) { $score += 20 }
-        [PSCustomObject]@{ Model = $model; Score = $score }
-    }
-    $best = @($scored | Sort-Object -Property Score -Descending | Select-Object -First 1)
-    if ($best.Count -eq 0) { return $null }
-    $chosen = $best[0].Model
-    if (-not (Test-Is1MContextModel -Model $chosen)) {
-        Write-Log "Best $Family candidate '$($chosen.Id)' is not 1M-context - refusing to pin it" -Level "WARN"
-        return $null
-    }
-    Write-Log "Resolved $Family -> $($chosen.Id) (context $($chosen.Context), score $($best[0].Score))" -Level "DEBUG"
-    return $chosen
-}
-
-# ----------------------------------------------------------------------------
-# CLAUDE CODE PROVIDER CONNECTION (asked once, then remembered)
-# ----------------------------------------------------------------------------
-
-function Test-ClaudeProviderInCatalog {
-    [CmdletBinding()]
-    param([array]$Models)
-    if (-not $Models -or $Models.Count -eq 0) { return $false }
-    return [bool](@($Models | Where-Object { $_.Id -match 'claude' }).Count -gt 0)
-}
-
-function Test-OmniRouteProviderViaCli {
-    # Secondary probe only. A failure here no longer means "not connected" -
-    # the catalog check above is authoritative, because it tests the thing we
-    # actually care about (can OmniRoute serve a Claude model?) instead of
-    # whether one particular CLI subcommand exists and prints parseable JSON.
-    $result = Invoke-ExternalCommand -Command "omniroute" -Arguments "providers list --json" -TimeoutSeconds 15 -Silent -NoLog
-    if (-not $result.Success) { return $false }
-    $providers = $null
-    try {
-        $providers = $result.Output | ConvertFrom-Json -ErrorAction Stop
-    } catch {
-        Write-Log "Could not parse 'omniroute providers list --json': $_" -Level "DEBUG"
-        return $false
-    }
-    # Each entry gets its own try/catch: under Set-StrictMode, a single
-    # malformed entry (missing .id/.name/.status) throws, and without this
-    # per-item guard that exception used to be caught by the OUTER try/catch
-    # above, aborting the whole scan and returning $false immediately - even
-    # when a later entry in the same array was the actual connected provider.
-    foreach ($p in @($providers)) {
-        try {
-            $idText = ("$($p.id) $($p.name)").ToLowerInvariant()
-            if ($idText -notmatch "claude|^cc$|\bcc\b") { continue }
-            $statusText = "$($p.status)".ToLowerInvariant()
-            if ($statusText -match "connect|active|ok|ready" -or $p.connected -eq $true -or $p.enabled -eq $true) { return $true }
-        } catch {
-            Write-Log "Skipping malformed provider entry in 'omniroute providers list --json': $_" -Level "DEBUG"
-            continue
-        }
-    }
-    return $false
-}
-
-function Confirm-ClaudeCodeProvider {
-    # Returns $true if OmniRoute can serve Claude models. Consults, in order:
-    #   1. the remembered result in config.json  (no network, no prompt)
-    #   2. the live catalog we already fetched   (authoritative)
-    #   3. `omniroute providers list --json`     (best-effort secondary)
-    # Only if all three come up empty does it offer the dashboard - and even
-    # then it offers to stop asking.
-    [CmdletBinding()]
-    param([array]$CatalogModels)
-
-    if ($script:Config.OmniRouteProviderVerifiedUtc) {
-        Write-Log "Claude provider previously verified at $($script:Config.OmniRouteProviderVerifiedUtc) - skipping onboarding" -Level "DEBUG"
-        Write-Success "Claude Code provider already set up in OmniRoute (remembered)"
-        return $true
-    }
-
-    if (Test-ClaudeProviderInCatalog -Models $CatalogModels) {
-        $script:Config.OmniRouteProviderVerifiedUtc = (Get-Date).ToUniversalTime().ToString('o')
-        Save-Configuration
-        Write-Success "Claude Code provider connected (found Claude models in OmniRoute's catalog)"
-        Write-Hint "Recorded - you won't be sent to the OmniRoute dashboard again."
-        return $true
-    }
-
-    if ((Test-CommandAvailable "omniroute" -UseCache) -and (Test-OmniRouteProviderViaCli)) {
-        $script:Config.OmniRouteProviderVerifiedUtc = (Get-Date).ToUniversalTime().ToString('o')
-        Save-Configuration
-        Write-Success "Claude Code provider connected (confirmed via the OmniRoute CLI)"
-        return $true
-    }
-
-    if ($script:Config.OmniRouteProviderPromptSuppressed) {
-        Write-Log "Provider not detected but prompting is suppressed by config" -Level "DEBUG"
-        return $false
-    }
-
-    Write-Section "OmniRoute: Claude Code provider"
-    Write-Warning "No Claude Code account connected in OmniRoute yet"
-    $providerUrl = "$script:OMNIROUTE_URL/dashboard/providers/claude"
-
-    if ($script:IsChild) {
-        # A spawned project window may have no one watching it right now -
-        # the multi-window picker can open several at once. Never block one
-        # of these on a browser sign-in; the launcher window already tries
-        # this interactively once per machine.
-        Write-Hint "One-time browser sign-in needed - finish it from the launcher window, or open:"
-        Write-Hint "  $providerUrl"
-        return $false
-    }
-
-    Write-Hint "This is a one-time browser sign-in OmniRoute requires (it can't be"
-    Write-Hint "automated from the CLI) before the Opus 5 / Sonnet 5 routes have"
-    Write-Hint "anything behind them."
-    try { Start-Process $providerUrl -ErrorAction Stop; Write-Hint "Opened: $providerUrl" }
-    catch { Write-Log "Could not open browser to ${providerUrl}: $_" -Level "DEBUG"; Write-Hint "Open manually: $providerUrl" }
-    Write-Hint "Click '+ Add', sign in with your Claude.ai account, then come back here."
-    try { $null = Read-Host "  Press Enter once you've added the connection (or just Enter to skip)" } catch {}
-
-    $recheck = Get-OmniRouteCatalog -ApiKey (Get-OmniRouteApiKey)
-    if (Test-ClaudeProviderInCatalog -Models $recheck.Models) {
-        $script:Config.OmniRouteProviderVerifiedUtc = (Get-Date).ToUniversalTime().ToString('o')
-        Save-Configuration
-        Write-Success "Claude Code provider connected - remembered for next time"
-        return $true
-    }
-
-    Write-Warning "Still not detected - you can finish this later at $providerUrl"
-    if (Read-YesNo "Stop asking about this on future launches?" $false) {
-        $script:Config.OmniRouteProviderPromptSuppressed = $true
-        Save-Configuration
-        Write-Info "Won't ask again. Use -ReconfigureOmniRoute to re-enable this check."
-    }
-    return $false
-}
-
-# ----------------------------------------------------------------------------
-# CLAUDE CODE SETTINGS (~/.claude/settings.json, or an isolated profile dir)
-# ----------------------------------------------------------------------------
 
 function Get-ClaudeConfigDir {
     # Honours CLAUDE_CONFIG_DIR when -IsolateClaudeConfig set it, so settings
@@ -3672,476 +2919,6 @@ function Initialize-IsolatedClaudeProfile {
         Write-Warning "Could not create an isolated Claude config - falling back to the shared one"
         Write-Log "Isolated profile setup failed: $_" -Level "WARN"
     }
-}
-
-function Set-ClaudeAvailableModels {
-    # Restricts the /model picker to exactly the two OmniRoute 1M entries we
-    # resolved, and nothing else. Claude Code's `availableModels` setting is
-    # the documented allowlist mechanism and applies to gateway-discovered
-    # models too.
-    #
-    # These are the RESOLVED OmniRoute catalog IDs (typically `cc/claude-opus-5`
-    # and `cc/claude-sonnet-5`), not the bare Anthropic names - which is
-    # precisely what keeps them distinguishable from Claude Code's own
-    # built-in defaults in the list. Paired with the display labels set in
-    # Set-OmniRouteLaunchEnvironment, a glance at /model tells you whether
-    # you're on the OmniRoute 1M route or a stock model.
-    #
-    # Guarded by a named mutex because several project windows share one
-    # ~/.claude/settings.json unless -IsolateClaudeConfig was used.
-    [CmdletBinding()]
-    param([string[]]$ModelIds)
-
-    if (-not $ModelIds -or @($ModelIds).Count -eq 0) {
-        Write-Log "No resolved model IDs - leaving availableModels untouched" -Level "DEBUG"
-        return
-    }
-    $wanted = @($ModelIds | Where-Object { $_ } | Select-Object -Unique)
-    $claudeDir = Get-ClaudeConfigDir
-    $settingsPath = Join-Path $claudeDir "settings.json"
-
-    $mutex = $null
-    $held = $false
-    try {
-        $mutex = New-Object System.Threading.Mutex($false, "Global\LLMTokenOptimizer_v4_ClaudeSettings")
-        try { $held = $mutex.WaitOne(5000, $false) } catch [System.Threading.AbandonedMutexException] { $held = $true }
-
-        if (-not (Test-Path $claudeDir)) { New-Item -ItemType Directory -Path $claudeDir -Force | Out-Null }
-        $settingsExisted = Test-Path $settingsPath
-        $settings = $null
-        if ($settingsExisted) {
-            try {
-                $settings = Get-Content $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
-            } catch {
-                # DO NOT substitute an empty object here and fall through to
-                # writing it - that would overwrite the user's entire shared
-                # ~/.claude/settings.json (every MCP server registration,
-                # permission, hook, statusline config - for EVERY Claude Code
-                # session on the machine, not just this launcher) with just
-                # the new availableModels field. Abort the write entirely and
-                # leave the existing file untouched; the model picker
-                # restriction simply doesn't apply this launch.
-                Write-Fail "Existing settings.json is not valid JSON - refusing to touch it"
-                Write-Log "Set-ClaudeAvailableModels: $settingsPath failed to parse, aborting without writing to avoid destroying its contents: $_" -Level "ERROR"
-                return
-            }
-        } else {
-            $settings = [PSCustomObject]@{}
-        }
-
-        $current = @()
-        if ($settings.PSObject.Properties.Name -contains "availableModels") { $current = @($settings.availableModels) }
-        $differs = $true
-        if ($current.Count -eq $wanted.Count) {
-            $differs = [bool](@(Compare-Object -ReferenceObject $current -DifferenceObject $wanted -SyncWindow 0).Count -gt 0)
-        }
-        if (-not $differs) {
-            Write-Log "availableModels already correct - skipping write" -Level "DEBUG"
-            return
-        }
-        if ($settings.PSObject.Properties.Name -contains "availableModels") {
-            $settings.availableModels = $wanted
-        } else {
-            $settings | Add-Member -NotePropertyName "availableModels" -NotePropertyValue $wanted
-        }
-        # Safety net: back up the real, successfully-parsed settings.json
-        # before ever overwriting it, so a bad write here is always
-        # recoverable. Only meaningful when a valid pre-existing file was
-        # actually read above (a brand-new settings.json has nothing worth
-        # backing up).
-        if ($settingsExisted) {
-            try { Copy-Item -Path $settingsPath -Destination "$settingsPath.bak" -Force -ErrorAction Stop }
-            catch { Write-Log "Could not write settings.json.bak backup: $_" -Level "WARN" }
-        }
-        # Atomic swap: another window may be reading this file right now.
-        $tmp = "$settingsPath.$PID.tmp"
-        $settings | ConvertTo-Json -Depth 10 | Out-File -FilePath $tmp -Encoding UTF8 -Force
-        Move-Item -Path $tmp -Destination $settingsPath -Force
-        Write-Success "Model picker restricted to: $($wanted -join ', ')"
-        Write-Log "Wrote availableModels to $settingsPath : $($wanted -join ', ')"
-    } catch {
-        Write-Warning "Could not restrict the model picker (settings.json write failed)"
-        Write-Log "Set-ClaudeAvailableModels failed: $_" -Level "WARN"
-    } finally {
-        if ($mutex) {
-            if ($held) { try { $mutex.ReleaseMutex() } catch {} }
-            try { $mutex.Dispose() } catch {}
-        }
-    }
-}
-
-# ----------------------------------------------------------------------------
-# OMNIROUTE ONBOARDING (launcher window) - runs at most once per machine
-# ----------------------------------------------------------------------------
-
-function Get-OmniRouteCompressionState {
-    # GET read-back of the currently active compression mode. Returns $null
-    # on any failure (unreachable, auth rejected, unrecognized response
-    # shape) - never throws; callers treat $null as "couldn't confirm either
-    # way", not as "definitely not configured".
-    [CmdletBinding()]
-    param([string]$ApiKey)
-    try {
-        $headers = @{}
-        if ($ApiKey) { $headers["Authorization"] = "Bearer $ApiKey" }
-        $resp = Invoke-RestMethod -Uri "$script:OMNIROUTE_URL/api/settings/compression" -Method Get -Headers $headers -TimeoutSec 10 -ErrorAction Stop
-        foreach ($prop in @('defaultMode', 'mode', 'currentMode', 'compressionMode', 'activeMode')) {
-            try {
-                if ($resp.PSObject.Properties.Name -contains $prop -and $resp.$prop) { return [string]$resp.$prop }
-            } catch {}
-        }
-        Write-Log "Compression GET succeeded but no recognized mode field in the response" -Level "DEBUG"
-        return $null
-    } catch {
-        Write-Log "Compression GET read-back failed: $(Get-Truncated $_.Exception.Message 150)" -Level "DEBUG"
-        return $null
-    }
-}
-
-function Set-OmniRouteCompressionMode {
-    # One PUT attempt. Returns $true only on an HTTP-level success - that is
-    # NOT the same as verified-active, which is the caller's job via a
-    # follow-up Get-OmniRouteCompressionState read-back (OmniRoute's own
-    # issue #4268 notes a successful-looking PUT doesn't always mean the
-    # setting actually took).
-    [CmdletBinding()]
-    param([string]$ApiKey)
-    try {
-        $headers = @{}
-        if ($ApiKey) { $headers["Authorization"] = "Bearer $ApiKey" }
-        $body = @{
-            defaultMode = $script:OMNIROUTE_COMPRESSION_MODE
-            autoTriggerMode = $script:OMNIROUTE_COMPRESSION_MODE
-            autoTriggerTokens = 1000
-        } | ConvertTo-Json
-        $null = Invoke-RestMethod -Uri "$script:OMNIROUTE_URL/api/settings/compression" -Method Put -Body $body -Headers $headers -ContentType "application/json" -TimeoutSec 10 -ErrorAction Stop
-        return $true
-    } catch {
-        Write-Log "Compression PUT failed: $(Get-Truncated $_.Exception.Message 150)" -Level "WARN"
-        return $false
-    }
-}
-
-function Set-OmniRouteBestCompression {
-    # Pushes OmniRoute's compression to its strongest documented combo -
-    # Stacked mode (RTK -> Caveman, 78-95% eligible-token savings) - as both
-    # the default and the auto-trigger mode, with a low auto-trigger
-    # threshold so it engages immediately rather than waiting for a large
-    # payload. Only ever uses the already-saved/validated API key via
-    # Get-OmniRouteApiKey - never prompts for credentials.
-    #
-    # Hardened beyond a fire-and-forget PUT: reads the setting back after
-    # writing it and retries once if the active mode doesn't match what was
-    # requested, since OmniRoute's own comments/issue #4268 note success
-    # isn't always reliably reported. Configured once per machine and NOT
-    # re-forced every launch (so a later manual dashboard change isn't
-    # fought) - but OmniRouteCompressionLastCheckedUtc drives a periodic
-    # re-verify (every $script:OMNIROUTE_COMPRESSION_RECHECK_DAYS days, or
-    # immediately on -ReconfigureOmniRoute) so a setting that silently
-    # reverted, or never actually took despite looking successful, doesn't
-    # stay trusted forever.
-    #
-    # Known caveat, not a bug in this script: OmniRoute issue #4268 reports
-    # Stacked sometimes recording zero "stacked" analytics on real coding-
-    # agent sessions (long read-only shell output, tool-heavy turns) even
-    # though RTK/Caveman are still running - Ultra mode shows savings
-    # reliably in the same report where Stacked's dashboard numbers look
-    # flat. Stacked is kept here because its documented ceiling (78-95%) is
-    # still higher than Ultra's (~75%) - if the dashboard's Analytics page
-    # shows suspiciously low numbers, check that upstream issue first.
-    [CmdletBinding()]
-    param([switch]$Force)
-
-    if ($script:OMNIROUTE_COMPRESSION_MODE -eq "off") {
-        # Never sent to OmniRoute - "off" isn't a mode its API is known to
-        # accept, so this just skips configuration rather than risking an
-        # unrecognized-value PUT. Left unconfigured means whatever OmniRoute's
-        # own default/last-dashboard-set mode is stays in effect.
-        Write-Info "-CompressionMode off: leaving OmniRoute compression as-is (not configuring Stacked)"
-        return
-    }
-
-    $dueForRecheck = $true
-    if ($script:Config.OmniRouteCompressionLastCheckedUtc) {
-        try {
-            $lastChecked = [datetime]::Parse(
-                $script:Config.OmniRouteCompressionLastCheckedUtc, $null,
-                [System.Globalization.DateTimeStyles]::RoundtripKind)
-            $ageDays = ((Get-Date).ToUniversalTime() - $lastChecked).TotalDays
-            $dueForRecheck = $ageDays -ge $script:OMNIROUTE_COMPRESSION_RECHECK_DAYS
-        } catch { $dueForRecheck = $true }
-    }
-    if ($script:Config.OmniRouteCompressionConfigured -and -not $Force -and -not $dueForRecheck) {
-        Write-Log "OmniRoute compression already configured and recently verified - not re-checking" -Level "DEBUG"
-        return
-    }
-
-    $apiKey = Get-OmniRouteApiKey
-    $applied = Set-OmniRouteCompressionMode -ApiKey $apiKey
-    Start-Sleep -Milliseconds 300   # give the server a beat before reading back
-    $active = Get-OmniRouteCompressionState -ApiKey $apiKey
-
-    if ($active -and $active -notmatch [regex]::Escape($script:OMNIROUTE_COMPRESSION_MODE)) {
-        Write-Log "Compression read-back reported '$active' (expected '$($script:OMNIROUTE_COMPRESSION_MODE)') - retrying once" -Level "WARN"
-        $applied = (Set-OmniRouteCompressionMode -ApiKey $apiKey) -or $applied
-        Start-Sleep -Milliseconds 500
-        $active = Get-OmniRouteCompressionState -ApiKey $apiKey
-    }
-
-    $nowUtc = (Get-Date).ToUniversalTime().ToString('o')
-    if ($active -and $active -match [regex]::Escape($script:OMNIROUTE_COMPRESSION_MODE)) {
-        Write-Success "OmniRoute compression confirmed active: $($script:OMNIROUTE_COMPRESSION_MODE)"
-        $script:Config.OmniRouteCompressionConfigured = $true
-        $script:Config.OmniRouteCompressionLastCheckedUtc = $nowUtc
-        Save-Configuration
-    } elseif ($applied) {
-        # PUT succeeded but the GET read-back didn't confirm the mode
-        # (unrecognized response shape, or the known upstream reporting gap)
-        # - trust the write, but keep the recheck interval short by NOT
-        # stamping a fresh verified timestamp, so this gets another look
-        # sooner than a fully-confirmed configuration would.
-        Write-Warning "OmniRoute accepted the compression change but read-back didn't confirm it (known reporting issue - see #4268)"
-        $script:Config.OmniRouteCompressionConfigured = $true
-        Save-Configuration
-    } else {
-        Write-Log "Could not configure OmniRoute compression (will retry next launch)" -Level "WARN"
-    }
-}
-
-function Initialize-OmniRoute {
-    # v5.2: only ever called when $script:OMNIROUTE_ROUTE_CLAUDE is true (see
-    # its definition and AUDIT.md) - off by default because routing Claude
-    # Code's subscription OAuth token through a third-party gateway violates
-    # Anthropic's Consumer Terms of Service. Both call sites (project window,
-    # launcher window) check the flag before calling this at all.
-    [CmdletBinding()]
-    param([int]$Step = 0, [int]$TotalSteps = 0)
-
-    Write-Section -Name "OmniRoute routing" -Step $Step -TotalSteps $TotalSteps
-    if (-not $script:Config.FirstRunComplete) {
-        Write-Hint "Routes Claude Code through OmniRoute, which auto-applies its"
-        Write-Hint "$($script:OMNIROUTE_COMPRESSION_MODE) compression to every request (-CompressionMode"
-        Write-Hint "stacked|ultra|off overrides this - see AUDIT.md Finding 3 on"
-        Write-Hint "compression vs. prompt-cache conflicts), plus claude-mem, headroom,"
-        Write-Hint "claude-code-setup, task-observer, and claude-md-management. Opus 5"
-        Write-Hint "and Sonnet 5, 1M context, real Claude."
-        Write-Hint "The dashboard login + API key are handled automatically below -"
-        Write-Hint "no browser needed unless that fails."
-        $script:Config.FirstRunComplete = $true
-        Save-Configuration
-    }
-
-    $started = Start-OmniRoute
-    if (-not $started) {
-        Write-Warning "OmniRoute isn't reachable - skipping the rest of its setup for now"
-        return $false
-    }
-
-    # Bring the server up before touching credentials, otherwise a key check
-    # against a still-booting server looks like a bad key.
-    $null = Wait-OmniRouteReady -MaxWaitSeconds 25
-
-    # Compression is a local OmniRoute setting rather than the Anthropic-side
-    # routing below, so it's configured as soon as the server answers -
-    # before we even know whether a Claude provider is connected. It still
-    # only ever uses the already-saved key (if any; the endpoint doesn't
-    # require one) via Get-OmniRouteApiKey inside Set-OmniRouteBestCompression
-    # - never a fresh prompt. -ReconfigureOmniRoute forces an immediate
-    # re-verify instead of waiting for the periodic recheck interval.
-    Set-OmniRouteBestCompression -Force:$ReconfigureOmniRoute
-
-    $apiKey = Get-OmniRouteApiKey
-    $hadSavedKey = [bool]$apiKey
-
-    if (-not $apiKey) {
-        Write-Info "No OmniRoute API key saved yet - trying a headless dashboard login first"
-        $apiKey = Request-OmniRouteApiKeyAutomatically
-        if (-not $apiKey -and -not $script:IsChild) {
-            Write-Info "Automatic login didn't produce a key - falling back to manual entry"
-            $apiKey = Read-OmniRouteApiKey
-        }
-        if (-not $apiKey) {
-            if ($script:IsChild) {
-                # Don't block a spawned project window on a secure-string
-                # prompt nobody may be there to answer - run the launcher
-                # window once to finish this instead.
-                Write-Warning "No OmniRoute API key yet - run the launcher window once to finish setup"
-            } else {
-                Write-Warning "No key entered - OmniRoute routing isn't usable this launch"
-                Write-Hint "You'll be asked again next launch; nothing is permanently turned off."
-            }
-            return $false
-        }
-        Save-OmniRouteApiKey -PlainKey $apiKey
-    } else {
-        Write-Success "OmniRoute API key already saved - not asking again"
-    }
-
-    # Validate. This is the ONLY place a saved key can be discarded, and only
-    # on an explicit rejection.
-    $catalog = Get-OmniRouteCatalog -ApiKey $apiKey
-    if ($catalog.Reachable -and -not $catalog.Authorized) {
-        Write-Warning "OmniRoute rejected the saved API key"
-        # A revoked/rotated key doesn't necessarily mean the dashboard
-        # password changed too - try the automatic path again (it'll reuse
-        # the remembered password, or CHANGEME) before bothering the user.
-        $apiKey = Request-OmniRouteApiKeyAutomatically
-        if (-not $apiKey -and -not $script:IsChild) { $apiKey = Read-OmniRouteApiKey -Prompt "New OmniRoute API key" }
-        if (-not $apiKey) {
-            if ($script:IsChild) {
-                Write-Warning "Rejected key and no automatic re-login - run the launcher window once to re-enter it"
-            } else {
-                Write-Warning "No key entered - OmniRoute routing isn't usable this launch"
-                Write-Hint "You'll be asked again next launch; nothing is permanently turned off."
-            }
-            return $false
-        }
-        Save-OmniRouteApiKey -PlainKey $apiKey
-        $catalog = Get-OmniRouteCatalog -ApiKey $apiKey
-    }
-
-    if ($catalog.Authorized) {
-        if ($hadSavedKey -and -not $script:Config.OmniRouteKeyVerifiedUtc) {
-            $script:Config.OmniRouteKeyVerifiedUtc = (Get-Date).ToUniversalTime().ToString('o')
-            Save-Configuration
-        } elseif (-not $hadSavedKey) {
-            Save-OmniRouteApiKey -PlainKey $apiKey -Verified
-            Write-Success "API key saved (encrypted for this Windows account only) and verified"
-        }
-        Write-Success "OmniRoute catalog reachable ($($catalog.Models.Count) models)"
-    } else {
-        Write-Warning "Could not read OmniRoute's catalog - keeping the saved key and continuing"
-        Write-Log "Catalog unavailable: $(Get-Truncated $catalog.Error 200)" -Level "DEBUG"
-    }
-
-    $null = Confirm-ClaudeCodeProvider -CatalogModels $catalog.Models
-
-    # Needs a working key, which is why this is last - safe to attempt even
-    # if the provider connection above is still pending (routing tools and
-    # having a connected Claude provider are independent of each other).
-    Register-OmniRouteMcpServer
-    return $true
-}
-
-# ----------------------------------------------------------------------------
-# PER-LAUNCH ENVIRONMENT - runs in each project window, right before `claude`
-# ----------------------------------------------------------------------------
-
-function Set-OmniRouteLaunchEnvironment {
-    # Process-scoped only - never touches the permanent environment, so each
-    # project window configures itself independently and closing one has no
-    # effect on the others.
-    if (-not $script:OMNIROUTE_ROUTE_CLAUDE) {
-        # v5.2 default: Claude Code launches natively, untouched by OmniRoute
-        # - see $script:OMNIROUTE_ROUTE_CLAUDE's comment / AUDIT.md for why
-        # (Anthropic ToS prohibits subscription-OAuth traffic through a
-        # third-party gateway). Nothing to configure; the 1M-context model
-        # pinning and availableModels restriction below never run either,
-        # since both only make sense when actually routed through OmniRoute.
-        return $false
-    }
-    $apiKey = Get-OmniRouteApiKey
-    if (-not $apiKey) {
-        # Reaches here mainly when config.json came from another Windows
-        # account (DPAPI is account-bound), so decryption failed rather than
-        # the key being absent.
-        Write-Warning "Saved OmniRoute API key could not be read - re-entering it now"
-        if ($script:IsChild) {
-            # Never block a spawned project window on a secure-string prompt
-            # nobody may be there to answer - same guard Initialize-OmniRoute
-            # already applies to every other DPAPI-failure/missing-key path.
-            Write-Warning "No OmniRoute API key available in this project window - run the launcher window once to fix it"
-            Write-Hint "Launching Claude directly (it will ask you to log in) instead of blocking this window."
-            return $false
-        }
-        $apiKey = Read-OmniRouteApiKey
-        if (-not $apiKey) {
-            Write-Warning "No key entered - launching Claude directly (it will ask you to log in)"
-            return $false
-        }
-        Save-OmniRouteApiKey -PlainKey $apiKey
-    }
-
-    if (-not (Wait-OmniRouteReady -MaxWaitSeconds 25)) {
-        Write-Warning "OmniRoute isn't responding at $script:OMNIROUTE_URL - launching Claude directly (it will ask you to log in)"
-        Write-Hint "Once OmniRoute finishes booting, use /model inside Claude to switch to the OmniRoute models."
-        return $false
-    }
-
-    $env:ANTHROPIC_BASE_URL = $script:OMNIROUTE_URL   # root URL, no /v1 suffix
-    $env:ANTHROPIC_AUTH_TOKEN = $apiKey
-    $env:CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = "1"
-
-    # Gateway model discovery only surfaces bare claude*/anthropic*-prefixed
-    # IDs in the picker, and a bare Claude ID can come back "Ambiguous model"
-    # when several connected providers expose it. This opt-in OmniRoute
-    # setting makes unprefixed claude-* IDs resolve to the Claude Code
-    # provider, which is where we want them.
-    [Environment]::SetEnvironmentVariable("OMNIROUTE_PREFER_CLAUDE_CODE_FOR_UNPREFIXED_CLAUDE_MODELS", "true", "Process")
-
-    # If a real Anthropic API key is set in this environment, Claude Code can
-    # prefer it over ANTHROPIC_AUTH_TOKEN and bypass OmniRoute entirely (this
-    # is what "randomly asks for login" usually turns out to be). Clear it for
-    # this process only so OmniRoute is the only path Claude Code has.
-    if ($env:ANTHROPIC_API_KEY) {
-        Write-Log "Clearing pre-existing ANTHROPIC_API_KEY for this process so OmniRoute is used instead" -Level "DEBUG"
-        [Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", $null, "Process")
-    }
-
-    # ---- Resolve and pin the two 1M models ----
-    $catalog = Get-OmniRouteCatalog -ApiKey $apiKey
-    if (-not $catalog.Authorized -or $catalog.Models.Count -eq 0) {
-        # The catalog can be briefly unavailable right after the server starts
-        # answering. One retry before giving up on pinning.
-        Start-Sleep -Seconds 2
-        $catalog = Get-OmniRouteCatalog -ApiKey $apiKey
-    }
-
-    $modelPins = @(
-        @{ Family = 'opus';   EnvVar = 'ANTHROPIC_DEFAULT_OPUS_MODEL';   NameVar = 'ANTHROPIC_DEFAULT_OPUS_MODEL_NAME';   Label = 'Opus 5 - 1M - OmniRoute' }
-        @{ Family = 'sonnet'; EnvVar = 'ANTHROPIC_DEFAULT_SONNET_MODEL'; NameVar = 'ANTHROPIC_DEFAULT_SONNET_MODEL_NAME'; Label = 'Sonnet 5 - 1M - OmniRoute' }
-    )
-    $pinnedIds = [System.Collections.ArrayList]::new()
-    foreach ($pin in $modelPins) {
-        $resolved = Resolve-OmniRoute1MModel -Family $pin.Family -Models $catalog.Models
-        if (-not $resolved) {
-            Write-Warning "No 1M-context $($pin.Family) model found in OmniRoute's catalog - not pinning one"
-            Write-Log "$($pin.Family): unpinned; Claude Code's built-in default for that tier stays in place" -Level "DEBUG"
-            continue
-        }
-        [Environment]::SetEnvironmentVariable($pin.EnvVar, $resolved.Id, "Process")
-        # Display name so the picker shows "Opus 5 - 1M - OmniRoute" rather
-        # than something indistinguishable from the stock entry.
-        [Environment]::SetEnvironmentVariable($pin.NameVar, $pin.Label, "Process")
-        $null = $pinnedIds.Add($resolved.Id)
-        $contextNote = if ($resolved.Context -ge $script:MIN_1M_CONTEXT) { "$([math]::Round($resolved.Context / 1000000.0, 2))M context" } else { "1M context (by model definition)" }
-        Write-Success "$($pin.Label)  ->  $($resolved.Id)  [$contextNote]"
-    }
-
-    if ($pinnedIds.Count -eq 0) {
-        Write-Warning "Neither 1M model could be pinned - /model may still show non-OmniRoute entries"
-        Write-Hint "Check that the Claude Code provider is connected in OmniRoute's dashboard."
-    } else {
-        # Claude Code auto-compacts well before 1M by default, which would
-        # throw away most of the window we just went to the trouble of
-        # pinning. Raise the threshold and the output cap to match the models.
-        [Environment]::SetEnvironmentVariable("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "$($script:AUTO_COMPACT_WINDOW)", "Process")
-        [Environment]::SetEnvironmentVariable("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "$($script:MAX_OUTPUT_TOKENS)", "Process")
-        Write-Hint "Auto-compact at $([math]::Round($script:AUTO_COMPACT_WINDOW / 1000)) k tokens, max output $([math]::Round($script:MAX_OUTPUT_TOKENS / 1000)) k"
-        Set-ClaudeAvailableModels -ModelIds @($pinnedIds)
-    }
-
-    if ($Model) {
-        # -Model sonnet|opus: session-only override so this launch doesn't
-        # fall back onto whatever Claude Code last saved as its default.
-        # Doesn't touch the saved default and doesn't persist to next launch.
-        Write-Info "Forcing this session onto $Model (via -Model flag)"
-        $script:ForcedModelAlias = $Model
-    }
-
-    Write-Info "Routing Claude through OmniRoute ($env:ANTHROPIC_BASE_URL)"
-    Write-Hint "Compression applies automatically. Switch models inside Claude Code with /model."
-    return $true
 }
 
 # ============================================================================
@@ -4904,8 +3681,7 @@ function Show-GraphResult {
     Write-Hint ("file:///" + $studioFile.Replace('\', '/'))
     # Never block a spawned project window on a prompt nobody may be watching
     # - the multi-window picker can open several at once. Same guard pattern
-    # used throughout Start-OmniRoute / Confirm-ClaudeCodeProvider /
-    # Find-ClaudeExecutable.
+    # used throughout Find-ClaudeExecutable and elsewhere.
     if ($script:IsChild) { return }
     if (Read-YesNo "Open the graph now?" $false) { Start-Process $studioFile -ErrorAction Stop }
 }
@@ -4966,8 +3742,13 @@ function Start-ClaudeSession {
         [string]$ResumeMode = "New"
     )
     Write-Section "Launch Claude"
-    $script:ForcedModelAlias = $null
-    $script:OmniRouteRouted = [bool](Set-OmniRouteLaunchEnvironment)
+    # -Model sonnet|opus: session-only override so this launch doesn't fall
+    # back onto whatever Claude Code last saved as its default. Doesn't touch
+    # the saved default and doesn't persist to next launch.
+    $script:ForcedModelAlias = if ($Model) {
+        Write-Info "Forcing this session onto $Model (via -Model flag)"
+        $Model
+    } else { $null }
 
     $claudeArgs = @()
     switch ($ResumeMode) {
@@ -5011,7 +3792,7 @@ function Start-ClaudeSession {
                 Write-Warning "Claude exited with error: $_"
             }
         } else {
-            Write-Log "Launching Claude: $ClaudePath $($claudeArgs -join ' ') in $($PWD.Path) | routed=$($script:OmniRouteRouted)"
+            Write-Log "Launching Claude: $ClaudePath $($claudeArgs -join ' ') in $($PWD.Path)"
             try {
                 if ($claudeArgs.Count -gt 0) { & $ClaudePath @claudeArgs } else { & $ClaudePath }
                 if ($isResumeAttempt -and $LASTEXITCODE -ne 0) {
@@ -5035,21 +3816,19 @@ function Show-SessionSummary {
     [CmdletBinding()]
     param(
         [string]$ProjectPath,
-        [bool]$Resumed,
-        [bool]$OmniRouteActive
+        [bool]$Resumed
     )
     Write-Section "Session summary"
     Write-Hint ("Project     " + (Split-Path $ProjectPath -Leaf))
     Write-Hint ("Session     " + $(if ($Resumed) { "resumed" } else { "new" }))
-    Write-Hint ("OmniRoute   " + $(if ($OmniRouteActive) { "active - Opus 5 / Sonnet 5 at 1M context, compression applied automatically" } else { "not used" }))
     Write-Hint ("Elapsed     " + (Get-Elapsed))
 }
 
 # ============================================================================
 # PROJECT MODE - one spawned window, one project folder
 #   Skips the machine-wide bootstrap the launcher window already did (winget
-#   installs, update prompts, starting the OmniRoute server) and gets straight
-#   to this project's graph and its own Claude session.
+#   installs, update prompts) and gets straight to this project's graph and
+#   its own Claude session.
 # ============================================================================
 
 function Invoke-ProjectMode {
@@ -5104,11 +3883,11 @@ function Invoke-ProjectMode {
     # fast and unambiguous.
     $useGraphify = Test-ProjectExceedsGraphifyThreshold
 
-    # Four ordered setup phases, same dependency order as the launcher
-    # window's (PATH -> Graphify -> Claude Code -> OmniRoute), scaled down
-    # since a child window skips the winget/update work the launcher already
-    # did for the machine as a whole.
-    $totalSteps = 4
+    # Three ordered setup phases, same dependency order as the launcher
+    # window's (PATH -> Graphify -> Claude Code), scaled down since a child
+    # window skips the winget/update work the launcher already did for the
+    # machine as a whole.
+    $totalSteps = 3
 
     Write-Section -Name "Environment" -Step 1 -TotalSteps $totalSteps
     Add-StandardPaths
@@ -5139,24 +3918,12 @@ function Invoke-ProjectMode {
         Stop-Script -Code 103 -Reason "Claude Code could not be found or verified in this project window (run the launcher window once first)"
     }
     Write-Success "Claude: $claudePath"
-    if (-not $script:OMNIROUTE_ROUTE_CLAUDE) {
-        Write-Hint "OmniRoute routing is off - Claude Code runs natively (Anthropic ToS prohibits subscription-OAuth traffic through a third-party gateway; see AUDIT.md)."
-        Remove-StaleOmniRouteMcpServer
-    }
 
     # Same reasoning as the launcher window: a project window opened
     # directly (no launcher run first) may be the first thing that's ever
     # run on this machine, so this is the fallback place companion tooling
-    # gets installed. Skipped with no output once all six are present.
+    # gets installed. Skipped with no output once all eight are present.
     if (-not (Test-CompanionToolingComplete)) { Install-CompanionTooling }
-
-    # v5.2: OmniRoute onboarding is skipped entirely by default - see
-    # $script:OMNIROUTE_ROUTE_CLAUDE. No point booting OmniRoute, prompting
-    # for its API key, or spawning its window if nothing is going to route
-    # through it.
-    if ($script:OMNIROUTE_ROUTE_CLAUDE -and (-not $script:Config.OmniRouteKeyVerifiedUtc -or -not (Test-CommandAvailable "omniroute" -UseCache))) {
-        $null = Initialize-OmniRoute -Step 4 -TotalSteps $totalSteps
-    }
 
     # Gated by the narrowed per-project lock (see above): this is the part
     # that actually writes .graphify\graph.json and the project's
@@ -5215,9 +3982,9 @@ function Invoke-ProjectMode {
         # sessions / 5 full-detail, see docs.claude-mem.ai/configuration) are
         # tuned for larger, longer-lived codebases. A small project doesn't
         # need that much prior context replayed at every session start.
-        # Process-scoped only, same as OmniRoute's env vars used to be -
-        # never touches the shared ~/.claude-mem/settings.json, so it has no
-        # effect on any other project.
+        # Process-scoped only - never touches the shared
+        # ~/.claude-mem/settings.json, so it has no effect on any other
+        # project.
         $env:CLAUDE_MEM_CONTEXT_OBSERVATIONS = "20"
         $env:CLAUDE_MEM_CONTEXT_SESSION_COUNT = "5"
         $env:CLAUDE_MEM_CONTEXT_FULL_COUNT = "2"
@@ -5236,9 +4003,9 @@ function Invoke-ProjectMode {
     Write-Host ""
     # Never block a spawned project window on a prompt nobody may be
     # watching - the multi-window picker can open several at once. Same
-    # guard pattern used throughout Start-OmniRoute / Confirm-
-    # ClaudeCodeProvider / Find-ClaudeExecutable: default to launching
-    # immediately instead of waiting for a keypress that may never come.
+    # guard pattern used throughout Find-ClaudeExecutable and elsewhere:
+    # default to launching immediately instead of waiting for a keypress
+    # that may never come.
     $exitRequested = $false
     if ($script:IsChild) {
         Write-Info "Launching Claude..."
@@ -5271,7 +4038,7 @@ function Invoke-ProjectMode {
     }
 
     Start-ClaudeSession -ClaudePath $claudePath -ResumeMode $resumeMode
-    Show-SessionSummary -ProjectPath $Path -Resumed ($resumeMode -ne 'New') -OmniRouteActive ([bool]$script:OmniRouteRouted)
+    Show-SessionSummary -ProjectPath $Path -Resumed ($resumeMode -ne 'New')
 
     Write-Section "Done"
     Write-Success "Completed in $(Get-Elapsed)"
@@ -5295,13 +4062,13 @@ function Invoke-LauncherMode {
     Write-Log "=== LAUNCHER STARTED === v$($script:APP_VERSION) | User: $env:USERNAME | PID: $PID"
     Register-CleanupHandlers
 
-    # Six ordered setup phases, each depending only on what came before it:
+    # Five ordered setup phases, each depending only on what came before it:
     # OS support -> PATH -> required tools -> Graphify -> Claude Code ->
-    # companion tooling -> OmniRoute routing (needs Claude Code found; the
-    # optional update check sits between companion tooling and OmniRoute but
-    # isn't itself a numbered step since it's opt-in).
-    # After that the interactive picker is the main task, not a "step".
-    $totalSteps = 6
+    # companion tooling (needs Claude Code found; the optional update check
+    # runs after companion tooling but isn't itself a numbered step since
+    # it's opt-in). After that the interactive picker is the main task, not
+    # a "step".
+    $totalSteps = 5
 
     Write-Section -Name "Environment" -Step 1 -TotalSteps $totalSteps
     Test-WindowsVersion
@@ -5335,18 +4102,6 @@ function Invoke-LauncherMode {
     # Optional and opt-in (or -ForceUpdate / -SkipUpdateCheck). Runs after
     # the tools above are confirmed present.
     Invoke-UpdateCheckIfRequested
-
-    # v5.2: skipped by default - see $script:OMNIROUTE_ROUTE_CLAUDE. One
-    # OmniRoute server would otherwise serve every project window, with
-    # onboarding running at most once per machine, but there's nothing to
-    # onboard if Claude traffic is never going to be routed through it.
-    if ($script:OMNIROUTE_ROUTE_CLAUDE) {
-        $null = Initialize-OmniRoute -Step 6 -TotalSteps $totalSteps
-    } else {
-        Write-Section -Name "OmniRoute routing" -Step 6 -TotalSteps $totalSteps
-        Write-Info "Off by default - Claude Code runs natively (Anthropic ToS prohibits subscription-OAuth traffic through a third-party gateway; see AUDIT.md)"
-        Remove-StaleOmniRouteMcpServer
-    }
 
     # ---- Setup complete - interactive picker loop ----
     $masterPath = Read-MasterFolder
@@ -5392,9 +4147,9 @@ function Invoke-LauncherMode {
         foreach ($project in $targetProjects) {
             if (Start-ProjectWindow -ProjectDirectory $project) {
                 $openedCount++
-                # Stagger the spawns slightly: several windows hitting pip,
-                # npx and the OmniRoute catalog in the same instant is a
-                # needless thundering herd on a cold start.
+                # Stagger the spawns slightly: several windows hitting pip
+                # and npx in the same instant is a needless thundering herd
+                # on a cold start.
                 Start-Sleep -Milliseconds 700
             }
         }
@@ -5467,9 +4222,11 @@ function Invoke-CompleteUninstaller {
     $skillsDir  = Join-Path $claudeBase "skills"
     $pluginsDir = Join-Path $claudeBase "plugins"
 
-    # 1. Remove Claude MCP Server registration (OmniRoute)
+    # 1. Remove leftover Claude MCP Server registration from OmniRoute-era
+    # installs (v5.5 removed OmniRoute entirely - this is cleanup for anyone
+    # upgrading from an older version, harmless no-op otherwise).
     if (Test-CommandAvailable "claude" -UseCache) {
-        Write-Info "Removing OmniRoute MCP server from Claude..."
+        Write-Info "Removing any leftover OmniRoute MCP server registration..."
         $null = Invoke-ExternalCommand -Command "claude" -Arguments "mcp remove omniroute --scope user" -TimeoutSeconds 15 -Silent -NoLog
     }
 
@@ -5478,7 +4235,18 @@ function Invoke-CompleteUninstaller {
         Write-Info "Uninstalling Official Claude Code plugins..."
         $null = Invoke-ExternalCommand -Command "claude" -Arguments "plugin uninstall claude-code-setup@claude-plugins-official --scope user" -TimeoutSeconds 30 -Silent
         $null = Invoke-ExternalCommand -Command "claude" -Arguments "plugin uninstall claude-md-management@claude-plugins-official --scope user" -TimeoutSeconds 30 -Silent
+        Write-Info "Uninstalling Caveman plugin..."
+        $null = Invoke-ExternalCommand -Command "claude" -Arguments "plugin uninstall caveman@caveman --scope user" -TimeoutSeconds 30 -Silent
     }
+
+    # 2b. Remove RTK (binary + its Claude Code hook registration)
+    $rtkDir = Join-Path $env:LOCALAPPDATA "rtk"
+    if (Test-Path $rtkDir) {
+        Write-Info "Removing RTK..."
+        Remove-Item -Path $rtkDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    $rtkHook = Join-Path $env:USERPROFILE ".claude\hooks\rtk-rewrite.sh"
+    if (Test-Path $rtkHook) { Remove-Item -Path $rtkHook -Force -ErrorAction SilentlyContinue }
 
     # 3. Targeted Removal of Custom Installed Plugins from ~/.claude/plugins
     Write-Info "Cleaning up script plugins & cache..."
@@ -5533,7 +4301,7 @@ function Invoke-CompleteUninstaller {
 
     # 5. Uninstall Global NPM Packages including Claude Code CLI
     if (Test-CommandAvailable "npm" -UseCache) {
-        Write-Info "Uninstalling global NPM tools (Claude CLI, omniroute, claude-mem, autoskills)..."
+        Write-Info "Uninstalling global NPM tools (Claude CLI, claude-mem, autoskills)..."
 
         $null = Invoke-ExternalCommand `
             -Command "npm" `
@@ -5542,7 +4310,7 @@ function Invoke-CompleteUninstaller {
             -ShowSpinner `
             -SpinnerLabel "Removing NPM packages"
 
-        # Remove stale OmniRoute shims/package leftovers
+        # Remove stale OmniRoute shims/package leftovers from pre-v5.5 installs
         try {
             $npmGlobal = Join-Path $env:APPDATA "npm"
 
@@ -5596,8 +4364,8 @@ function Invoke-Main {
     Initialize-Configuration
 
     # Launcher-only: a spawned project window is the wrong place to offer
-    # ripping out shared global tools (Claude CLI, OmniRoute, etc.) out from
-    # under its sibling windows, and there's no reason every one of several
+    # ripping out shared global tools (Claude CLI, RTK, etc.) out from under
+    # its sibling windows, and there's no reason every one of several
     # concurrently-opened project windows should show this prompt at all.
     if (-not $script:IsChild) {
         Invoke-CompleteUninstaller -TimeoutSeconds 3

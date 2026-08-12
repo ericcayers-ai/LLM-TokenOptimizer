@@ -654,8 +654,35 @@
       of silently trusting a stale flag) so what the console reports matches
       what's really live for that session, not what installed successfully
       at some point in the past.
+    v5.7 - self-heal for claude-mem's tracked Windows worker bug, which
+    reached this launcher for real (thedotmack/claude-mem#2926, still open
+    upstream as of this writing):
+    - claude-mem's background worker can die without releasing its listener
+      on port 37777 (CLAUDE_MEM_WORKER_PORT); the next session's worker then
+      fails to bind ("Failed to start server. Is port 37777 in use?") and
+      never comes up. Because the UserPromptSubmit hook fails CLOSED instead
+      of open when the worker is unreachable, every single prompt gets
+      blocked and the failure counter in
+      ~/.claude-mem/state/hook-failures.json climbs without bound (seen live:
+      "consecutiveFailures":127) - the whole session is unusable until
+      someone manually kills the orphaned process and clears that file. New
+      Repair-ClaudeMemWorker runs this exact fix automatically, right before
+      Claude launches, matching the two mitigations the upstream issue itself
+      proposes since no real fix has shipped yet: (1) reclaim the port only
+      if the process holding it is orphaned (not enumerable from this
+      session - Get-Process on its PID returns nothing, the same signature
+      the bug report captured via Get-NetTCPConnection), never touching a
+      live, still-enumerable worker; (2) clear
+      hook-failures.json/supervisor.json once the failure count is clearly
+      stuck (>=10 in a row) so a fresh worker gets a clean slate instead of
+      inheriting a counter that only resets on a full manual cleanup. Entirely
+      best-effort - wrapped in try/catch throughout, a no-op if claude-mem
+      was never installed, and never blocks or delays launch on its own
+      failure. Called from Start-ClaudeSession right before
+      Test-CompressionMethodsActive, same "right before Claude launches"
+      placement.
 .NOTES
-    Version: 5.6.0
+    Version: 5.7.0
     Exit Codes:
         0   - Success
         99  - Unexpected error
@@ -727,7 +754,7 @@ try {
 
 # Application constants
 $script:APP_NAME = "LLM-TokenOptimizer"
-$script:APP_VERSION = "5.6.0"
+$script:APP_VERSION = "5.7.0"
 $script:MAX_HISTORY = 20
 $script:MAX_LOG_FILES = 10
 # Upper bound on Stop-Script's "press Enter to close" wait, so a window
@@ -1338,6 +1365,17 @@ function Get-DefaultConfiguration {
         # session memory RTK doesn't do. No proxy, no ANTHROPIC_BASE_URL, no
         # OAuth involvement - see Install-ContextModeMcp / AUDIT.md.
         ContextModeMcpRegistered = $false
+        # v5.7: agent-skills ecosystem - see Install-AgentSkillsEcosystem and
+        # AUDIT.md. Each flag below mirrors the "have we already done X"
+        # convention used throughout this file.
+        LMStudioSupportInstalled = $false
+        AntigravityProxyInstalled = $false
+        AgentSkillsPackInstalled = $false
+        AgentReachInstalled = $false
+        AppleDesignSkillInstalled = $false
+        HermesGraphifyInstalled = $false
+        WatchVideoSkillInstalled = $false
+        PromptEngineeringSkillInstalled = $false
     }
 }
 
@@ -1972,16 +2010,89 @@ function Test-CommandAvailable {
     return $result
 }
 
+function Test-CommandExecutes {
+    # Get-Command / Test-Path only prove a name resolves to *something* on
+    # PATH - on Windows that "something" is very often a Microsoft Store App
+    # Execution Alias stub (python.exe, python3.exe, pip.exe under
+    # WindowsApps, or a leftover Scripts\pip.exe from an unrelated broken
+    # venv - both seen live on real machines) that fails with "cannot
+    # execute: required file not found" the instant anything actually tries
+    # to run it. Confirmed live: `Test-CommandAvailable python3` reported
+    # true while `python3 --version` failed in both bash and PowerShell.
+    # This actually launches the command and requires a real zero exit code.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path, [string]$Arguments = "--version")
+    try {
+        $result = Invoke-ExternalCommand -Command $Path -Arguments $Arguments -TimeoutSeconds 8 -Silent -NoLog
+        return [bool]$result.Success
+    } catch { return $false }
+}
+
+function Get-WorkingPythonExe {
+    # Returns the full path to a Python interpreter that actually runs, not
+    # just one that resolves on PATH (see Test-CommandExecutes). Cached for
+    # the life of this process since PATH/installs don't change mid-run.
+    if ($script:DependencyCache.ContainsKey("__WorkingPython")) { return $script:DependencyCache["__WorkingPython"] }
+    $candidates = [System.Collections.ArrayList]::new()
+
+    # 1. The `py` launcher, when present, is the most reliable resolver on
+    #    Windows - it's registered by python.org installers specifically
+    #    (not by Store aliases) and picks a real interpreter.
+    $py = Get-Command "py" -ErrorAction SilentlyContinue
+    if ($py) {
+        try {
+            $pyResult = Invoke-ExternalCommand -Command "py" -Arguments "-3 -c `"import sys; print(sys.executable)`"" -TimeoutSeconds 8 -Silent -NoLog
+            if ($pyResult.Success -and $pyResult.Output.Trim()) { $null = $candidates.Add($pyResult.Output.Trim()) }
+        } catch {}
+    }
+
+    # 2. Whatever "python" / "python3" resolve to on PATH.
+    foreach ($name in @("python", "python3")) {
+        $cmd = Get-Command $name -ErrorAction SilentlyContinue
+        if ($cmd -and $cmd.Source) { $null = $candidates.Add($cmd.Source) }
+    }
+
+    # 3. Known python.org install locations, newest version first, in case
+    #    none of the above are on PATH at all yet.
+    $globs = @(
+        "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe",
+        "$env:ProgramFiles\Python3*\python.exe"
+    )
+    foreach ($glob in $globs) {
+        Get-ChildItem $glob -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | ForEach-Object { $null = $candidates.Add($_.FullName) }
+    }
+
+    foreach ($candidate in ($candidates | Select-Object -Unique)) {
+        if ((Test-Path $candidate -PathType Leaf) -and (Test-CommandExecutes -Path $candidate)) {
+            $script:DependencyCache["__WorkingPython"] = $candidate
+            return $candidate
+        }
+    }
+    $script:DependencyCache["__WorkingPython"] = $null
+    return $null
+}
+
 function Find-ExecutableInPaths {
+    # SearchPaths, when given, is checked BEFORE the generic PATH lookup -
+    # every current caller passes it to pin down one specific real install
+    # (Git Bash) among several same-named executables that can legitimately
+    # exist on PATH. Confirmed live: on a machine with WSL installed,
+    # `Get-Command bash` resolves to C:\WINDOWS\system32\bash.exe (WSL's
+    # launcher) ahead of Git's bash.exe, and WSL's bash chokes on the
+    # Windows-style paths (C:/Users/...) this script hands it - every caller
+    # of this function for "bash" would silently get the wrong interpreter
+    # and fail with "No such file or directory" despite Git Bash being
+    # correctly installed. Checking SearchPaths first makes the parameter's
+    # entire reason for existing actually take effect.
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Name, [string[]]$SearchPaths)
-    $cmd = Get-Command $Name -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
     foreach ($basePath in $SearchPaths) {
         foreach ($candidate in @((Join-Path $basePath "$Name.exe"), (Join-Path $basePath "$Name.cmd"), (Join-Path $basePath $Name))) {
             if (Test-Path $candidate -PathType Leaf) { return $candidate }
         }
     }
+    $cmd = Get-Command $Name -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
     return $null
 }
 
@@ -2099,18 +2210,25 @@ function Install-Graphify {
     # dependencies before this runs). Best-effort with a --user fallback for
     # machines where the system Python install directory isn't writable.
     if (Test-CommandAvailable "graphify" -UseCache) { return $true }
-    if (-not (Test-CommandAvailable "pip" -UseCache)) {
-        Write-Fail "pip is not available - cannot install Graphify"
+
+    # Never shell out to bare `pip` - on real machines it can resolve to a
+    # broken Microsoft Store alias stub or a stale venv's leftover
+    # Scripts\pip.exe (both seen live: `pip install ...` exited 1 with zero
+    # output, no error text at all - just silently did nothing). Route
+    # through a Python interpreter that's actually been proven to execute.
+    $pythonExe = Get-WorkingPythonExe
+    if (-not $pythonExe) {
+        Write-Fail "No working Python interpreter found - cannot install Graphify"
         Write-Hint "Install Python from https://python.org with 'Add pip' checked, then run this script again."
         return $false
     }
 
     Write-Info "Installing Graphify (pip install graphifyy)..."
-    $result = Invoke-ExternalCommand -Command "pip" -Arguments "install --upgrade graphifyy" -TimeoutSeconds 180 -ShowSpinner -SpinnerLabel "Installing Graphify"
+    $result = Invoke-ExternalCommand -Command $pythonExe -Arguments "-m pip install --upgrade graphifyy" -TimeoutSeconds 180 -ShowSpinner -SpinnerLabel "Installing Graphify"
 
     if (-not $result.Success -and ($result.Output -match "Permission denied|Access is denied|WinError 5")) {
         Write-Warning "System-wide install failed (no admin rights) - retrying with --user"
-        $result = Invoke-ExternalCommand -Command "pip" -Arguments "install --upgrade --user graphifyy" -TimeoutSeconds 180 -ShowSpinner -SpinnerLabel "Installing Graphify (user)"
+        $result = Invoke-ExternalCommand -Command $pythonExe -Arguments "-m pip install --upgrade --user graphifyy" -TimeoutSeconds 180 -ShowSpinner -SpinnerLabel "Installing Graphify (user)"
     }
 
     if (-not $result.Success) {
@@ -2417,43 +2535,157 @@ function Install-ClaudeMem {
     return $false
 }
 
+function Repair-HeadroomPython3Refs {
+    # headroom's upstream installer hardcodes bare `python3` in both the
+    # generated PostToolUse hook command (settings.json) and
+    # ~/.claude/statusline.sh. On Windows that name routinely resolves to a
+    # Microsoft Store App Execution Alias stub that fails with "cannot
+    # execute: required file not found" the moment it's actually invoked -
+    # confirmed live on this machine in both a spawned bash and PowerShell,
+    # even though `command -v python3` / Get-Command both report it as
+    # present. Rewrites both files to call an absolute, execution-verified
+    # interpreter instead, so the statusline and hook actually work rather
+    # than silently failing (fast enough - 3s hook timeout - that it's easy
+    # to never notice).
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$PythonExe)
+    $configDir = Get-ClaudeConfigDir
+    $forwardSlashPython = $PythonExe -replace '\\', '/'
+    $changed = $false
+    # `Set-Content -Encoding UTF8` writes a UTF-8 BOM, which breaks bash's
+    # shebang/comment parsing on statusline.sh - confirmed live: bash tried
+    # to literally execute the BOM-glued "#!/bin/bash" line as a command
+    # ("No such file or directory") because the invisible BOM bytes stop '#'
+    # from being word-initial, so bash no longer treats it as a comment.
+    # Write with a plain (no-BOM) UTF8Encoding instead.
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+    $statuslinePath = Join-Path $configDir "statusline.sh"
+    if (Test-Path $statuslinePath) {
+        try {
+            $content = Get-Content $statuslinePath -Raw -Encoding UTF8
+            if ($content -notmatch 'PYTHON3=') {
+                # Not patched yet: swap every bare `python3` call for
+                # `"$PYTHON3"` FIRST, then inject the PYTHON3="..." var line
+                # last. Order matters - PowerShell's -replace is
+                # case-INSENSITIVE by default, so doing this the other way
+                # round makes the `\bpython3\b` pass match the just-inserted
+                # `PYTHON3=` line too (confirmed live: produced the broken
+                # `"$PYTHON3"="C:/...python.exe"`). Idempotent: no-op once
+                # PYTHON3= is already present.
+                $newContent = $content -replace '\bpython3\b', '"$PYTHON3"'
+                $newContent = $newContent -replace '(?m)^#!/bin/bash', "#!/bin/bash`nPYTHON3=`"$forwardSlashPython`""
+                [System.IO.File]::WriteAllText($statuslinePath, $newContent, $utf8NoBom)
+                $changed = $true
+            }
+        } catch { Write-Log "Failed to repair statusline.sh python3 refs: $_" -Level "WARN" }
+    }
+
+    $settingsPath = Join-Path $configDir "settings.json"
+    if (Test-Path $settingsPath) {
+        try {
+            $raw = Get-Content $settingsPath -Raw -Encoding UTF8
+            if ($raw -match '"command":\s*"python3 ') {
+                # Use forward slashes (valid on Windows, no JSON backslash-
+                # escaping to get wrong) so the interpreter path drops
+                # straight into the JSON string literal.
+                $newRaw = $raw -replace '"command":\s*"python3 ', "`"command`": `"\`"$forwardSlashPython\`" "
+                [System.IO.File]::WriteAllText($settingsPath, $newRaw, $utf8NoBom)
+                $changed = $true
+            }
+        } catch { Write-Log "Failed to repair settings.json python3 hook ref: $_" -Level "WARN" }
+    }
+    return $changed
+}
+
+function Test-HeadroomWorking {
+    # Functional check, not a string grep: actually runs the installed
+    # statusline script and confirms it exits cleanly. A prior version of
+    # this installer only checked for the literal text "headroom" inside
+    # settings.json, which is true even when the statusline silently fails
+    # every single invocation (the exact bug this function now catches).
+    $configDir = Get-ClaudeConfigDir
+    $statuslinePath = Join-Path $configDir "statusline.sh"
+    if (-not (Test-Path $statuslinePath)) { return $false }
+    $bash = Find-ExecutableInPaths -Name "bash" -SearchPaths @(
+        "$env:ProgramFiles\Git\bin", "${env:ProgramFiles(x86)}\Git\bin", "$env:ProgramFiles\Git\usr\bin"
+    )
+    if (-not $bash) { return $false }
+    $result = Invoke-ExternalCommand -Command $bash -Arguments "-lc `"bash '$($statuslinePath -replace '\\','/')'`"" -TimeoutSeconds 10 -Silent -NoLog
+    return $result.Success
+}
+
 function Install-HeadroomStatusline {
     # Context-window usage bar for Claude Code's statusline. Ships as a bash
     # installer with no native Windows path; Git for Windows - already a
     # required dependency of this script - provides the bash.exe needed to
     # run it, and Claude Code's own statusline command runs on the same
     # bash.exe afterward, so this doesn't add a new runtime requirement.
-    if ($script:Config.HeadroomInstalled) { Write-Success "headroom statusline already installed"; return $true }
+    #
+    # Deliberately does NOT trust $script:Config.HeadroomInstalled as a
+    # short-circuit on its own: that flag can be true from a prior run of
+    # this exact installer that "succeeded" (its own exit code was 0) while
+    # the statusline it wired up is actually broken (see Test-HeadroomWorking
+    # doc comment) - confirmed live on this machine. Always re-verify.
+    if ($script:Config.HeadroomInstalled -and (Test-HeadroomWorking)) {
+        Write-Success "headroom statusline already installed and verified working"
+        return $true
+    }
+
+    $pythonExe = Get-WorkingPythonExe
+    if (-not $pythonExe) {
+        Write-Warning "No working Python interpreter found - skipping the headroom statusline"
+        return $false
+    }
+
     $bash = Find-ExecutableInPaths -Name "bash" -SearchPaths @(
         "$env:ProgramFiles\Git\bin", "${env:ProgramFiles(x86)}\Git\bin", "$env:ProgramFiles\Git\usr\bin"
     )
     if (-not $bash) { Write-Warning "Git Bash not found - skipping the headroom statusline"; return $false }
 
-    Write-Info "Installing headroom (Claude Code context-usage statusline)..."
+    if ($script:Config.HeadroomInstalled) {
+        Write-Info "headroom was marked installed but isn't actually working - repairing..."
+    } else {
+        Write-Info "Installing headroom (Claude Code context-usage statusline)..."
+    }
+
+    # Give the installer's internal `command -v python3` (and its generated
+    # scripts, until Repair-HeadroomPython3Refs rewrites them below) a
+    # python3 that actually runs, via a throwaway shim dir prepended to PATH
+    # for just this one bash invocation - never touches the user's real PATH.
+    $shimDir = Join-Path $env:TEMP "llm-token-optimizer-python3-shim"
+    New-Item -ItemType Directory -Path $shimDir -Force | Out-Null
+    $shimPath = Join-Path $shimDir "python3"
+    $forwardSlashPython = $pythonExe -replace '\\', '/'
+    Set-Content -Path $shimPath -Value "#!/bin/sh`nexec `"$forwardSlashPython`" `"`$@`"`n" -Encoding ASCII -NoNewline
+    $shimPathPosix = ($shimDir -replace '\\', '/') -replace '^([A-Za-z]):', '/$1'
     $installerUrl = "https://raw.githubusercontent.com/henchmarketing-rgb/headroom/main/install.sh"
-    $result = Invoke-ExternalCommand -Command $bash -Arguments "-lc `"curl -fsSL $installerUrl | bash`"" -TimeoutSeconds 60 -ShowSpinner -SpinnerLabel "Installing headroom"
-    if ($result.Success) {
-        # The installer's own exit code only proves the script ran, not that
-        # it actually wired the statusline into settings.json - check for
-        # that too, best-effort (some installer versions may wire it lazily
-        # on Claude Code's next start, so this doesn't fail the install).
-        $settingsPath = Join-Path (Get-ClaudeConfigDir) "settings.json"
-        $wired = $false
-        if (Test-Path $settingsPath) {
-            try { $wired = [bool]((Get-Content $settingsPath -Raw -Encoding UTF8) -match 'headroom') } catch {}
-        }
-        if ($wired) {
-            Write-Success "headroom statusline installed and wired into settings.json"
-        } else {
-            Write-Success "headroom installed (statusline wiring not detected yet - may need a fresh Claude Code session)"
-            Write-Log "headroom installer succeeded but settings.json has no 'headroom' reference yet" -Level "DEBUG"
-        }
+    $bashCmd = "chmod +x '${shimPathPosix}/python3' 2>/dev/null; PATH=`"${shimPathPosix}:`$PATH`" bash -c `"curl -fsSL $installerUrl | bash`""
+    $result = Invoke-ExternalCommand -Command $bash -Arguments "-lc `"$bashCmd`"" -TimeoutSeconds 60 -ShowSpinner -SpinnerLabel "Installing headroom"
+    try { Remove-Item -Path $shimDir -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+
+    if (-not $result.Success) {
+        Write-Warning "headroom install did not confirm success - continuing without it"
+        Write-Log "headroom install output: $(Get-Truncated $result.Output 300)" -Level "WARN"
+        return $false
+    }
+
+    # The installer's own generated files still hardcode bare `python3` -
+    # fix that regardless of whether it came from the shim path above so it
+    # keeps working in every later Claude Code session and shell, not just
+    # this one install run.
+    Repair-HeadroomPython3Refs -PythonExe $pythonExe | Out-Null
+
+    if (Test-HeadroomWorking) {
+        Write-Success "headroom statusline installed and verified working"
         $script:Config.HeadroomInstalled = $true
         Save-Configuration
         return $true
     }
-    Write-Warning "headroom install did not confirm success - continuing without it"
-    Write-Log "headroom install output: $(Get-Truncated $result.Output 300)" -Level "WARN"
+
+    Write-Warning "headroom installed but the statusline still doesn't run cleanly - leaving it in place, but check ~/.claude/statusline.sh manually"
+    $script:Config.HeadroomInstalled = $false
+    Save-Configuration
     return $false
 }
 
@@ -2844,6 +3076,438 @@ function Install-RtkCli {
     return $false
 }
 
+# ============================================================================
+# AGENT SKILLS ECOSYSTEM (v5.7)
+#   A second, more loosely-coupled tier below Install-CompanionTooling: local
+#   model support, IDE/proxy integrations, and a handful of real third-party
+#   Claude Code skills. Same idempotent, best-effort, never-blocks-launch
+#   contract as everything above - but unlike the companion tools (all
+#   verified low-risk: no credentials handled, no scraping, no OAuth), a
+#   couple of these touch things that genuinely warrant a pause:
+#     - Agent Reach stores platform login cookies and carries an explicit
+#       upstream account-lockout warning, so it's gated behind Read-YesNo.
+#     - The Antigravity proxy needs the USER's own Google OAuth login, which
+#       this script will never perform (see CLAUDE.md safety rules) - it only
+#       gets the code/config scaffolded, then prints the manual step.
+#   Skipped entirely in spawned child windows for the same reason
+#   Show-GraphResult skips its prompt there: nobody may be watching.
+# ============================================================================
+
+function Install-LMStudioSupport {
+    # LM Studio (lmstudio.ai) - local model runner used by run_benchmarks.py.
+    # This function only detects/verifies the `lms` CLI; it does not install
+    # LM Studio itself (no reliable silent/winget install path confirmed) -
+    # if missing, it points at the download page instead of guessing.
+    if ($script:Config.LMStudioSupportInstalled) { Write-Success "LM Studio CLI already verified"; return $true }
+
+    $lmsPath = $null
+    if (Test-CommandAvailable "lms" -UseCache) { $lmsPath = "lms" }
+    else {
+        $fallback = Join-Path $env:USERPROFILE ".lmstudio\bin\lms.exe"
+        if (Test-Path $fallback) { $lmsPath = $fallback }
+    }
+    if (-not $lmsPath) {
+        Write-Info "LM Studio CLI (lms) not found - install LM Studio from https://lmstudio.ai, run it once, then re-run this launcher."
+        return $false
+    }
+
+    $result = Invoke-ExternalCommand -Command $lmsPath -Arguments "--version" -TimeoutSeconds 15 -Silent -NoLog
+    if ($result.Success) {
+        Write-Success "LM Studio CLI verified ($lmsPath)"
+        Write-Hint "Benchmark local models: uv run run_benchmarks.py --dry-run"
+        $script:Config.LMStudioSupportInstalled = $true
+        Save-Configuration
+        return $true
+    }
+    Write-Warning "Found lms but couldn't confirm it runs - continuing without LM Studio support"
+    return $false
+}
+
+function Install-AntigravityProxySupport {
+    # Google Antigravity's own OpenAI-compatible endpoint doesn't (as of this
+    # writing) accept a local LM Studio backend directly, so the community
+    # standard bridge is an OpenAI-compatible gateway sat in front of it -
+    # frieser/antigravity-proxy (MIT), the most actively maintained of the
+    # several equivalent projects surveyed. This function only clones it and
+    # scaffolds its .env from .env.example: the proxy needs YOUR OWN Google
+    # account OAuth login to actually authenticate, which is a manual step by
+    # design - this script does not perform sign-ins or handle credentials
+    # (see the safety rules this project's CLAUDE.md is built under).
+    if ($script:Config.AntigravityProxyInstalled) { Write-Success "Antigravity proxy already scaffolded"; return $true }
+    if ($script:IsChild) { return $false }
+    if (-not (Test-CommandAvailable "git" -UseCache) -or -not (Test-CommandAvailable "npm" -UseCache)) {
+        Write-Log "Antigravity proxy skipped - git or npm not found" -Level "DEBUG"
+        return $false
+    }
+
+    $toolsDir = Join-Path $env:USERPROFILE ".llm-token-optimizer\antigravity-proxy"
+    if (-not (Test-Path $toolsDir)) {
+        Write-Info "Cloning antigravity-proxy (frieser/antigravity-proxy)..."
+        $parent = Split-Path $toolsDir -Parent
+        if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        $oldGitPrompt = $env:GIT_TERMINAL_PROMPT
+        try {
+            $env:GIT_TERMINAL_PROMPT = "0"
+            $cloneArgs = "clone --quiet ""https://github.com/frieser/antigravity-proxy.git"" ""$toolsDir"""
+            $null = Invoke-ExternalCommand -Command "git" -Arguments $cloneArgs -TimeoutSeconds 60 -ShowSpinner -SpinnerLabel "Cloning antigravity-proxy"
+        } finally { $env:GIT_TERMINAL_PROMPT = $oldGitPrompt }
+    }
+    if (-not (Test-Path $toolsDir)) { Write-Warning "Failed to clone antigravity-proxy"; return $false }
+
+    $envExample = Join-Path $toolsDir ".env.example"
+    $envFile = Join-Path $toolsDir ".env"
+    if ((Test-Path $envExample) -and -not (Test-Path $envFile)) {
+        Copy-Item $envExample $envFile -ErrorAction SilentlyContinue
+    }
+
+    Write-Info "Installing antigravity-proxy dependencies (npm install)..."
+    $result = Invoke-ExternalCommand -Command "npm" -Arguments "install" -WorkingDirectory $toolsDir -TimeoutSeconds 180 -ShowSpinner -SpinnerLabel "npm install (antigravity-proxy)"
+    if (-not $result.Success) {
+        Write-Warning "antigravity-proxy npm install did not confirm success"
+        Write-Log "antigravity-proxy npm install output: $(Get-Truncated $result.Output 300)" -Level "WARN"
+        return $false
+    }
+
+    Write-Success "antigravity-proxy cloned and installed: $toolsDir"
+    Write-Hint "Manual step required (this script does not handle Google sign-in): edit .env, then run 'npm start' inside that folder and sign in when prompted."
+    $script:Config.AntigravityProxyInstalled = $true
+    Save-Configuration
+    return $true
+}
+
+function Install-AgentSkillsPack {
+    # addyosmani/agent-skills (MIT) - 24 production-grade engineering skills
+    # (code review checklists, testing discipline, etc.) distributed as plain
+    # Markdown via the open `skills` CLI. Live-tested before wiring this in:
+    # the bare `npx skills add addyosmani/agent-skills` installs PROJECT-
+    # local (a `.agents/skills` folder under $PWD), which contradicts this
+    # function's own "installed once at user scope" placement in
+    # Install-CompanionTooling - confirmed fixed with `-g -a claude-code`
+    # (global scope, Claude Code target only), which lands the 24 skills
+    # directly in ~/.claude/skills/ instead, exit code 0, verified live.
+    if ($script:Config.AgentSkillsPackInstalled) { Write-Success "agent-skills pack already installed"; return $true }
+    if (-not (Test-CommandAvailable "npx" -UseCache)) { return $false }
+
+    Write-Info "Installing addyosmani/agent-skills (npx skills add -g)..."
+    $result = Invoke-ExternalCommand -Command "npx" -Arguments "-y skills add addyosmani/agent-skills -g -a claude-code -y" -TimeoutSeconds 90 -ShowSpinner -SpinnerLabel "Installing agent-skills"
+    if ($result.Success -or $result.Output -match "already installed|up to date|Done!") {
+        Write-Success "agent-skills pack installed (~/.claude/skills)"
+        $script:Config.AgentSkillsPackInstalled = $true
+        Save-Configuration
+        return $true
+    }
+    Write-Warning "agent-skills install did not confirm success"
+    Write-Log "agent-skills install output: $(Get-Truncated $result.Output 300)" -Level "WARN"
+    return $false
+}
+
+function Install-AgentReachSkill {
+    # Agent Reach (Panniantong/agent-reach) - gives Claude Code no-API-key
+    # internet access (17 platforms: X, Reddit, GitHub, YouTube, etc.) via a
+    # real pip-installable CLI (pyproject.toml at the repo root - confirmed,
+    # not guessed). Deliberately NOT wired up via the project's own
+    # documented install method ("paste this instruction and let your agent
+    # fetch+follow a remote install.md") - that pattern is exactly the
+    # fetch-and-execute-untrusted-remote-instructions shape this script's own
+    # safety rules exist to avoid, regardless of the source's intent. Cloning
+    # the repo and running its own pyproject-declared install is the same
+    # auditable pattern already used for Superpowers/Caveman above.
+    #
+    # Also gated behind an explicit prompt (never silent, unlike the other
+    # installers here): the tool stores platform login cookies and its own
+    # README carries an explicit account-lockout risk warning for scripted
+    # access to sites like X/Twitter - a real tradeoff only the user can
+    # accept, not a default-on install.
+    if ($script:Config.AgentReachInstalled) { Write-Success "Agent Reach already installed"; return $true }
+    if ($script:IsChild) { return $false }
+    if (-not (Test-CommandAvailable "git" -UseCache) -or -not (Test-CommandAvailable "pip" -UseCache)) {
+        Write-Log "Agent Reach skipped - git or pip not found" -Level "DEBUG"
+        return $false
+    }
+
+    Write-Host ""
+    Write-Info "Agent Reach gives Claude Code internet access (X/Reddit/YouTube/GitHub/etc, no API keys)."
+    Write-Hint "It stores platform login cookies locally and its own docs warn of account-lockout risk"
+    Write-Hint "for scripted access - use a throwaway/test account, not your primary one."
+    if (-not (Read-YesNo "Install Agent Reach?" $false)) {
+        Write-Info "Skipped Agent Reach"
+        return $false
+    }
+
+    $toolsDir = Join-Path $env:USERPROFILE ".llm-token-optimizer\agent-reach"
+    if (-not (Test-Path $toolsDir)) {
+        $parent = Split-Path $toolsDir -Parent
+        if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        $oldGitPrompt = $env:GIT_TERMINAL_PROMPT
+        try {
+            $env:GIT_TERMINAL_PROMPT = "0"
+            $cloneArgs = "clone --quiet ""https://github.com/Panniantong/agent-reach.git"" ""$toolsDir"""
+            $null = Invoke-ExternalCommand -Command "git" -Arguments $cloneArgs -TimeoutSeconds 60 -ShowSpinner -SpinnerLabel "Cloning agent-reach"
+        } finally { $env:GIT_TERMINAL_PROMPT = $oldGitPrompt }
+    }
+    if (-not (Test-Path $toolsDir)) { Write-Warning "Failed to clone agent-reach"; return $false }
+
+    Write-Info "Installing agent-reach (pip install -e .)..."
+    $result = Invoke-ExternalCommand -Command "pip" -Arguments "install -e ." -WorkingDirectory $toolsDir -TimeoutSeconds 180 -ShowSpinner -SpinnerLabel "pip install agent-reach"
+    if (-not $result.Success) {
+        Write-Warning "agent-reach pip install did not confirm success"
+        Write-Log "agent-reach install output: $(Get-Truncated $result.Output 300)" -Level "WARN"
+        return $false
+    }
+
+    Write-Success "Agent Reach installed: $toolsDir"
+    Write-Hint "Not yet registered into your Claude Code skill directory - review $toolsDir\SECURITY.md, then run 'agent-reach install --system' yourself when ready."
+    $script:Config.AgentReachInstalled = $true
+    Save-Configuration
+    return $true
+}
+
+function Install-AppleDesignSkill {
+    # Apple HIG Designer (tristan-mcinnis/apple-hig-designer-skill-2026, MIT)
+    # - a plain SKILL.md + references/ skill (confirmed: no CLI, no network
+    # calls, no credentials) covering Apple Human Interface Guidelines across
+    # iOS/macOS/watchOS/tvOS/visionOS including the current "Liquid Glass"
+    # design language. Same git-clone-into-skills-dir pattern as Superpowers.
+    if ($script:Config.AppleDesignSkillInstalled) { Write-Success "Apple design skill already installed"; return $true }
+    if (-not (Test-CommandAvailable "git" -UseCache)) { return $false }
+
+    $skillDir = Join-Path $env:USERPROFILE ".claude\skills\apple-hig-designer"
+    if (-not (Test-Path $skillDir)) {
+        Write-Info "Installing Apple HIG design skill (tristan-mcinnis/apple-hig-designer-skill-2026)..."
+        $oldGitPrompt = $env:GIT_TERMINAL_PROMPT
+        try {
+            $env:GIT_TERMINAL_PROMPT = "0"
+            $cloneArgs = "clone --quiet --depth 1 ""https://github.com/tristan-mcinnis/apple-hig-designer-skill-2026.git"" ""$skillDir"""
+            $null = Invoke-ExternalCommand -Command "git" -Arguments $cloneArgs -TimeoutSeconds 60 -ShowSpinner -SpinnerLabel "Cloning Apple HIG skill"
+        } finally { $env:GIT_TERMINAL_PROMPT = $oldGitPrompt }
+        Remove-Item (Join-Path $skillDir ".git") -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if (-not (Test-Path (Join-Path $skillDir "SKILL.md"))) {
+        Write-Warning "Apple design skill clone did not produce SKILL.md"
+        return $false
+    }
+    Write-Success "Apple design skill installed (iOS/macOS/watchOS/tvOS/visionOS, Liquid Glass)"
+    $script:Config.AppleDesignSkillInstalled = $true
+    Save-Configuration
+    return $true
+}
+
+function Install-HermesGraphifyPlatform {
+    # Hermes Agent (Nous Research) reads skills from ~/.hermes/skills/ - its
+    # own "Skills Hub" mechanism (confirmed: hermes-agent.nousresearch.com/
+    # docs/skills). Graphify already ships a `hermes install` target
+    # (confirmed via `graphify --help` on this machine) that writes its own
+    # skill there, the same way Install-GraphifyPlatform does for Claude
+    # Code above - reusing that instead of inventing a separate "skill hub"
+    # mechanism this project has no way to distribute skills through.
+    if ($script:Config.HermesGraphifyInstalled) { Write-Success "Graphify already registered with Hermes"; return $true }
+    if (-not (Test-CommandAvailable "graphify" -UseCache)) { return $false }
+    $hermesDir = Join-Path $env:USERPROFILE ".hermes"
+    if (-not (Test-Path $hermesDir)) {
+        Write-Log "Hermes Agent not detected (no ~/.hermes) - skipping Hermes skill registration" -Level "DEBUG"
+        return $false
+    }
+    Write-Info "Registering Graphify as a Hermes Agent skill (~/.hermes/skills/graphify)..."
+    $result = Invoke-ExternalCommand -Command "graphify" -Arguments "install --platform hermes" -TimeoutSeconds 30
+    if ($result.Success) {
+        Write-Success "Graphify registered with Hermes Agent's skill hub"
+        $script:Config.HermesGraphifyInstalled = $true
+        Save-Configuration
+        return $true
+    }
+    Write-Warning "Hermes registration did not confirm success"
+    Write-Log "graphify install --platform hermes output: $(Get-Truncated $result.Output 300)" -Level "WARN"
+    return $false
+}
+
+function Install-WatchVideoSkill {
+    # Self-authored (not cloned from a third-party repo of unverified
+    # quality/license) rather than one of the several community "/watch"
+    # skills surveyed - all follow the same shape (transcript + sampled
+    # frames via yt-dlp), and yt-dlp is already confirmed present on this
+    # machine (see last30days setup), so this can be a genuinely self-
+    # contained skill with no extra dependency to install.
+    if ($script:Config.WatchVideoSkillInstalled) { Write-Success "Watch-video skill already installed"; return $true }
+
+    $skillDir = Join-Path $env:USERPROFILE ".claude\skills\watch-video"
+    $skillFile = Join-Path $skillDir "SKILL.md"
+    try {
+        if (-not (Test-Path $skillDir)) { New-Item -ItemType Directory -Path $skillDir -Force | Out-Null }
+        $content = @"
+---
+name: watch-video
+description: Watch a video (YouTube or any yt-dlp-supported URL) by extracting its transcript and sampled frames, so Claude can answer questions about what actually happens on screen, not just what's said. Use when the user pastes a video link and asks Claude to watch, summarize, review, or give feedback on it, or invokes /watch.
+---
+
+# Watch Video
+
+Gives Claude the ability to "watch" a video: a timestamped transcript plus a
+handful of representative still frames, so it can reason about visuals
+(on-screen text, UI, cuts, framing) in addition to what's said.
+
+## Steps
+
+1. Confirm ``yt-dlp`` is on PATH (``yt-dlp --version``). If missing, tell the
+   user to install it rather than trying to install it yourself mid-session.
+2. Fetch the transcript first - it's cheap and often enough on its own:
+   ``yt-dlp --write-auto-sub --sub-lang en --skip-download --sub-format vtt -o "<tmp>/%(id)s.%(ext)s" <URL>``
+3. Only if the question needs visuals (UI walkthroughs, "what does this look
+   like", design/motion feedback, hooks/retention analysis), also pull frames:
+   - Get duration: ``yt-dlp --print duration <URL>``
+   - Sample evenly, capped at 20 frames for a short video (<10 min) or 40 for
+     longer ones - never uncapped, to keep token cost bounded.
+   - Extract with ffmpeg at the chosen timestamps into ``<tmp>/frames/``.
+4. Read the transcript file and the extracted frame images together. Cite
+   timestamps (``[MM:SS]``) when referencing specific moments.
+5. Clean up the temp directory when done.
+
+## Notes
+
+- Prefer the transcript alone when the question is purely about content/
+  claims/narration - don't burn tokens on frames nobody asked about.
+- For very long videos (>1 hour), summarize in chapters rather than trying
+  to hold the whole transcript in context at once.
+- This skill only reads publicly accessible video URLs; it does not download
+  or redistribute copyrighted video content beyond the local temp frames/
+  transcript needed to answer the user's question in this session.
+"@
+        [System.IO.File]::WriteAllText($skillFile, $content, (New-Object System.Text.UTF8Encoding($false)))
+        Write-Success "Watch-video skill installed (/watch via yt-dlp transcript + sampled frames)"
+        $script:Config.WatchVideoSkillInstalled = $true
+        Save-Configuration
+        return $true
+    } catch {
+        Write-Warning "Could not write the watch-video skill"
+        Write-Log "watch-video skill write failed: $_" -Level "WARN"
+        return $false
+    }
+}
+
+function Install-PromptEngineeringSkill {
+    # Deliberately NOT a verbatim copy of any leaked/proprietary system
+    # prompt (from asgeirtj/system_prompts_leaks or any other such repo).
+    # Those are unauthorized extracts of other companies' unpublished
+    # product prompts - redistributing them wholesale into a user's own repo
+    # is a real copyright/ToS gray area regardless of the leaking repo's own
+    # license, not something to automate silently. What's actually useful
+    # and safe to reuse is the STRUCTURE those leaks make visible across
+    # dozens of tools - synthesized here as general technique, credited to
+    # the source for anyone who wants primary material.
+    if ($script:Config.PromptEngineeringSkillInstalled) { Write-Success "Prompt-engineering skill already installed"; return $true }
+
+    $skillDir = Join-Path $env:USERPROFILE ".claude\skills\prompt-engineering-patterns"
+    $skillFile = Join-Path $skillDir "SKILL.md"
+    try {
+        if (-not (Test-Path $skillDir)) { New-Item -ItemType Directory -Path $skillDir -Force | Out-Null }
+        $content = @"
+---
+name: prompt-engineering-patterns
+description: Structural patterns for writing system prompts, skill files, and agent instructions - sectioning, tool-use framing, tone control, safety boundaries. Use when authoring or reviewing a SKILL.md, CLAUDE.md, subagent prompt, or any other instruction document.
+---
+
+# Prompt Engineering Patterns
+
+Techniques synthesized from studying publicly leaked system prompts across
+dozens of production AI coding tools (see Source below) - not a copy of any
+one of them. Apply the shape, not the wording.
+
+## Structural patterns
+
+- **Front-load identity and scope in one line**, then expand. Readers (and
+  models) latch onto the first sentence; bury it and it gets skimmed past.
+- **Group by concern, not by chronology.** Sections like "Tool use", "Safety
+  boundaries", "Tone", "Output format" scan better than a narrative walk
+  through a session.
+- **State the negative space explicitly.** "Don't do X" is often more load-
+  bearing than "do Y" - models (and juniors) default toward the common case;
+  spell out the exception.
+- **Put the highest-stakes rule first in its section**, not buried after
+  three paragraphs of context - truncation and skimming both favor the top.
+- **Prefer concrete failure examples over abstract principles** ("don't
+  reproduce song lyrics" beats "respect copyright") - a rule you can check
+  against a specific case is a rule that actually gets followed.
+
+## Tool-use framing
+
+- Describe WHEN to reach for a tool, not just what it does - "use X when Y"
+  beats a bare capability list every time.
+- Give an explicit fallback order when several tools overlap (as this
+  project's own CLAUDE.md does for graphify vs. grep) - ambiguity here is
+  where models thrash between options.
+
+## Tone control
+
+- If you want terse output, say so directly and give a length bound - vague
+  requests like "be concise" undershoot less reliably than "under 3
+  sentences unless asked for more."
+- Match register to audience once, up front, rather than re-asserting it
+  per section.
+
+## Safety boundaries
+
+- Separate "never do this" from "do this only with confirmation" - collapsing
+  them into one list makes the truly hard boundaries easier to miss.
+- State WHY a boundary exists when there's a concrete incident or risk behind
+  it (see this project's own CLAUDE.md style) - a reason is easier to reason
+  about at the edges than a bare rule.
+
+## Source
+
+Patterns synthesized from public analysis of https://github.com/asgeirtj/system_prompts_leaks
+and similar collections - read that repo directly for primary material and
+tool-specific examples; this skill intentionally does not reproduce any of
+it verbatim.
+"@
+        [System.IO.File]::WriteAllText($skillFile, $content, (New-Object System.Text.UTF8Encoding($false)))
+        Write-Success "Prompt-engineering-patterns skill installed"
+        $script:Config.PromptEngineeringSkillInstalled = $true
+        Save-Configuration
+        return $true
+    } catch {
+        Write-Warning "Could not write the prompt-engineering-patterns skill"
+        Write-Log "prompt-engineering skill write failed: $_" -Level "WARN"
+        return $false
+    }
+}
+
+function Test-AgentSkillsEcosystemComplete {
+    return [bool](
+        $script:Config.LMStudioSupportInstalled -and
+        $script:Config.AgentSkillsPackInstalled -and
+        $script:Config.AppleDesignSkillInstalled -and
+        $script:Config.WatchVideoSkillInstalled -and
+        $script:Config.PromptEngineeringSkillInstalled
+    )
+}
+
+function Install-AgentSkillsEcosystem {
+    # Second-tier installer, called from Install-CompanionTooling. Deliberately
+    # excludes Test-AgentSkillsEcosystemComplete's gate from covering
+    # Antigravity proxy / Agent Reach / Hermes: those three are legitimately
+    # opt-in or environment-gated (manual OAuth, explicit risk confirmation,
+    # Hermes-not-installed) rather than "should eventually become true for
+    # everyone", so their own $script:Config flags plus each function's
+    # internal checks are the only gate they need.
+    if (Test-AgentSkillsEcosystemComplete) {
+        Write-Success "agent-skills, apple-hig-designer, watch-video, prompt-engineering-patterns, LM Studio - all present"
+    } else {
+        Write-Hint "Installing the wider agent-skills ecosystem: addyosmani/agent-skills, Apple HIG"
+        Write-Hint "design skill, /watch video skill, prompt-engineering patterns, and verifying"
+        Write-Hint "LM Studio support."
+        $null = Install-LMStudioSupport
+        $null = Install-AgentSkillsPack
+        $null = Install-AppleDesignSkill
+        $null = Install-WatchVideoSkill
+        $null = Install-PromptEngineeringSkill
+    }
+    # Environment-gated / opt-in - never part of the "complete" fast-path above.
+    Install-HermesGraphifyPlatform | Out-Null
+    if (-not $script:IsChild) {
+        $null = Install-AntigravityProxySupport
+        $null = Install-AgentReachSkill
+    }
+}
+
 function Test-CompanionToolingComplete {
     # All eight recorded present - lets callers skip the section (and its
     # noise) entirely once there's nothing left to do.
@@ -2863,29 +3527,38 @@ function Test-CompanionToolingComplete {
 function Install-CompanionTooling {
     [CmdletBinding()]
     param([int]$Step = 0, [int]$TotalSteps = 0)
-    if (Test-CompanionToolingComplete) {
+    $originalNineComplete = Test-CompanionToolingComplete
+    if ($originalNineComplete) {
         Write-Section -Name "Companion tooling" -Step $Step -TotalSteps $TotalSteps
         Write-Success "claude-mem, headroom, claude-code-setup, task-observer, claude-md-management, caveman, rtk, context7, context-mode - all present"
-        return
+    } else {
+        Write-Section -Name "Companion tooling" -Step $Step -TotalSteps $TotalSteps
+        Write-Hint "claude-mem (memory), headroom (context bar), claude-code-setup"
+        Write-Hint "(auto-recommendations), task-observer (skill improvement),"
+        Write-Hint "claude-md-management (keeps CLAUDE.md itself current), caveman"
+        Write-Hint "(terser model output), rtk (terminal/tool-output compression),"
+        Write-Hint "context7 (on-demand library docs), and context-mode (tool-output"
+        Write-Hint "sandboxing + session memory) - installed once at user scope, so"
+        Write-Hint "every project gets all nine."
+        $null = Install-ClaudeMem
+        $null = Install-HeadroomStatusline
+        $null = Install-ClaudeCodeSetupPlugin
+        $null = Install-TaskObserverSkill
+        $null = Install-ClaudeMdManagementPlugin
+        $null = Install-CavemanPlugin
+        $null = Install-RtkCli
+        Register-Context7Mcp
+        Install-ContextModeMcp
+        Install-ClaudePluginsAndSkills -Quiet
     }
-    Write-Section -Name "Companion tooling" -Step $Step -TotalSteps $TotalSteps
-    Write-Hint "claude-mem (memory), headroom (context bar), claude-code-setup"
-    Write-Hint "(auto-recommendations), task-observer (skill improvement),"
-    Write-Hint "claude-md-management (keeps CLAUDE.md itself current), caveman"
-    Write-Hint "(terser model output), rtk (terminal/tool-output compression),"
-    Write-Hint "context7 (on-demand library docs), and context-mode (tool-output"
-    Write-Hint "sandboxing + session memory) - installed once at user scope, so"
-    Write-Hint "every project gets all nine."
-    $null = Install-ClaudeMem
-    $null = Install-HeadroomStatusline
-    $null = Install-ClaudeCodeSetupPlugin
-    $null = Install-TaskObserverSkill
-    $null = Install-ClaudeMdManagementPlugin
-    $null = Install-CavemanPlugin
-    $null = Install-RtkCli
-    Register-Context7Mcp
-    Install-ContextModeMcp
-    Install-ClaudePluginsAndSkills -Quiet
+    # NOT gated behind $originalNineComplete's early return above (that was a
+    # real bug during development: this call sat after a `return` inside the
+    # completeness branch, so on any machine where the original nine were
+    # already installed - e.g. this one - Install-AgentSkillsEcosystem would
+    # never run at all). It has its own internal completeness gate
+    # (Test-AgentSkillsEcosystemComplete) so calling it unconditionally here
+    # is still cheap once everything's already in place.
+    Install-AgentSkillsEcosystem
 }
 
 # ============================================================================
@@ -2962,6 +3635,143 @@ function Install-ContextModeMcp {
     Write-Warning "Context Mode plugin install did not confirm success"
     Write-Log "Context Mode install output: $(Get-Truncated $result.Output 300)" -Level "WARN"
     return $false
+}
+
+function Test-ClaudeMemWorkerHealthy {
+    # Plain TCP-connect liveness probe (~250ms) - deliberately does NOT
+    # assume any particular HTTP path on claude-mem's worker (it's a bundled/
+    # minified third-party service; guessing at "/health" and getting it
+    # wrong would make this MORE dangerous, not less). A successful connect
+    # means something is actively accepting connections on the port right
+    # now, which is exactly the fact both Repair-ClaudeMemWorker and
+    # Fix-ClaudeMemWorker.ps1 need before deciding whether killing it would
+    # interrupt a session that's actually using it.
+    [CmdletBinding()]
+    param([int]$Port = $(if ($env:CLAUDE_MEM_WORKER_PORT) { [int]$env:CLAUDE_MEM_WORKER_PORT } else { 37777 }))
+    try {
+        $client = New-Object System.Net.Sockets.TcpClient
+        $connectTask = $client.ConnectAsync("127.0.0.1", $Port)
+        $ok = $connectTask.Wait(750) -and $client.Connected
+        $client.Close()
+        return [bool]$ok
+    } catch {
+        return $false
+    }
+}
+
+function Repair-ClaudeMemWorker {
+    # Self-heal for a tracked claude-mem bug on Windows
+    # (github.com/thedotmack/claude-mem/issues/2926, open upstream as of this
+    # writing): the background worker can die without releasing its listener
+    # on port 37777 (CLAUDE_MEM_WORKER_PORT). The next session's worker then
+    # fails to bind ("Failed to start server. Is port 37777 in use?") and
+    # never comes up - and because claude-mem's UserPromptSubmit hook fails
+    # CLOSED instead of open when the worker is unreachable, every prompt
+    # gets blocked while ~/.claude-mem/state/hook-failures.json's
+    # consecutiveFailures counter climbs without bound. Runs right before
+    # Claude launches (same placement as Test-CompressionMethodsActive) so a
+    # stale prior session can never carry over and block this one. No-op if
+    # claude-mem was never installed. Entirely best-effort - every step is
+    # wrapped so a failure here never blocks or delays launch.
+    #
+    # Multi-session safety: the worker is ONE process shared by every Claude
+    # Code session on the machine (v5.0+ of this launcher deliberately allows
+    # several project windows to run concurrently - see Start-ProjectWindow).
+    # If two or three of those windows launch within moments of each other,
+    # each calls this function - so the whole body runs under a short-lived
+    # machine-wide mutex to stop them racing Test-Path/Get-Content/Remove-Item
+    # against the SAME hook-failures.json at the same instant (confirmed
+    # possible live: a delete landing between another window's Test-Path and
+    # Get-Content throws a sharing-violation that the inner try/catch below
+    # was silently swallowing as a DEBUG log - harmless, but it could skip a
+    # repair that should have happened). A window that can't get the mutex
+    # within 3s just skips its own repair pass rather than blocking launch -
+    # whichever window holds it will have already left clean state behind.
+    [CmdletBinding()]
+    param()
+    if (-not $script:Config.ClaudeMemInstalled) { return }
+
+    $repairMutex = $null
+    $haveMutex = $false
+    try {
+        $repairMutex = New-Object System.Threading.Mutex($false, "Global\LLMTokenOptimizer_ClaudeMemRepair")
+        try { $haveMutex = $repairMutex.WaitOne(3000, $false) }
+        catch [System.Threading.AbandonedMutexException] { $haveMutex = $true }
+    } catch {
+        Write-Log "Repair-ClaudeMemWorker mutex unavailable, proceeding unserialized: $_" -Level "DEBUG"
+        $haveMutex = $true  # fail open - a missing mutex should never block the repair entirely
+    }
+    if (-not $haveMutex) {
+        Write-Log "Repair-ClaudeMemWorker: another window is repairing right now - skipping this pass" -Level "DEBUG"
+        if ($repairMutex) { try { $repairMutex.Dispose() } catch {} }
+        return
+    }
+
+    try {
+        # 1. Reclaim the worker port ONLY if the process holding it is
+        # orphaned - i.e. no longer enumerable from this session (Get-Process
+        # on its PID returns nothing), the exact signature the upstream bug
+        # report captured via Get-NetTCPConnection/Get-Process. A live,
+        # still-enumerable worker (this session's own, or a healthy one
+        # another window is actively using) is left alone; killing that would
+        # interrupt every other open Claude Code session's memory capture,
+        # not repair anything.
+        try {
+            $port = if ($env:CLAUDE_MEM_WORKER_PORT) { [int]$env:CLAUDE_MEM_WORKER_PORT } else { 37777 }
+            $conns = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+            foreach ($conn in $conns) {
+                $ownerPid = $conn.OwningProcess
+                $proc = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
+                if (-not $proc) {
+                    Write-Log "claude-mem worker port $port held by orphaned PID $ownerPid - reclaiming" -Level "WARN"
+                    Stop-Process -Id $ownerPid -Force -ErrorAction SilentlyContinue
+                }
+            }
+        } catch {
+            # Get-NetTCPConnection needs the NetTCPIP module, not guaranteed on
+            # every Windows install/PS edition - silently skip the port check
+            # rather than fail the whole repair over it.
+            Write-Log "Repair-ClaudeMemWorker port check skipped: $_" -Level "DEBUG"
+        }
+
+        # 2. Clear a stuck failure counter so a freshly (re)started worker gets
+        # a clean slate instead of inheriting a count that upstream currently
+        # only resets via a full manual cleanup. Threshold of 10 distinguishes
+        # a transient blip (worker slow to cold-boot, or several sessions
+        # cold-starting at once) from the actually-stuck case the bug report
+        # describes (seen live: consecutiveFailures reaching 127) - AND only
+        # fires if the worker port isn't currently answering, so a counter
+        # that's climbing for some OTHER reason while the worker itself is
+        # demonstrably healthy is left alone rather than masked.
+        try {
+            $cmemStateDir = Join-Path $env:USERPROFILE ".claude-mem\state"
+            $failFile = Join-Path $cmemStateDir "hook-failures.json"
+            if (Test-Path $failFile) {
+                $state = Get-Content $failFile -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+                $count = 0
+                if ($state.PSObject.Properties.Name -contains "consecutiveFailures") { $count = [int]$state.consecutiveFailures }
+                if ($count -ge 10 -and -not (Test-ClaudeMemWorkerHealthy)) {
+                    Write-Warning "claude-mem's worker was stuck unreachable ($count failed hooks in a row) - clearing its failure state"
+                    Remove-Item $failFile -Force -ErrorAction SilentlyContinue
+                    $supervisorFile = Join-Path $env:USERPROFILE ".claude-mem\supervisor.json"
+                    Remove-Item $supervisorFile -Force -ErrorAction SilentlyContinue
+                    Write-Log "Cleared claude-mem hook-failures.json (was $count) and supervisor.json" -Level "INFO"
+                } elseif ($count -ge 10) {
+                    Write-Log "hook-failures.json shows $count consecutive failures but the worker port answers now - leaving state alone (likely already recovering)" -Level "DEBUG"
+                }
+            }
+        } catch {
+            # A malformed/unreadable state file is exactly the kind of thing
+            # this function exists to route around - log and move on rather
+            # than let a JSON parse error block Claude from launching.
+            Write-Log "Repair-ClaudeMemWorker failure-state check skipped: $_" -Level "DEBUG"
+        }
+    } finally {
+        if ($repairMutex) {
+            try { if ($haveMutex) { $repairMutex.ReleaseMutex() } } catch {}
+            try { $repairMutex.Dispose() } catch {}
+        }
+    }
 }
 
 function Test-CompressionMethodsActive {
@@ -4130,6 +4940,7 @@ function Invoke-ProjectMode {
     Write-Hint "Corrected Claude twice on the same issue? /clear and rewrite the prompt with what you learned - a clean session usually beats a polluted one."
     Write-Hint "Avoid switching models or toggling MCP servers mid-session if you can help it - each invalidates Claude Code's own prompt cache (Anthropic's own guidance) and the next turn re-reads the whole conversation at full price."
     Write-Hint "Full guidance is also in this project's CLAUDE.md (Companion tooling / Session hygiene)."
+    Repair-ClaudeMemWorker
     Test-CompressionMethodsActive
 
     Write-Host ""

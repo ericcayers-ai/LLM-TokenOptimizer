@@ -7,3 +7,16 @@ vscode-extension/*.vsix.map
 # OS/editor cruft
 .DS_Store
 Thumbs.db
+
+# Local Claude Code config/state - contains machine-specific paths
+# (.claude/settings.json, settings.local.json) that don't belong in a
+# shared repo. Project-level guidance lives in the root CLAUDE.md instead.
+.claude/
+
+# Graphify's generated graph/cache output - local, machine-specific,
+# regenerated on demand. Never commit branch.json, worktree.json,
+# needs_update, or cache/ per this project's own CLAUDE.md graphify rules.
+.graphify/
+.graphify_*_installed
+graphify-out/
+vscode-extension/src/.graphify/

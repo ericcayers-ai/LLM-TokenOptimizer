@@ -5,9 +5,9 @@ import * as path from 'path';
 // This extension is deliberately a THIN WRAPPER, not a reimplementation.
 // Every command below just builds a `powershell.exe -File <script> <args>`
 // command line and sends it to a VS Code integrated terminal. All the real
-// logic (Graphify, OmniRoute, companion tooling, the rate-limit watcher,
-// multi-session support) stays in LLM-TokenOptimizer.ps1, unchanged and
-// already verified there - this extension only gives it a VS Code-native
+// logic (Graphify, companion tooling incl. Caveman + RTK, the rate-limit
+// watcher, multi-session support) stays in LLM-TokenOptimizer.ps1, unchanged
+// and already verified there - this extension only gives it a VS Code-native
 // front door (commands, a status bar entry, native folder pickers) instead
 // of a standalone console window you have to launch by hand.
 
@@ -38,8 +38,6 @@ function commonArgs(): string[] {
     const args: string[] = [];
     const model = cfg.get<string>('model', '').trim();
     if (model) { args.push('-Model', model); }
-    const compressionMode = cfg.get<string>('compressionMode', '').trim();
-    if (compressionMode) { args.push('-CompressionMode', compressionMode); }
     if (cfg.get<boolean>('isolateClaudeConfig', false)) { args.push('-IsolateClaudeConfig'); }
     if (cfg.get<boolean>('verboseMode', false)) { args.push('-VerboseMode'); }
     return args;
@@ -117,16 +115,10 @@ const ACTIONS: ActionEntry[] = [
         description: 'Choose a different parent folder of projects for the launcher to list.'
     },
     {
-        id: 'llmTokenOptimizer.reconfigureOmniRoute',
-        label: 'Reconfigure OmniRoute',
-        themeIcon: 'sync',
-        description: 'Forget the saved OmniRoute key and redo onboarding.'
-    },
-    {
         id: 'llmTokenOptimizer.resetConfig',
         label: 'Reset Configuration',
         themeIcon: 'trash',
-        description: 'Forget everything saved: master folder, project history, OmniRoute key.'
+        description: 'Forget everything saved: master folder and project history.'
     }
 ];
 
@@ -201,7 +193,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
         vscode.commands.registerCommand('llmTokenOptimizer.resetConfig', async () => {
             const confirmed = await vscode.window.showWarningMessage(
-                'This forgets the saved OmniRoute key, master folder, and project history. Continue?',
+                'This forgets the saved master folder and project history. Continue?',
                 { modal: true },
                 'Reset Configuration'
             );
@@ -210,10 +202,6 @@ export function activate(context: vscode.ExtensionContext): void {
             // child window by design (Initialize-Configuration guards it),
             // so this must run as a launcher invocation.
             runScript(context, ['-ResetConfig', ...commonArgs()]);
-        }),
-
-        vscode.commands.registerCommand('llmTokenOptimizer.reconfigureOmniRoute', () => {
-            runScript(context, ['-ReconfigureOmniRoute', ...commonArgs()]);
         }),
 
         // The ONE Command Palette entrypoint (see contributes.menus.commandPalette
@@ -276,8 +264,6 @@ function registerChatParticipant(context: vscode.ExtensionContext): void {
             matched = ACTIONS.find(a => a.id === 'llmTokenOptimizer.openLauncherForFolder');
         } else if (match('change master', 'set master', 'master folder')) {
             matched = ACTIONS.find(a => a.id === 'llmTokenOptimizer.changeMasterFolder');
-        } else if (match('omniroute', 'reconfigure')) {
-            matched = ACTIONS.find(a => a.id === 'llmTokenOptimizer.reconfigureOmniRoute');
         } else if (match('reset')) {
             matched = ACTIONS.find(a => a.id === 'llmTokenOptimizer.resetConfig');
         }
@@ -290,7 +276,7 @@ function registerChatParticipant(context: vscode.ExtensionContext): void {
         }
 
         stream.markdown(
-            'I run [LLM-TokenOptimizer](https://github.com) actions - Graphify/OmniRoute setup and Claude ' +
+            'I run [LLM-TokenOptimizer](https://github.com) actions - Graphify setup and Claude ' +
             'Code project/session windows, all in the same terminal-based script this extension wraps. ' +
             'Tell me what to do, or pick one:\n\n'
         );

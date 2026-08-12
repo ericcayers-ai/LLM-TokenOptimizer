@@ -1,4 +1,4 @@
-# LLM-TokenOptimizer — Tooling Audit (v5.0 - v5.4)
+# LLM-TokenOptimizer — Tooling Audit (v5.0 - v5.5)
 
 Written alongside a pass that added quota auto-retry and multi-session
 support. This audits what the launcher installs and whether each piece
@@ -19,7 +19,15 @@ helps just because it shipped.
 - Cross-checked findings against this very session's own live skill list and
   CLAUDE.md, since this project runs the tool it's auditing.
 
-## Finding 0 (compliance risk, fixed in v5.2): OmniRoute's Claude routing violates Anthropic's ToS
+## Finding 0 (compliance risk, fixed in v5.2, resolved by removal in v5.5): OmniRoute's Claude routing violates Anthropic's ToS
+
+**v5.5 update**: OmniRoute has been removed from this project entirely - not
+just left off by default. See Finding 10 below. Everything below this line
+is kept as the historical record of why the v5.2 default-off decision was
+made in the first place; the compliance risk it describes no longer applies
+to this codebase at all, since the mechanism that created it is gone, not
+dormant.
+
 
 Prompted by a direct question - "is OmniRoute's compression still worth it
 alongside claude-mem and headroom, or do they conflict?" - this turned up
@@ -198,6 +206,20 @@ onboarding, no manual step needed) - what doesn't exist is a smarter
 unchanged rather than guessed at, consistent with this finding's standing
 objection to a hypothesis-driven change without the live measurement still
 described above.
+
+**Update 3 (v5.5)**: this finding was specifically about OmniRoute's
+gateway-side Stacked compression, which rewrote prompt bytes on Anthropic's
+side of the wire before every call - that's what created the cache-prefix
+risk. RTK and Caveman (the tools that replaced OmniRoute, see Finding 10)
+don't have this shape of risk: RTK only ever touches Bash tool-call *output*
+(command results, not the prompt prefix itself), and Caveman changes the
+*model's own generated output*, not the input prompt Claude Code sends.
+Neither one rewrites the stable system-prompt/history prefix a cache hit
+depends on. This doesn't retroactively validate the old Stacked-vs-caching
+question -
+that measurement still was never run - it just means the question doesn't
+apply to the current tooling, since the mechanism that raised it (gateway-
+side prompt rewriting) is no longer in this codebase at all.
 
 ## Finding 4 (minor, not yet changed): Graphify install method
 
@@ -455,5 +477,85 @@ credentials/billing this environment doesn't have:
   was verified (above); the actual `claude` process behavior under it was
   not.
 - **Compression-vs-prompt-caching token measurement** (Finding 3) - needs a
-  real OmniRoute-routed multi-turn session with actual billing/cache-hit
-  data to compare, which cannot be produced synthetically.
+  real multi-turn session with actual billing/cache-hit data to compare,
+  which cannot be produced synthetically. (Finding 3's Update 3 explains why
+  this specific risk no longer applies to the current RTK/Caveman tooling,
+  but the underlying measurement itself was still never run against
+  anything.)
+
+## Finding 10 (v5.5): OmniRoute removed entirely, replaced with the real tools it wrapped
+
+Per direct request: import OmniRoute's documented compression modes
+"manually (without OmniRoute)" - i.e. find the actual open-source projects
+OmniRoute reimplements, and use them directly instead of going through
+OmniRoute's gateway at all.
+
+**Research finding**: OmniRoute's own compression-mode documentation
+(Lite/Standard/Aggressive/Ultra/RTK/Stacked, Cache-Aware, Progressive Aging)
+describes one real underlying pair of open-source projects plus OmniRoute's
+own proprietary regex/heuristic layer on top of them:
+- **RTK** ("Rust Token Killer", `github.com/rtk-ai/rtk`, Apache-2.0) - a real,
+  actively maintained (~1,464 commits, pushed within the last day as of this
+  writing), standalone local binary. Confirmed via its actual GitHub
+  Releases API (not marketing pages): ships a genuine
+  `rtk-x86_64-pc-windows-msvc.zip` Windows release asset, and wires into
+  Claude Code as a real `PreToolUse` hook (`rtk init -g` writes
+  `~/.claude/hooks/rtk-rewrite.sh`, confirmed by reading that file directly)
+  that rewrites Bash tool calls to filter/compress command output. No API
+  key, no network service.
+- **Caveman** (`github.com/JuliusBrussee/caveman`, MIT) - a real Claude Code
+  plugin, confirmed by fetching its actual `.claude-plugin/marketplace.json`
+  and `.claude-plugin/plugin.json` directly (not assumed from its README):
+  marketplace name `caveman`, plugin name `caveman`, registers a
+  `SessionStart` hook (`src/hooks/caveman-activate.js`) active from message
+  one. No API key, zero network calls after install per its own README.
+- Everything else OmniRoute names (Lite, Standard, Aggressive, Ultra,
+  Stacked, Cache-Aware, Progressive Aging) is OmniRoute's own proprietary
+  composite logic layered on RTK + Caveman, not a separate open-source
+  project - reimplementing those from scratch would mean guessing at
+  behavior nobody's verified, not importing existing code. Per direct
+  request, this was explicitly scoped out in favor of just the two real
+  underlying tools.
+
+**What changed**:
+- Every OmniRoute-specific function, config field (`OmniRouteApiKeyEnc`,
+  `OmniRouteProviderVerifiedUtc`, `OmniRouteCompressionConfigured`, etc.),
+  and CLI param (`-CompressionMode`, `-ReconfigureOmniRoute`) is gone from
+  `LLM-TokenOptimizer.ps1` - not disabled, deleted. This includes the local
+  gateway server lifecycle, the headless-dashboard-login/API-key machinery,
+  MCP registration, and the 1M-context model-catalog resolution /
+  `availableModels` picker restriction.
+- Claude Code now launches with its own native model defaults. There is no
+  gateway to route through, so there's nothing for `-Model sonnet|opus` to
+  conflict with - that flag still works, now applied directly in
+  `Start-ClaudeSession` instead of inside the deleted OmniRoute env-setup
+  function.
+- `Install-CavemanPlugin` and `Install-RtkCli` are new functions in the same
+  `Install-CompanionTooling` step as `claude-mem`/`headroom`/etc. - same
+  install-once-at-user-scope pattern, same best-effort-never-blocks-launch
+  behavior, same config-flag tracking (`CavemanInstalled`, `RtkInstalled`).
+  A full uninstall (`rm` + `X` at launcher startup) removes both.
+- The VS Code extension (`vscode-extension/`) had its `reconfigureOmniRoute`
+  command and `compressionMode` setting removed to match - both were
+  OmniRoute-specific and have no equivalent for two always-on, install-once
+  companion tools.
+
+**Verification performed**: full-script syntax check
+(`[System.Management.Automation.Language.Parser]::ParseFile`) after every
+edit - zero errors. Swept the whole file for leftover references to every
+deleted function/variable name (`OMNIROUTE_ROUTE_CLAUDE`,
+`Set-OmniRouteLaunchEnvironment`, `$script:OmniRouteRouted`, etc.) - the only
+matches left are inside the historical changelog comment block documenting
+past versions, not live code. TypeScript extension compiled clean
+(`tsc -p ./`) and its `package.json` re-validated as parseable JSON.
+**Not verified**: an actual live run on a real Windows machine (this
+environment can't run PowerShell/winget/a real Claude Code install/actual
+`rtk init -g` or `claude plugin install` network calls) - the installers for
+RTK and Caveman are new code, written to match this script's existing,
+previously-verified patterns (`Install-HeadroomStatusline` for the Git-Bash
+pattern, `Install-ClaudeCodeSetupPlugin` for the marketplace-plugin pattern)
+and checked against each project's real release assets/plugin manifests
+before being written, but neither has been exercised end-to-end on a real
+machine. Anyone running this should treat the first real launch as the
+actual test, and check `%LOCALAPPDATA%\LLM-TokenOptimizer\logs\` if either
+install doesn't confirm success.

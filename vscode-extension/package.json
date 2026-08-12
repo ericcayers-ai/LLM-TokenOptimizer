@@ -1,8 +1,8 @@
 {
   "name": "llm-token-optimizer",
   "displayName": "LLM-TokenOptimizer",
-  "description": "Thin VS Code wrapper around LLM-TokenOptimizer.ps1 - launches Graphify + OmniRoute + Claude Code project/session windows from inside VS Code instead of a standalone console.",
-  "version": "5.4.0",
+  "description": "Thin VS Code wrapper around LLM-TokenOptimizer.ps1 - launches Graphify + Claude Code project/session windows from inside VS Code instead of a standalone console.",
+  "version": "5.5.0",
   "publisher": "local",
   "engines": {
     "vscode": "^1.95.0"
@@ -38,11 +38,6 @@
         "command": "llmTokenOptimizer.resetConfig",
         "title": "LLM-TokenOptimizer: Reset Configuration",
         "icon": "$(trash)"
-      },
-      {
-        "command": "llmTokenOptimizer.reconfigureOmniRoute",
-        "title": "LLM-TokenOptimizer: Reconfigure OmniRoute",
-        "icon": "$(sync)"
       }
     ],
     "viewsContainers": {
@@ -66,7 +61,7 @@
     "viewsWelcome": [
       {
         "view": "llmTokenOptimizerView",
-        "contents": "Manage Graphify + OmniRoute + Claude Code project/session windows without leaving VS Code.\n[$(rocket) Start](command:llmTokenOptimizer.quickMenu)\nOr ask the agent: `@tokenoptimizer` in the Chat view."
+        "contents": "Manage Graphify + Claude Code project/session windows without leaving VS Code.\n[$(rocket) Start](command:llmTokenOptimizer.quickMenu)\nOr ask the agent: `@tokenoptimizer` in the Chat view."
       }
     ],
     "menus": {
@@ -97,10 +92,6 @@
         {
           "command": "llmTokenOptimizer.resetConfig",
           "when": "false"
-        },
-        {
-          "command": "llmTokenOptimizer.reconfigureOmniRoute",
-          "when": "false"
         }
       ]
     },
@@ -109,7 +100,7 @@
         "id": "llmTokenOptimizer.agent",
         "fullName": "LLM-TokenOptimizer",
         "name": "tokenoptimizer",
-        "description": "Open Claude Code project/session windows, Graphify + OmniRoute setup, from VS Code's Chat view.",
+        "description": "Open Claude Code project/session windows, Graphify + companion tooling setup, from VS Code's Chat view.",
         "isSticky": true
       }
     ],
@@ -135,17 +126,6 @@
           ],
           "default": "",
           "description": "Session-only model override forwarded as -Model. Leave blank to use Claude Code's own saved default."
-        },
-        "llmTokenOptimizer.compressionMode": {
-          "type": "string",
-          "enum": [
-            "",
-            "stacked",
-            "ultra",
-            "off"
-          ],
-          "default": "",
-          "description": "Session-only OmniRoute compression override forwarded as -CompressionMode. Leave blank to keep the script's pinned Stacked default. 'off' skips OmniRoute compression setup so long multi-turn sessions keep a byte-identical prompt-cache prefix - see AUDIT.md Finding 3."
         },
         "llmTokenOptimizer.isolateClaudeConfig": {
           "type": "boolean",
