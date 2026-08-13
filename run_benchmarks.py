@@ -54,7 +54,14 @@ for _stream in (sys.stdout, sys.stderr):
 
 LMS_BASE_URL = "http://localhost:1234/v1"
 LMS_SERVER_PORT = 1234
-DOWNLOAD_BATCH_SIZE = 2
+# 1, not 2: this pipeline has to run unattended on machines with unknown free
+# disk space (that's the whole point of the per-model purge cycle). Two
+# concurrent downloads means two models' worth of peak disk usage instead of
+# one, and this was live-confirmed to actually bite: a batch-size-2 run
+# exhausted disk mid-download and silently skipped several models with
+# "only N GB free" warnings that a batch-size-1 run right after didn't hit.
+# Override with --batch-size on a machine you know has room to spare.
+DOWNLOAD_BATCH_SIZE = 1
 # 1536 originally - raised after a live run confirmed it's not enough for a
 # reasoning/"thinking" model: qwen3.6-35b-a3b spent its ENTIRE 1536-token
 # budget on reasoning_content and never reached a final answer on any of the
@@ -266,8 +273,14 @@ def run_lms(lms_path, args, timeout=None, stream_output=False):
             # Long-running steps (downloads, model loads) get their output
             # streamed live instead of captured - a multi-GB download with
             # zero visible output for 20+ minutes looks identical to a hang.
-            proc = subprocess.run(cmd, timeout=timeout, encoding="utf-8", errors="replace")
-            return proc.returncode == 0, ""
+            # stdout is left inherited (still streams to the console/log),
+            # but stderr IS captured - the previous version threw it away
+            # entirely, which meant every failed download in a live run
+            # showed up with detail="" and no way to tell a bad model id
+            # from a network blip from disk exhaustion.
+            proc = subprocess.run(cmd, timeout=timeout, encoding="utf-8", errors="replace",
+                                   stdout=None, stderr=subprocess.PIPE)
+            return proc.returncode == 0, (proc.stderr or "")
         else:
             proc = subprocess.run(
                 cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout
@@ -375,8 +388,54 @@ def download_model(lms_path, model, installed_ids=None, min_free_gb=DEFAULT_MIN_
     if ok:
         log(f"[{model_id}] Download complete.")
         return model_id, True, ""
+
+    # `lms get`'s exit code can lie: confirmed live under this script's own
+    # nohup/background/log-redirected invocation, three models (qwen3-vl-8b,
+    # gemma-4-26b-a4b, qwen3.6-27b) reported a non-zero exit code yet ended
+    # up fully downloaded and registered anyway - likely a progress-bar/TTY
+    # detection quirk when stdout isn't a real console. Don't trust the exit
+    # code alone; check the model registry before declaring failure.
+    if model_id in get_installed_model_ids(lms_path):
+        log(f"[{model_id}] Exit code indicated failure but the model is fully "
+            f"registered - treating as success.")
+        return model_id, True, ""
+
     log(f"[{model_id}] Download failed: {out.strip()[-500:]}", "ERROR")
+    _cleanup_partial_download(model_id)
     return model_id, False, out.strip()[-500:]
+
+
+def _cleanup_partial_download(model_id):
+    """Remove incomplete `downloading_*` / `.part` artifacts a failed `lms
+    get` leaves behind. These were never cleaned up before (the purge path
+    only ever runs for downloads that reported success), so a genuinely bad
+    model id or an interrupted download left multi-GB partial files sitting
+    on disk permanently across every past run.
+
+    Batches can download multiple models concurrently (ThreadPoolExecutor,
+    one worker per batch member), so a blanket "remove every .part in the
+    tree" would risk deleting a SIBLING model's still-in-progress download
+    out from under it. Only remove a partial file whose parent directory
+    name token-matches this model's own id - anything ambiguous is left
+    alone rather than risk collateral damage.
+    """
+    models_dir = Path.home() / ".lmstudio" / "models"
+    if not models_dir.exists():
+        return
+    tokens = [t for t in re.split(r"[/\-_. ]+", model_id.lower()) if len(t) > 2]
+    removed_any = False
+    for pattern in ("**/downloading_*", "**/*.part"):
+        for f in models_dir.glob(pattern):
+            parent_name = f.parent.name.lower()
+            if not any(t in parent_name for t in tokens):
+                continue
+            try:
+                f.unlink()
+                removed_any = True
+            except OSError:
+                pass
+    if removed_any:
+        log(f"[{model_id}] Cleaned up incomplete download artifact(s).")
 
 
 def load_model(lms_path, model_id, context_length=8192):
@@ -399,10 +458,31 @@ def unload_all(lms_path):
 
 
 def resolve_disk_path(lms_path, model_id):
-    """Ask `lms ls --json` for the model's actual on-disk path rather than
-    guessing it from the model_id string - the original approach assumed
-    disk folder names always mirror the catalog id's casing, which isn't
-    guaranteed by LM Studio."""
+    """Find the actual on-disk directory for a downloaded model.
+
+    `lms ls --json`'s "path" field is NOT a filesystem path - it's just an
+    alias for modelKey. Confirmed live: the JSON entry for
+    "qwen/qwen3-coder-30b" reports `"path": "qwen/qwen3-coder-30b"`, while
+    the real files live at
+    .lmstudio/models/lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-GGUF/
+    - LM Studio's catalog often proxies to a re-quantizer's own repo (here
+    "lmstudio-community"), which has nothing to do with the catalog id's
+    publisher segment. Trusting that field made every purge attempt build
+    a path like .lmstudio/models/qwen/ that never existed, so it always
+    logged "nothing found" and silently left every model on disk - this is
+    why free space kept shrinking across a run that was supposed to be
+    self-cleaning.
+
+    Locate the real directory instead by matching `sizeBytes` (the one
+    field `lms ls --json` reports that isn't a guessed path) against actual
+    .gguf file sizes on disk - summed PER DIRECTORY, not per file. A vision
+    model ships a companion mmproj-*.gguf alongside the main weights, and
+    `sizeBytes` reports their combined total (confirmed live: GLM-4.6V-Flash
+    reports sizeBytes=7953555436, but its main weight file alone is
+    6166577888 - a 22% gap that no per-file tolerance would ever bridge;
+    summed with its 1786959488-byte mmproj file, the total matches within
+    rounding).
+    """
     ok, out = run_lms(lms_path, ["ls", "--json"])
     if not ok:
         return None
@@ -410,33 +490,37 @@ def resolve_disk_path(lms_path, model_id):
         entries = json.loads(out)
     except json.JSONDecodeError:
         return None
-    for entry in entries:
-        if entry.get("modelKey") == model_id or entry.get("indexedModelIdentifier") == model_id:
-            return entry.get("path")
+    entry = next((e for e in entries if e.get("modelKey") == model_id
+                  or e.get("indexedModelIdentifier") == model_id), None)
+    target_size = entry.get("sizeBytes") if entry else None
+    models_dir = Path.home() / ".lmstudio" / "models"
+    if not target_size or not models_dir.exists():
+        return None
+    dir_totals = {}
+    for gguf in models_dir.rglob("*.gguf"):
+        try:
+            size = gguf.stat().st_size
+        except OSError:
+            continue
+        dir_totals[gguf.parent] = dir_totals.get(gguf.parent, 0) + size
+    tolerance = 0.05  # slack for rounding
+    for directory, total in dir_totals.items():
+        if abs(total - target_size) / target_size <= tolerance:
+            return directory
     return None
 
 
 def delete_model_from_disk(lms_path, model_id):
-    models_dir = Path.home() / ".lmstudio" / "models"
-    rel_path = resolve_disk_path(lms_path, model_id)
-    if rel_path:
-        target = models_dir / rel_path
-        # `path` can point at a single weight file (e.g. embeddings) or a
-        # model directory - remove whichever it resolved to.
-        target_dir = target if target.is_dir() else target.parent
-    else:
-        # Fallback: best-effort guess from the id, same as the original script.
-        parts = model_id.split("/")
-        target_dir = models_dir / parts[0] / parts[1] if len(parts) == 2 else models_dir / model_id
-
-    if target_dir.exists():
+    target_dir = resolve_disk_path(lms_path, model_id)
+    if target_dir and target_dir.exists():
         try:
             shutil.rmtree(target_dir)
             log(f"[{model_id}] Purged from disk: {target_dir}")
         except OSError as e:
             log(f"[{model_id}] Could not purge {target_dir}: {e}", "WARN")
     else:
-        log(f"[{model_id}] Nothing found at {target_dir} to purge (may already be gone)", "WARN")
+        log(f"[{model_id}] Could not locate on-disk directory to purge (already gone, "
+            f"or no size match in `lms ls --json`)", "WARN")
 
 
 # ----------------------------------------------------------------------------

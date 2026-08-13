@@ -13,10 +13,17 @@ rem instead of VS Code's (both use the .vsix extension for unrelated
 rem formats) - this script always goes through the correct "code" CLI
 rem instead, so double-clicking THIS file is the one-click install path.
 
-set "VSIX=%~dp0llm-token-optimizer-5.4.0.vsix"
-if not exist "%VSIX%" (
-    echo   ERROR: %VSIX%
-    echo   was not found next to this installer. Nothing to install.
+rem Don't hardcode the version - it goes stale every time the extension is
+rem repackaged (this bit us: v5.4.0 was baked in here while the actual file
+rem on disk had moved on to v5.8.0). Instead, pick the most recently built
+rem llm-token-optimizer-*.vsix sitting next to this installer.
+set "VSIX="
+for /f "delims=" %%F in ('dir /b /o-d "%~dp0llm-token-optimizer-*.vsix" 2^>nul') do (
+    if not defined VSIX set "VSIX=%~dp0%%F"
+)
+if not defined VSIX (
+    echo   ERROR: No llm-token-optimizer-*.vsix found next to this installer.
+    echo   Nothing to install.
     echo.
     pause
     exit /b 1

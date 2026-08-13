@@ -709,6 +709,24 @@ param(
     # as its default. Session-scoped only.
     [ValidateSet('sonnet', 'opus')]
     [string]$Model,
+    # Runs the interactive proxy-fallback credential setup (Antigravity ->
+    # Codex -> Cursor credentials and exits - does not open a project or
+    # launch a session. Antigravity is the only one of the three used
+    # automatically (Resolve-SessionBackend, when Claude Code itself is
+    # unavailable); Codex/Cursor credentials registered here are only ever
+    # used via an explicit -TransferTo below (VS Code extension's "Transfer
+    # Session" buttons), never automatically. See Invoke-ProxyCredentialSetup.
+    [switch]$SetupProxy,
+    # Manual session transfer (VS Code extension sidebar only - see
+    # Invoke-SessionTransfer): stop whatever's running in the calling
+    # terminal and hand off to Codex or Cursor with the current Claude Code
+    # session's context and this project's skills bundled in. Requires
+    # -ProjectPath. Never triggered automatically.
+    [ValidateSet('Codex', 'Cursor')]
+    [string]$TransferTo,
+    # Same idea as -TransferTo but hands off to the best benchmarked local
+    # model instead of a proxy backend - no credential needed.
+    [switch]$ContinueLocally,
 
     # ---- v4.0 multi-window parameters -------------------------------------
     # The parent directory holding your projects. Supply it to skip the
@@ -973,8 +991,21 @@ namespace LLMTokenOptimizer {
     public static class RateLimitWatcher {
         static Thread _thread;
         static volatile bool _running;
+        // Started/stopped around ANY of the four session types (Claude,
+        // Antigravity, Codex, Cursor - see Start-RateLimitWatcher's call
+        // sites), so this needs to catch each provider's own wording, not
+        // just Claude Code's. It reads the raw visible console screen buffer
+        // (ConsoleIo.ReadVisibleScreen), which works regardless of which
+        // foreground process is writing to it - no per-provider plumbing
+        // needed, just a broader pattern. The generic terms at the end
+        // (quota/429/too many requests) are a deliberate superset rather
+        // than exact-matching each vendor's copy, since that copy isn't
+        // something this project controls or can verify without a live
+        // account on every provider.
         static readonly Regex RateLimitPattern = new Regex(
-            @"(5-hour limit reached|weekly limit|session limit|You've hit your (weekly|session) limit|rate limit reached)",
+            @"(5-hour limit reached|weekly limit|session limit|You've hit your (weekly|session) limit|" +
+            @"rate limit reached|rate.?limit exceeded|usage limit|quota exceeded|quota reached|" +
+            @"too many requests|HTTP 429|\b429\b)",
             RegexOptions.IgnoreCase);
         static readonly Regex ResetTimePattern = new Regex(
             @"resets?\s+(?<time>\d{1,2}(:\d{2})?\s*(am|pm)?)", RegexOptions.IgnoreCase);
@@ -1400,6 +1431,18 @@ function Get-DefaultConfiguration {
         BestLocalModelId = ""
         BestLocalModelTokensPerSec = 0
         BestLocalModelUpdatedUtc = ""
+        # v5.9: Antigravity -> Codex -> Cursor proxy fallback chain, checked
+        # in that order (each gated on its own stored credential - see
+        # Test-ProxyCredential) whenever Claude Code AND every higher-priority
+        # backend are unavailable. Same cooldown mechanism as
+        # ClaudeRateLimitedUntilUtc above, one field per backend, so a
+        # provider that hits ITS OWN usage limit gets queued down to the next
+        # one in line instead of the whole chain retrying the same
+        # already-exhausted backend - see Resolve-SessionBackend and
+        # Start-RateLimitWatcher's reuse across all four session types.
+        AntigravityRateLimitedUntilUtc = ""
+        CodexRateLimitedUntilUtc = ""
+        CursorRateLimitedUntilUtc = ""
     }
 }
 
@@ -4728,6 +4771,380 @@ function Test-ClaudeAvailable {
     return $result.Success
 }
 
+function Test-ProviderRateLimited {
+    # Generic version of the cooldown check inline in Test-ClaudeAvailable
+    # above, reused for the three proxy backends (see the
+    # <Provider>RateLimitedUntilUtc config fields added in v5.9).
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][ValidateSet('Antigravity', 'Codex', 'Cursor')][string]$Provider)
+    $field = "${Provider}RateLimitedUntilUtc"
+    $untilRaw = $script:Config.$field
+    if (-not $untilRaw) { return $false }
+    try {
+        $until = [DateTime]::Parse($untilRaw, $null, [System.Globalization.DateTimeStyles]::RoundtripKind)
+        if ((Get-Date).ToUniversalTime() -lt $until) {
+            Write-Log "$Provider was rate-limited until $until (UTC) - treating as unavailable" -Level "INFO"
+            return $true
+        }
+    } catch { Write-Log "Could not parse $field - ignoring: $_" -Level "DEBUG" }
+    return $false
+}
+
+function Save-RateLimitDetectionResult {
+    # Call immediately after Stop-RateLimitWatcher, for ANY of the four
+    # session types. Reads the watcher's static fields (set if usage-limit
+    # text appeared on screen during that session - the watcher reads the
+    # raw console buffer, so it works the same regardless of which of the
+    # four foreground processes was writing to it) and persists into the
+    # matching provider's own cooldown field. This is the mechanism behind
+    # "queue it down when a backend hits its usage limit": the NEXT call to
+    # Resolve-SessionBackend sees that provider's cooldown hasn't expired
+    # and skips straight to the next one in priority order, instead of
+    # retrying an already-exhausted backend and burning another attempt
+    # against the same limit.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][ValidateSet('Claude', 'Antigravity', 'Codex', 'Cursor')][string]$Provider)
+    if (-not ($script:RateLimitWatcherTypeLoaded -and [LLMTokenOptimizer.RateLimitWatcher]::RateLimitDetected)) { return }
+    $resumeIso = [LLMTokenOptimizer.RateLimitWatcher]::ResumeAtUtcIso
+    if (-not $resumeIso) { return }
+    $field = "${Provider}RateLimitedUntilUtc"
+    $script:Config.$field = $resumeIso
+    Save-Configuration
+    Write-Log "Recorded $Provider rate-limit until $resumeIso for next launch's fallback check" -Level "INFO"
+}
+
+# ============================================================================
+# PROXY FALLBACK CREDENTIALS (v5.9)
+#   Antigravity -> Codex -> Cursor, in that fixed priority order, each one
+#   gated on its own locally-stored credential rather than just "is it
+#   installed". Storage is Windows DPAPI (ConvertFrom-SecureString's default
+#   with no -Key) - readable only by this Windows account on this machine,
+#   never written in plaintext, never logged, never transmitted anywhere by
+#   this script. The user always types their own key via Read-Host
+#   -AsSecureString (masked terminal input) - this is local secret storage
+#   for THIS script's own later use launching each provider's own CLI/IDE,
+#   the same pattern `gh auth login`/`aws configure`/`npm login` use, not a
+#   web-form autofill.
+#
+#   What "credential" means differs per provider, and that's disclosed
+#   rather than papered over:
+#     - Codex: the real OPENAI_API_KEY, set as an env var for the launched
+#       `codex` process - this is Codex's own documented auth mechanism.
+#     - Antigravity / Cursor: both authenticate via interactive OAuth
+#       sign-in inside the app itself (Install-AntigravityProxySupport
+#       above already documents why this script doesn't attempt to automate
+#       that). A stored "credential" for these two is an opt-in marker -
+#       "yes, I've set this up and want it in the fallback chain" - not a
+#       literal key the launch injects. First use may still prompt an
+#       interactive sign-in inside that app, same as opening it by hand.
+# ============================================================================
+
+function Get-ProxyCredentialDir {
+    $dir = Join-Path $env:USERPROFILE ".llm-token-optimizer\proxy-credentials"
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    return $dir
+}
+
+function Get-ProxyCredentialPath {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][ValidateSet('Antigravity', 'Codex', 'Cursor')][string]$Provider)
+    return (Join-Path (Get-ProxyCredentialDir) "$($Provider.ToLowerInvariant()).cred")
+}
+
+function Test-ProxyCredential {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][ValidateSet('Antigravity', 'Codex', 'Cursor')][string]$Provider)
+    return (Test-Path (Get-ProxyCredentialPath -Provider $Provider) -PathType Leaf)
+}
+
+function Set-ProxyCredential {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][ValidateSet('Antigravity', 'Codex', 'Cursor')][string]$Provider,
+        [Parameter(Mandatory)][System.Security.SecureString]$ApiKey
+    )
+    $path = Get-ProxyCredentialPath -Provider $Provider
+    try {
+        $ApiKey | ConvertFrom-SecureString | Out-File -FilePath $path -Encoding UTF8 -Force
+        Write-Success "$Provider credential stored (DPAPI-encrypted, this Windows account only)"
+        return $true
+    } catch {
+        Write-Fail "Could not store $Provider credential: $_"
+        return $false
+    }
+}
+
+function Remove-ProxyCredential {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][ValidateSet('Antigravity', 'Codex', 'Cursor')][string]$Provider)
+    $path = Get-ProxyCredentialPath -Provider $Provider
+    if (Test-Path $path) { Remove-Item $path -Force }
+}
+
+function Get-ProxyCredentialPlainText {
+    # Decrypts for use as an env var (Codex only - see the module comment
+    # above). Never logged, never written back to disk in plaintext, cleared
+    # from the caller's variable as soon as it's done with it.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][ValidateSet('Antigravity', 'Codex', 'Cursor')][string]$Provider)
+    $path = Get-ProxyCredentialPath -Provider $Provider
+    if (-not (Test-Path $path)) { return $null }
+    $bstr = [IntPtr]::Zero
+    try {
+        $secure = Get-Content $path -Raw | ConvertTo-SecureString
+        $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+        return [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+    } catch {
+        Write-Log "Could not decrypt $Provider credential: $_" -Level "WARN"
+        return $null
+    } finally {
+        if ($bstr -ne [IntPtr]::Zero) { [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+    }
+}
+
+function Invoke-ProxyCredentialSetup {
+    # -SetupProxy entry point. Interactive, console-based, same UX family as
+    # every other setup step in this script - no separate GUI/webview needed
+    # even when triggered from the VS Code extension, since that just opens
+    # this same script in a terminal (see the extension's new command).
+    Write-Section "Proxy fallback credentials"
+    Write-Info "Priority order when Claude Code is unavailable: Antigravity > Codex > Cursor > local model."
+    Write-Info "Local model needs no credential and is always the final fallback (see run_benchmarks.py)."
+    Write-Info "Leave blank and press Enter to skip a provider. Type 'clear' to remove an existing one."
+    Write-Host ""
+
+    foreach ($provider in @('Antigravity', 'Codex', 'Cursor')) {
+        $already = Test-ProxyCredential -Provider $provider
+        $label = if ($provider -eq 'Codex') { "$provider API key (OPENAI_API_KEY)" } else { "$provider (any value - marks it as opted-in; sign-in still happens inside the app)" }
+        $status = if ($already) { " [already set - Enter to keep]" } else { "" }
+        $secure = Read-Host "  $label$status" -AsSecureString
+        $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+        $plain = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+        [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+
+        if ([string]::IsNullOrWhiteSpace($plain)) {
+            if (-not $already) { Write-Hint "$provider skipped - won't be used as a fallback." }
+            continue
+        }
+        if ($plain -eq 'clear') {
+            Remove-ProxyCredential -Provider $provider
+            Write-Info "$provider credential removed."
+            continue
+        }
+        $null = Set-ProxyCredential -Provider $provider -ApiKey $secure
+        $plain = $null
+    }
+    Write-Host ""
+    Write-Success "Proxy fallback setup complete."
+}
+
+function Sync-AgentsMdFromClaudeMd {
+    # "Treat the environment the exact same" (as requested): Codex and
+    # Cursor don't read .claude/skills or plugin manifests - those are
+    # Claude Code-specific and genuinely can't transfer to a different
+    # vendor's agent, and this comment says so rather than pretending
+    # otherwise. What DOES transfer is the project's own instructions: both
+    # Codex CLI and Cursor natively read an AGENTS.md at the project root
+    # (an emerging cross-tool convention), the same role CLAUDE.md plays for
+    # Claude Code. If this project only has a CLAUDE.md, mirror it to
+    # AGENTS.md so whichever backend actually launches sees the same
+    # project-level guidance instead of starting cold. Never overwrites an
+    # AGENTS.md the project already maintains on its own.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ProjectDirectory)
+    $claudeMd = Join-Path $ProjectDirectory "CLAUDE.md"
+    $agentsMd = Join-Path $ProjectDirectory "AGENTS.md"
+    if ((Test-Path $claudeMd -PathType Leaf) -and -not (Test-Path $agentsMd -PathType Leaf)) {
+        try {
+            Copy-Item $claudeMd $agentsMd -ErrorAction Stop
+            Write-Log "Mirrored CLAUDE.md -> AGENTS.md so the proxy backend sees the same project instructions" -Level "DEBUG"
+        } catch {
+            Write-Log "Could not mirror CLAUDE.md to AGENTS.md: $_" -Level "DEBUG"
+        }
+    }
+}
+
+# ============================================================================
+# MANUAL SESSION TRANSFER (v5.9)
+#   VS Code extension sidebar only - "Transfer Session to Codex/Cursor" and
+#   "Continue Locally". Never triggered automatically; Resolve-SessionBackend
+#   above only auto-routes to Antigravity. Bundles the current Claude Code
+#   session's text context and this project's skill instructions into a
+#   handoff file the receiving tool picks up via AGENTS.md.
+# ============================================================================
+
+function Get-ClaudeSessionTranscriptPath {
+    # Most recently modified session transcript for this project, under
+    # Claude Code's own storage convention: ~/.claude/projects/<slug>/*.jsonl
+    # (or $env:CLAUDE_CONFIG_DIR/projects/<slug>/ under -IsolateClaudeConfig),
+    # where <slug> is the project path with ":" and path separators replaced
+    # by "-". Confirmed live against this project's own transcript directory.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ProjectDirectory)
+    $claudeHome = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE ".claude" }
+    $slug = ($ProjectDirectory.TrimEnd('\', '/') -replace '[:\\/]', '-')
+    $projDir = Join-Path (Join-Path $claudeHome "projects") $slug
+    if (-not (Test-Path $projDir -PathType Container)) { return $null }
+    $latest = Get-ChildItem -Path $projDir -Filter "*.jsonl" -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if (-not $latest) { return $null }
+    return $latest.FullName
+}
+
+function ConvertTo-SessionHandoffText {
+    # Lossy by design, and documented as such rather than papered over:
+    # extracts only TEXT content blocks from user/assistant turns (drops
+    # images, tool_use/tool_result blocks, thinking blocks) into a readable
+    # running transcript. A full-fidelity port isn't possible - Codex and
+    # Cursor have no concept of Claude Code's own session format - this is a
+    # best-effort context bridge, not a session migration. Capped to the
+    # last $MaxChars of text so an hours-long session doesn't produce an
+    # unusably huge handoff file.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$TranscriptPath,
+        [int]$MaxChars = 60000
+    )
+    $turns = New-Object System.Collections.Generic.List[string]
+    Get-Content -LiteralPath $TranscriptPath -Encoding UTF8 | ForEach-Object {
+        if (-not $_.Trim()) { return }
+        try { $obj = $_ | ConvertFrom-Json -ErrorAction Stop } catch { return }
+        if ($obj.type -ne 'user' -and $obj.type -ne 'assistant') { return }
+        $content = $obj.message.content
+        if (-not $content) { return }
+        $textParts = New-Object System.Collections.Generic.List[string]
+        if ($content -is [string]) {
+            $textParts.Add($content)
+        } else {
+            foreach ($block in @($content)) {
+                if ($block.type -eq 'text' -and $block.text) { $textParts.Add($block.text) }
+            }
+        }
+        if ($textParts.Count -gt 0) {
+            $turns.Add("**$($obj.type)**: $($textParts -join "`n")")
+        }
+    }
+    $full = $turns -join "`n`n"
+    if ($full.Length -gt $MaxChars) {
+        $full = "...(earlier context truncated)...`n`n" + $full.Substring($full.Length - $MaxChars)
+    }
+    return $full
+}
+
+function Get-AvailableSkillsDigest {
+    # Concatenates skill instruction content (frontmatter + body) so the
+    # receiving tool has the same GUIDANCE available as plain text context -
+    # it cannot invoke skills the way Claude Code does (no trigger-matching
+    # system on the receiving end). This is reference material, not a
+    # working skill-system transplant, and that distinction matters enough
+    # to state explicitly rather than let the handoff imply otherwise. Pulls
+    # from both the user-scope skill library (~/.claude/skills) and any
+    # project-local .claude/skills.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ProjectDirectory)
+    $dirs = @(
+        (Join-Path $env:USERPROFILE ".claude\skills"),
+        (Join-Path $ProjectDirectory ".claude\skills")
+    ) | Where-Object { Test-Path $_ -PathType Container }
+    if (-not $dirs) { return "" }
+    $chunks = New-Object System.Collections.Generic.List[string]
+    foreach ($dir in $dirs) {
+        Get-ChildItem -Path $dir -Filter "SKILL.md" -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+            try {
+                $body = Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8
+                $chunks.Add("### $($_.Directory.Name)`n`n$body")
+            } catch { }
+        }
+    }
+    return ($chunks -join "`n`n---`n`n")
+}
+
+function Export-SessionHandoff {
+    # Bundles the current Claude Code session's text context AND this
+    # project's skill instructions into one handoff file, then wires it into
+    # AGENTS.md (which Codex/Cursor both read on open) so the receiving tool
+    # has it as soon as it launches - no extra step for the user beyond
+    # clicking the transfer button.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ProjectDirectory)
+    Write-Section "Exporting session context"
+
+    $transcript = Get-ClaudeSessionTranscriptPath -ProjectDirectory $ProjectDirectory
+    $handoffDir = Join-Path $ProjectDirectory ".claude-handoff"
+    if (-not (Test-Path $handoffDir)) { New-Item -ItemType Directory -Path $handoffDir -Force | Out-Null }
+    $handoffFile = Join-Path $handoffDir "session-handoff.md"
+
+    $sections = New-Object System.Collections.Generic.List[string]
+    $sections.Add("# Session handoff from Claude Code`n`nGenerated $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'). Best-effort context bridge, not a full session migration - text only (no images/tool results), and the skills below are reference material only (this tool has no Claude Code-style skill trigger system).")
+
+    if ($transcript) {
+        Write-Info "Reading session transcript: $transcript"
+        $convo = ConvertTo-SessionHandoffText -TranscriptPath $transcript
+        if ($convo) { $sections.Add("## Conversation so far (Claude Code session)`n`n$convo") }
+    } else {
+        Write-Warning "No Claude Code session transcript found for this project - handing off with project instructions only."
+    }
+
+    $skills = Get-AvailableSkillsDigest -ProjectDirectory $ProjectDirectory
+    if ($skills) { $sections.Add("## Skills available in the source Claude Code environment (reference only)`n`n$skills") }
+
+    ($sections -join "`n`n---`n`n") | Out-File -FilePath $handoffFile -Encoding UTF8 -Force
+    Write-Success "Handoff written: $handoffFile"
+
+    Sync-AgentsMdFromClaudeMd -ProjectDirectory $ProjectDirectory
+    $agentsMd = Join-Path $ProjectDirectory "AGENTS.md"
+    $reference = "`n`n<!-- llm-token-optimizer session handoff -->`nSee .claude-handoff/session-handoff.md for the Claude Code session this project was transferred from.`n"
+    try {
+        if (Test-Path $agentsMd -PathType Leaf) {
+            $existing = Get-Content $agentsMd -Raw -Encoding UTF8
+            if ($existing -notmatch [regex]::Escape('.claude-handoff/session-handoff.md')) {
+                ($existing.TrimEnd() + $reference) | Out-File -FilePath $agentsMd -Encoding UTF8 -Force
+            }
+        } else {
+            $reference | Out-File -FilePath $agentsMd -Encoding UTF8 -Force
+        }
+    } catch {
+        Write-Log "Could not reference handoff file in AGENTS.md: $_" -Level "DEBUG"
+    }
+    return $handoffFile
+}
+
+function Invoke-SessionTransfer {
+    # The actual -TransferTo / -ContinueLocally entry point. Exporting the
+    # handoff happens regardless of whether the target turns out to be
+    # available, so the file is always current for a manual retry.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ProjectDirectory,
+        [Parameter(Mandatory)][ValidateSet('Codex', 'Cursor', 'Local')]
+        [string]$Target
+    )
+    $null = Export-SessionHandoff -ProjectDirectory $ProjectDirectory
+    switch ($Target) {
+        'Codex' {
+            if (-not (Test-CodexAvailable)) {
+                Write-Fail "Codex isn't available - install it (npm i -g @openai/codex) and register its credential first (-SetupProxy)."
+                return
+            }
+            $null = Start-CodexSession -ProjectDirectory $ProjectDirectory
+        }
+        'Cursor' {
+            if (-not (Test-CursorAvailable)) {
+                Write-Fail "Cursor isn't available - check it's installed and its credential is registered first (-SetupProxy)."
+                return
+            }
+            $null = Start-CursorSession -ProjectDirectory $ProjectDirectory
+        }
+        'Local' {
+            if (-not (Test-LocalModelAvailable)) {
+                Write-Fail "No benchmarked local model on record - run 'uv run run_benchmarks.py' first."
+                return
+            }
+            $null = Start-LocalModelSession
+        }
+    }
+}
+
 function Find-AntigravityExecutable {
     # Google Antigravity IDE - confirmed install locations (Aug 2026):
     # per-user %LOCALAPPDATA%\Programs\Antigravity IDE\ (current) or
@@ -4750,7 +5167,11 @@ function Find-AntigravityExecutable {
 }
 
 function Test-AntigravityAvailable {
-    return [bool](Find-AntigravityExecutable)
+    # v5.9: gated on a stored credential too (see the PROXY FALLBACK
+    # CREDENTIALS module), not just "is it installed" - a user with
+    # Antigravity on disk but no intention of using it as a fallback
+    # shouldn't have this script silently open it.
+    return [bool](Find-AntigravityExecutable) -and (Test-ProxyCredential -Provider 'Antigravity') -and -not (Test-ProviderRateLimited -Provider 'Antigravity')
 }
 
 function Start-AntigravitySession {
@@ -4758,7 +5179,9 @@ function Start-AntigravitySession {
     param([Parameter(Mandatory)][string]$ProjectDirectory)
     $exe = Find-AntigravityExecutable
     if (-not $exe) { return $false }
+    Sync-AgentsMdFromClaudeMd -ProjectDirectory $ProjectDirectory
     Write-Info "Opening Antigravity for this project (Claude unavailable): $exe"
+    Start-RateLimitWatcher
     try {
         if ($exe -like "*agy.exe") {
             # Terminal CLI - runs attached to this console, matching Start-
@@ -4773,6 +5196,97 @@ function Start-AntigravitySession {
     } catch {
         Write-Warning "Could not launch Antigravity: $_"
         return $false
+    } finally {
+        Stop-RateLimitWatcher
+        Save-RateLimitDetectionResult -Provider 'Antigravity'
+    }
+}
+
+function Find-CodexExecutable {
+    # OpenAI Codex CLI - installed via `npm i -g @openai/codex`, giving a
+    # `codex` command on PATH. Pure CLI, no fixed desktop-install directory
+    # convention like Antigravity/Cursor below, so PATH lookup is the only
+    # reliable check.
+    if (Test-CommandAvailable "codex" -UseCache) { return (Get-Command "codex" -ErrorAction SilentlyContinue).Source }
+    return $null
+}
+
+function Test-CodexAvailable {
+    return [bool](Find-CodexExecutable) -and (Test-ProxyCredential -Provider 'Codex') -and -not (Test-ProviderRateLimited -Provider 'Codex')
+}
+
+function Start-CodexSession {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ProjectDirectory)
+    $exe = Find-CodexExecutable
+    if (-not $exe) { return $false }
+    $apiKey = Get-ProxyCredentialPlainText -Provider 'Codex'
+    if (-not $apiKey) { return $false }
+    Sync-AgentsMdFromClaudeMd -ProjectDirectory $ProjectDirectory
+    Write-Info "Opening Codex for this project (Claude and Antigravity both unavailable): $exe"
+    $oldKey = $env:OPENAI_API_KEY
+    $oldLoc = Get-Location
+    Start-RateLimitWatcher
+    try {
+        $env:OPENAI_API_KEY = $apiKey
+        Set-Location $ProjectDirectory
+        & $exe
+        Write-Success "Codex session ended for $(Split-Path $ProjectDirectory -Leaf)"
+        return $true
+    } catch {
+        Write-Warning "Could not launch Codex: $_"
+        return $false
+    } finally {
+        Stop-RateLimitWatcher
+        Save-RateLimitDetectionResult -Provider 'Codex'
+        Set-Location $oldLoc
+        $env:OPENAI_API_KEY = $oldKey
+        $apiKey = $null
+    }
+}
+
+function Find-CursorExecutable {
+    # Cursor IDE - same "check common install dirs, fall back to a PATH
+    # shim" pattern as Find-AntigravityExecutable. Cursor installs a
+    # `cursor` command shim on PATH (Windows), mirroring VS Code's own
+    # `code` shim.
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA "Programs\cursor\Cursor.exe"),
+        "$env:ProgramFiles\Cursor\Cursor.exe"
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c -PathType Leaf) { return $c }
+    }
+    if (Test-CommandAvailable "cursor" -UseCache) { return (Get-Command "cursor" -ErrorAction SilentlyContinue).Source }
+    return $null
+}
+
+function Test-CursorAvailable {
+    return [bool](Find-CursorExecutable) -and (Test-ProxyCredential -Provider 'Cursor') -and -not (Test-ProviderRateLimited -Provider 'Cursor')
+}
+
+function Start-CursorSession {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ProjectDirectory)
+    $exe = Find-CursorExecutable
+    if (-not $exe) { return $false }
+    Sync-AgentsMdFromClaudeMd -ProjectDirectory $ProjectDirectory
+    Write-Info "Opening Cursor for this project (Claude, Antigravity, and Codex all unavailable): $exe"
+    Start-RateLimitWatcher
+    try {
+        if (([System.IO.Path]::GetExtension($exe)) -eq ".exe") {
+            Start-Process -FilePath $exe -ArgumentList "`"$ProjectDirectory`"" -ErrorAction Stop
+        } else {
+            & $exe $ProjectDirectory
+        }
+        Write-Success "Cursor launched for $(Split-Path $ProjectDirectory -Leaf)"
+        return $true
+    } catch {
+        Write-Warning "Could not launch Cursor: $_"
+        return $false
+    } finally {
+        Stop-RateLimitWatcher
+        Save-RateLimitDetectionResult -Provider 'Cursor'
     }
 }
 
@@ -4826,9 +5340,14 @@ function Update-BestLocalModelFromBenchmarks {
 function Test-LocalModelAvailable {
     # LM Studio support + a benchmark result to act on. Doesn't require the
     # server to be running right now - Start-LocalModelSession starts it.
+    # Always re-reads benchmark_summary.json rather than trusting a
+    # previously-cached BestLocalModelId - re-running the benchmark suite
+    # can change the winner (observed in practice: gpt-oss-20b -> a later
+    # rescore promoted qwen2.5-coder-7b), and this file is small/cheap to
+    # parse, so there's no reason to let a stale pick survive a re-benchmark.
     if (-not $script:Config.LMStudioSupportInstalled) { return $false }
-    if (-not $script:Config.BestLocalModelId) {
-        Update-BestLocalModelFromBenchmarks | Out-Null
+    if (-not (Update-BestLocalModelFromBenchmarks)) {
+        return [bool]$script:Config.BestLocalModelId
     }
     return [bool]$script:Config.BestLocalModelId
 }
@@ -4863,28 +5382,63 @@ function Start-LocalModelSession {
 function Resolve-SessionBackend {
     # Returns 'claude' | 'antigravity' | 'local' | 'none'. Pure decision
     # logic, no side effects beyond logging - callers do the actual launch.
+    #
+    # v5.9 originally auto-routed Codex and Cursor into this same automatic
+    # chain too. Reverted by explicit request: only Claude -> Antigravity is
+    # automatic (gated on Test-AntigravityAvailable's own credential +
+    # cooldown check). Codex and Cursor are MANUAL ONLY now - reachable
+    # exclusively via the VS Code extension's "Transfer Session" buttons
+    # (Invoke-SessionTransfer / the -TransferTo CLI param below), never
+    # triggered by this function. The functions themselves
+    # (Test-CodexAvailable, Start-CodexSession, etc.) still exist and are
+    # still credential/rate-limit-gated - they're just called from a
+    # different, explicitly user-initiated code path now instead of from
+    # here.
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$ClaudePath)
 
     if (Test-ClaudeAvailable -ClaudePath $ClaudePath) { return 'claude' }
     Write-Warning "Claude Code is not available right now."
+
     if (Test-AntigravityAvailable) {
         Write-Info "Falling back to Antigravity."
         return 'antigravity'
     }
-    Write-Info "Antigravity not found - checking for a local model fallback..."
+    Write-Info "Antigravity not available - checking for a local model fallback..."
     if (Test-LocalModelAvailable) {
         Write-Info "Falling back to the local model with the best benchmark result."
         return 'local'
     }
-    Write-Warning "No fallback available - Antigravity isn't installed and no local model has been benchmarked yet."
-    Write-Hint "Run 'uv run run_benchmarks.py' in this project's folder to enable the local fallback."
+    Write-Warning "No automatic fallback available - Antigravity isn't set up (run -SetupProxy) and no local model has been benchmarked yet."
+    Write-Hint "Codex/Cursor are available as a MANUAL transfer from the VS Code extension's sidebar at any time, regardless of this check."
     return 'none'
 }
 
 # ============================================================================
 # CLAUDE LAUNCH
 # ============================================================================
+
+function Update-ClaudePluginsAndSkills {
+    # Runs `claude plugin marketplace update` before every launch instead of
+    # relying on the user to notice a "Needs attention" badge and type the
+    # interactive /reload-plugins command by hand. Skills live inside plugin
+    # manifests in this ecosystem - there's no separate skill-only reload
+    # command - so refreshing marketplaces is also how a skill's own content
+    # gets picked up after it changes. Confirmed live: `claude plugin
+    # marketplace update` resolved 5 marketplaces in ~1-2s, cheap enough to
+    # run unconditionally on every launch rather than caching "did we
+    # already do this this session" and risking a stale skip. Best-effort
+    # and silent on failure/timeout - never a reason to block the launch.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ClaudePath)
+    if ($ClaudePath -eq "node") { return }  # node+script-path fallback has no `plugin` subcommand
+    $result = Invoke-ExternalCommand -Command $ClaudePath -Arguments "plugin marketplace update" -TimeoutSeconds 20 -NoLog
+    if ($result.Success) {
+        Write-Log "Refreshed Claude Code plugin marketplaces (skills reload with them) before launch" -Level "DEBUG"
+    } else {
+        Write-Log "Plugin marketplace refresh skipped/failed before launch (non-fatal): $(Get-Truncated $result.Output 200)" -Level "DEBUG"
+    }
+}
 
 function Start-ClaudeSession {
     # -ResumeMode: "Continue" (--continue, most recent conversation in this
@@ -4900,6 +5454,7 @@ function Start-ClaudeSession {
         [string]$ResumeMode = "New"
     )
     Write-Section "Launch Claude"
+    Update-ClaudePluginsAndSkills -ClaudePath $ClaudePath
     # -Model sonnet|opus: session-only override so this launch doesn't fall
     # back onto whatever Claude Code last saved as its default. Doesn't touch
     # the saved default and doesn't persist to next launch.
@@ -5213,6 +5768,8 @@ function Invoke-ProjectMode {
     $backend = Resolve-SessionBackend -ClaudePath $claudePath
     switch ($backend) {
         'antigravity' { $null = Start-AntigravitySession -ProjectDirectory $Path }
+        'codex'       { $null = Start-CodexSession -ProjectDirectory $Path }
+        'cursor'      { $null = Start-CursorSession -ProjectDirectory $Path }
         'local'       { $null = Start-LocalModelSession }
         'none'        { Write-Warning "Skipping session launch - no backend available." }
         default       { Start-ClaudeSession -ClaudePath $claudePath -ResumeMode $resumeMode }
@@ -5541,6 +6098,21 @@ function Invoke-CompleteUninstaller {
 function Invoke-Main {
     Initialize-Logging
     Initialize-Configuration
+
+    if ($SetupProxy) {
+        Invoke-ProxyCredentialSetup
+        exit 0
+    }
+
+    if ($TransferTo -or $ContinueLocally) {
+        if (-not $ProjectPath) {
+            Write-Fail "-TransferTo/-ContinueLocally require -ProjectPath (the VS Code extension always passes this)."
+            exit 1
+        }
+        $target = if ($ContinueLocally) { 'Local' } else { $TransferTo }
+        Invoke-SessionTransfer -ProjectDirectory ($ProjectPath.Trim().Trim('"').TrimEnd('\')) -Target $target
+        exit 0
+    }
 
     # Launcher-only: a spawned project window is the wrong place to offer
     # ripping out shared global tools (Claude CLI, RTK, etc.) out from under

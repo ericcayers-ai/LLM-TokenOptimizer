@@ -1,3 +1,0 @@
-model,stage,status,tests_ok,tests_total,avg_tokens_per_second,resolve_rate,composite_score,detail
-openai/gpt-oss-20b,benchmark,ok,4,4,14.1,0.964,0.9748,
-qwen/qwen3.6-35b-a3b,benchmark,ok,4,4,9.58,0.0,0.2038,

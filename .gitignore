@@ -20,3 +20,15 @@ Thumbs.db
 .graphify_*_installed
 graphify-out/
 vscode-extension/src/.graphify/
+
+# Python bytecode cache
+__pycache__/
+*.pyc
+
+# run_benchmarks.py OUTPUT - per-machine hardware results and run logs, not
+# repo content. Anyone running the pipeline generates their own; committing
+# one person's numbers would misrepresent them as canonical. Re-run with
+# `--rescore` any time to regenerate benchmark_summary.json/csv locally.
+benchmark_*.json
+benchmark_summary.csv
+run_benchmarks*.log

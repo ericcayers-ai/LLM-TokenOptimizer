@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { openDashboard } from './dashboard';
 
 // This extension is deliberately a THIN WRAPPER, not a reimplementation.
 // Every command below just builds a `powershell.exe -File <script> <args>`
@@ -71,6 +72,45 @@ function runScript(context: vscode.ExtensionContext, args: string[], cwd?: strin
     terminal.sendText(commandLine);
 }
 
+async function transferSession(
+    context: vscode.ExtensionContext,
+    flag: '-TransferTo' | '-ContinueLocally',
+    target: 'Codex' | 'Cursor' | undefined,
+    targetLabel: string
+): Promise<void> {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) {
+        vscode.window.showErrorMessage('LLM-TokenOptimizer: open a folder or workspace first.');
+        return;
+    }
+    const projectPath = folders[0].uri.fsPath;
+
+    const confirmed = await vscode.window.showWarningMessage(
+        `Stop Claude Code and continue in ${targetLabel}? Session context and this project's skills (as reference material) will be handed off, but this is a best-effort bridge, not a full session migration.`,
+        { modal: true },
+        'Transfer Session'
+    );
+    if (confirmed !== 'Transfer Session') { return; }
+
+    const terminal = getOrCreateTerminal();
+    terminal.show();
+    // Ctrl+C to whatever's currently running in the managed terminal (only
+    // reaches a Claude Code session that was itself launched through this
+    // extension's terminal - see runScript/getOrCreateTerminal. A session
+    // running in a terminal this extension doesn't control can't be
+    // stopped from here; the user would need to Ctrl+C it themselves first).
+    terminal.sendText('\x03', false);
+
+    const args = flag === '-TransferTo'
+        ? ['-TransferTo', target as string, '-ProjectPath', psQuote(projectPath)]
+        : ['-ContinueLocally', '-ProjectPath', psQuote(projectPath)];
+
+    // Small delay so the interrupt actually lands before the next command is
+    // queued - sendText immediately after Ctrl+C can race the shell's own
+    // handling of the signal.
+    setTimeout(() => runScript(context, args, projectPath), 500);
+}
+
 async function pickMasterFolder(context: vscode.ExtensionContext): Promise<string | undefined> {
     const picked = await vscode.window.showOpenDialog({
         canSelectFiles: false,
@@ -119,6 +159,36 @@ const ACTIONS: ActionEntry[] = [
         label: 'Reset Configuration',
         themeIcon: 'trash',
         description: 'Forget everything saved: master folder and project history.'
+    },
+    {
+        id: 'llmTokenOptimizer.setupProxy',
+        label: 'Set Up Proxy Fallback (Antigravity → Codex → Cursor)',
+        themeIcon: 'key',
+        description: 'Register credentials for backup coding agents. Only Antigravity auto-activates when Claude Code hits a usage limit - Codex and Cursor are manual transfer only (see below).'
+    },
+    {
+        id: 'llmTokenOptimizer.transferToCodex',
+        label: 'Transfer Session to Codex',
+        themeIcon: 'arrow-swap',
+        description: 'Stop Claude Code and continue in Codex, carrying over this session\'s context and this project\'s skills as reference material.'
+    },
+    {
+        id: 'llmTokenOptimizer.transferToCursor',
+        label: 'Transfer Session to Cursor',
+        themeIcon: 'arrow-swap',
+        description: 'Stop Claude Code and continue in Cursor, carrying over this session\'s context and this project\'s skills as reference material.'
+    },
+    {
+        id: 'llmTokenOptimizer.continueLocally',
+        label: 'Continue Locally',
+        themeIcon: 'arrow-swap',
+        description: 'Stop Claude Code and continue with the best benchmarked local model - no credential needed.'
+    },
+    {
+        id: 'llmTokenOptimizer.openDashboard',
+        label: 'Open Dashboard',
+        themeIcon: 'graph-line',
+        description: 'Live panel: RTK token-savings stats and every skill/plugin this project\'s Claude Code session invokes, as it happens.'
     }
 ];
 
@@ -204,6 +274,25 @@ export function activate(context: vscode.ExtensionContext): void {
             runScript(context, ['-ResetConfig', ...commonArgs()]);
         }),
 
+        vscode.commands.registerCommand('llmTokenOptimizer.setupProxy', () => {
+            // -SetupProxy is an interactive, console-based credential prompt
+            // (Read-Host -AsSecureString, masked input) - it runs in the
+            // same integrated terminal as every other action rather than a
+            // webview/input-box flow, so the key never passes through this
+            // extension's own JS at all, only through the terminal directly
+            // to the script's DPAPI-backed storage.
+            runScript(context, ['-SetupProxy']);
+        }),
+
+        vscode.commands.registerCommand('llmTokenOptimizer.transferToCodex', () =>
+            transferSession(context, '-TransferTo', 'Codex', 'Codex')),
+        vscode.commands.registerCommand('llmTokenOptimizer.transferToCursor', () =>
+            transferSession(context, '-TransferTo', 'Cursor', 'Cursor')),
+        vscode.commands.registerCommand('llmTokenOptimizer.continueLocally', () =>
+            transferSession(context, '-ContinueLocally', undefined, 'the local model')),
+
+        vscode.commands.registerCommand('llmTokenOptimizer.openDashboard', () => openDashboard(context)),
+
         // The ONE Command Palette entrypoint (see contributes.menus.commandPalette
         // in package.json, which hides the other five from the palette while
         // keeping them fully invocable from here, the tree view, and the chat
@@ -266,6 +355,16 @@ function registerChatParticipant(context: vscode.ExtensionContext): void {
             matched = ACTIONS.find(a => a.id === 'llmTokenOptimizer.changeMasterFolder');
         } else if (match('reset')) {
             matched = ACTIONS.find(a => a.id === 'llmTokenOptimizer.resetConfig');
+        } else if (match('transfer', 'switch to codex', 'hand off to codex')) {
+            matched = ACTIONS.find(a => a.id === 'llmTokenOptimizer.transferToCodex');
+        } else if (match('switch to cursor', 'hand off to cursor')) {
+            matched = ACTIONS.find(a => a.id === 'llmTokenOptimizer.transferToCursor');
+        } else if (match('continue locally', 'switch to local', 'local model')) {
+            matched = ACTIONS.find(a => a.id === 'llmTokenOptimizer.continueLocally');
+        } else if (match('dashboard', 'token savings', 'live activity', 'skill activity')) {
+            matched = ACTIONS.find(a => a.id === 'llmTokenOptimizer.openDashboard');
+        } else if (match('proxy', 'fallback', 'antigravity', 'codex', 'cursor', 'backup agent', 'usage limit')) {
+            matched = ACTIONS.find(a => a.id === 'llmTokenOptimizer.setupProxy');
         }
 
         if (matched) {

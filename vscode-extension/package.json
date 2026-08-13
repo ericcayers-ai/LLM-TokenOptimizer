@@ -2,7 +2,7 @@
   "name": "llm-token-optimizer",
   "displayName": "LLM-TokenOptimizer",
   "description": "Thin VS Code wrapper around LLM-TokenOptimizer.ps1 - launches Graphify + Claude Code project/session windows from inside VS Code instead of a standalone console.",
-  "version": "5.5.0",
+  "version": "5.9.2",
   "publisher": "local",
   "engines": {
     "vscode": "^1.95.0"
@@ -38,6 +38,31 @@
         "command": "llmTokenOptimizer.resetConfig",
         "title": "LLM-TokenOptimizer: Reset Configuration",
         "icon": "$(trash)"
+      },
+      {
+        "command": "llmTokenOptimizer.setupProxy",
+        "title": "LLM-TokenOptimizer: Set Up Proxy Fallback (Antigravity → Codex → Cursor)",
+        "icon": "$(key)"
+      },
+      {
+        "command": "llmTokenOptimizer.transferToCodex",
+        "title": "LLM-TokenOptimizer: Transfer Session to Codex",
+        "icon": "$(arrow-swap)"
+      },
+      {
+        "command": "llmTokenOptimizer.transferToCursor",
+        "title": "LLM-TokenOptimizer: Transfer Session to Cursor",
+        "icon": "$(arrow-swap)"
+      },
+      {
+        "command": "llmTokenOptimizer.continueLocally",
+        "title": "LLM-TokenOptimizer: Continue Locally",
+        "icon": "$(arrow-swap)"
+      },
+      {
+        "command": "llmTokenOptimizer.openDashboard",
+        "title": "LLM-TokenOptimizer: Open Dashboard",
+        "icon": "$(graph-line)"
       }
     ],
     "viewsContainers": {
@@ -91,6 +116,26 @@
         },
         {
           "command": "llmTokenOptimizer.resetConfig",
+          "when": "false"
+        },
+        {
+          "command": "llmTokenOptimizer.setupProxy",
+          "when": "false"
+        },
+        {
+          "command": "llmTokenOptimizer.transferToCodex",
+          "when": "false"
+        },
+        {
+          "command": "llmTokenOptimizer.transferToCursor",
+          "when": "false"
+        },
+        {
+          "command": "llmTokenOptimizer.continueLocally",
+          "when": "false"
+        },
+        {
+          "command": "llmTokenOptimizer.openDashboard",
           "when": "false"
         }
       ]
