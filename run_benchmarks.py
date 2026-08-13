@@ -182,7 +182,14 @@ LOG_FILE = Path("run_benchmarks.log")
 def log(message, level="INFO"):
     ts = datetime.now().strftime("%H:%M:%S")
     line = f"[{ts}] [{level}] {message}"
-    print(line)
+    # flush=True matters when stdout is redirected to a file rather than a
+    # real console (nohup/background runs, exactly how this pipeline gets
+    # launched in practice) - Python fully buffers a non-TTY stdout by
+    # default, so without this the redirected log file sat at 0 bytes for
+    # the ENTIRE run and only flushed on process exit, confirmed live: a
+    # multi-hour run showed no progress at all until it finished, making a
+    # genuine hang indistinguishable from a slow-but-working run.
+    print(line, flush=True)
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(line + "\n")
@@ -370,6 +377,91 @@ def get_installed_model_ids(lms_path):
 # Model lifecycle
 # ----------------------------------------------------------------------------
 
+def _partial_download_bytes():
+    """Sum of all in-progress download artifact sizes across the whole
+    models tree. Deliberately coarse (doesn't isolate to one model id) -
+    this pipeline only ever runs one download at a time, so any growth
+    anywhere under the tree means SOMETHING is progressing. Used only for
+    stall detection, never for reporting a final size.
+    """
+    models_dir = Path.home() / ".lmstudio" / "models"
+    if not models_dir.exists():
+        return 0
+    total = 0
+    for pattern in ("**/downloading_*", "**/*.part"):
+        for f in models_dir.glob(pattern):
+            try:
+                total += f.stat().st_size
+            except OSError:
+                pass
+    return total
+
+
+def run_lms_download(lms_path, model_id, timeout, stall_seconds=180, grace_seconds=90):
+    """Like run_lms(..., stream_output=True) but with REAL stall detection
+    instead of trusting a multi-hour flat subprocess timeout.
+
+    Confirmed live, twice, same model (zai-org/glm-4.7-flash both times):
+    `lms get` can hang indefinitely at catalog resolution - before a single
+    byte is written, no error, no partial file ever created - and just sit
+    there. A flat 3-hour timeout made this genuinely indistinguishable from
+    "still working" for over an hour each time; a human had to notice disk
+    usage wasn't moving and kill it by hand.
+
+    Polls total partial-download bytes across the models tree every few
+    seconds via `_partial_download_bytes()`. Kills the process if that total
+    hasn't grown in `stall_seconds`, after an initial `grace_seconds`
+    allowance for catalog resolution before any file exists yet (confirmed
+    live: a healthy download can take 10-15s to even start writing).
+    """
+    cmd = [lms_path, "get", "-y", model_id]
+    start = time.time()
+    last_bytes = _partial_download_bytes()
+    last_progress_time = start
+    try:
+        proc = subprocess.Popen(cmd, stdout=None, stderr=subprocess.PIPE,
+                                 encoding="utf-8", errors="replace")
+    except Exception as e:
+        return False, f"EXCEPTION starting download: {e}"
+
+    poll_interval = 5
+    while True:
+        try:
+            ret = proc.wait(timeout=poll_interval)
+            stderr = proc.stderr.read() if proc.stderr else ""
+            return ret == 0, stderr
+        except subprocess.TimeoutExpired:
+            pass
+
+        now = time.time()
+        current_bytes = _partial_download_bytes()
+        if current_bytes > last_bytes:
+            last_bytes = current_bytes
+            last_progress_time = now
+        stalled_for = now - last_progress_time
+        elapsed = now - start
+
+        if elapsed > grace_seconds and stalled_for > stall_seconds:
+            log(f"[{model_id}] No download progress for {int(stalled_for)}s - "
+                f"killing stalled `lms get` (this exact hang pattern was confirmed "
+                f"live, not a slow transfer)", "WARN")
+            proc.kill()
+            try:
+                proc.wait(timeout=10)
+            except Exception:
+                pass
+            return False, f"STALLED - no download progress for {int(stalled_for)}s, killed"
+
+        if elapsed > timeout:
+            log(f"[{model_id}] Download exceeded {timeout}s overall - killing", "WARN")
+            proc.kill()
+            try:
+                proc.wait(timeout=10)
+            except Exception:
+                pass
+            return False, f"TIMEOUT after {timeout}s"
+
+
 def download_model(lms_path, model, installed_ids=None, min_free_gb=DEFAULT_MIN_FREE_GB):
     model_id = model["id"]
     if installed_ids and model_id in installed_ids:
@@ -384,7 +476,7 @@ def download_model(lms_path, model, installed_ids=None, min_free_gb=DEFAULT_MIN_
         return model_id, False, msg
 
     log(f"[{model_id}] Downloading (~{model['size_gb']} GB estimated)...")
-    ok, out = run_lms(lms_path, ["get", "-y", model_id], timeout=3 * 3600, stream_output=True)
+    ok, out = run_lms_download(lms_path, model_id, timeout=3 * 3600)
     if ok:
         log(f"[{model_id}] Download complete.")
         return model_id, True, ""
@@ -553,6 +645,16 @@ def run_benchmarks_for_model(model_id, max_tokens):
                 stream=True,
                 timeout=300,
             )
+            # Live token/heartbeat output: previously nothing printed between
+            # "-> test name" and the final TTFT/speed summary line, which for
+            # a slow model (confirmed live: kat-dev took 35-40 minutes on a
+            # SINGLE prompt) made a genuinely-working generation look
+            # identical to a hung one for the entire duration. Two things
+            # stream live now: the actual generated text (raw, unprefixed,
+            # like a chat UI) and a periodic heartbeat line with a running
+            # token count, so both "is it producing tokens" and "how much
+            # progress" are visible without waiting for the prompt to finish.
+            last_heartbeat = time.time()
             for chunk in stream:
                 if not chunk.choices:
                     continue
@@ -579,10 +681,21 @@ def run_benchmarks_for_model(model_id, max_tokens):
                 if reasoning_piece:
                     reasoning_parts.append(reasoning_piece)
                     reasoning_tokens += 1
+                    print(reasoning_piece, end="", flush=True)
                 if content_piece:
                     full_response_parts.append(content_piece)
                     completion_tokens += 1
+                    print(content_piece, end="", flush=True)
 
+                now = time.time()
+                if now - last_heartbeat >= 15:
+                    last_heartbeat = now
+                    done = reasoning_tokens + completion_tokens
+                    log(f"[{model_id}]     ...{done} tokens so far "
+                        f"({int(now - start_time)}s elapsed)", "DEBUG")
+
+            if reasoning_parts or full_response_parts:
+                print()  # newline after the live-streamed text, before the summary log line
             end_time = time.time()
             ttft = (first_token_time - start_time) if first_token_time else 0
             generation_time = (end_time - first_token_time) if first_token_time else (end_time - start_time)
