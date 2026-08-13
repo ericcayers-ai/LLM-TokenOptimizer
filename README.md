@@ -30,6 +30,57 @@ Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
 - **Logs everything** with millisecond timestamps and PID to `%LOCALAPPDATA%\LLM-TokenOptimizer\logs\`, with automatic rotation (keeps the last 10 log files).
 - **Cleans up guaranteed on exit** — mutex release and config save run inside `try/catch/finally` and a `PowerShell.Exiting` engine event, so they run even on a crash or Ctrl+C. Blocking prompts are also never reached in an unattended, spawned project window — they warn and degrade instead of waiting on a keypress nobody may give.
 
+## Fallback chain (v5.8+): what happens when Claude Code itself is unavailable
+
+The launcher checks Claude Code's own availability before every session start (`Resolve-SessionBackend`) — both "is the CLI reachable at all" and "did the last session end because Claude Code's own usage limit was hit" (tracked from a background rate-limit watcher, so a launch right after hitting a limit doesn't just retry into the same wall).
+
+**Automatic** (no setup needed beyond running `-SetupProxy` once):
+
+1. **Claude Code** (primary, always tried first)
+2. **Antigravity** — Google's IDE, if installed and its credential is registered via `-SetupProxy`
+3. **Local model** — the best-scoring model from your own `run_benchmarks.py` results (see below), via LM Studio's `lms chat`
+
+Codex and Cursor are **deliberately not** part of this automatic chain — they're separate competing coding-agent products, not swappable model backends, so "silently keep going as if nothing changed" isn't something that can be built honestly for them. Instead:
+
+**Manual only** — reachable any time via the VS Code extension's sidebar ("Transfer Session to Codex", "Transfer Session to Cursor", "Continue Locally"), or directly:
+
+```powershell
+.\LLM-TokenOptimizer.ps1 -TransferTo Codex -ProjectPath "C:\path\to\project"
+.\LLM-TokenOptimizer.ps1 -TransferTo Cursor -ProjectPath "C:\path\to\project"
+.\LLM-TokenOptimizer.ps1 -ContinueLocally -ProjectPath "C:\path\to\project"
+```
+
+Each transfer bundles the current Claude Code session's text context (from its own JSONL transcript) and this project's skill instructions into `.claude-handoff\session-handoff.md`, referenced from `AGENTS.md` (which both Codex and Cursor read natively on open). This is a **best-effort context bridge, not a session migration** — images and tool-call results are dropped, and skills become plain-text reference material rather than natively invokable, since neither tool has Claude Code's skill-trigger system. The code says this plainly rather than pretending otherwise.
+
+Set up credentials for any of the three proxy backends with:
+
+```powershell
+.\LLM-TokenOptimizer.ps1 -SetupProxy
+```
+
+Interactive, masked input (`Read-Host -AsSecureString`) — the key is typed by you, never seen, logged, or transmitted by this script, and stored DPAPI-encrypted (readable only by your Windows account on this machine, the same mechanism `gh auth login`/`aws configure` use).
+
+## Local model benchmarking (`run_benchmarks.py`)
+
+Feeds the "local model" step of the fallback chain above. Downloads a curated list of LM Studio-catalog coding models one at a time, benchmarks each against four architecture-specific coding prompts with a SWE-bench-style capability rubric (does the generated code actually parse and cover the spec, not just how fast it streams), then purges the weights before moving to the next model — so disk usage never grows past roughly one model's footprint at a time, regardless of the machine's total free space.
+
+```bash
+uv run run_benchmarks.py                 # full run, default batch size 1
+uv run run_benchmarks.py --dry-run        # print the plan, download nothing
+uv run run_benchmarks.py --models qwen/qwen3.6-35b-a3b,openai/gpt-oss-20b
+uv run run_benchmarks.py --rescore        # recompute scores from saved results, no downloads
+```
+
+Requires LM Studio installed with its CLI (`lms`) on PATH or at `~/.lmstudio/bin/lms.exe` (present once LM Studio has been run at least once).
+
+Results land in per-model `benchmark_<publisher>_<model>.json` files plus an aggregated `benchmark_summary.json`/`.csv` — all git-ignored, since they're your own machine's hardware results, not repo content. The launcher's `Update-BestLocalModelFromBenchmarks` re-reads `benchmark_summary.json` fresh on every check (never trusts a cached "best model" pick), so re-running the benchmark and getting a different winner takes effect on the very next launch automatically.
+
+## VS Code extension
+
+A thin wrapper around this same script, living in `vscode-extension/` (`llm-token-optimizer-X.Y.Z.vsix`, installed via `vscode-extension/Install.bat` or VS Code's "Install from VSIX..."). Everything above is reachable from its Activity Bar sidebar, Command Palette, or `@tokenoptimizer` in VS Code's own Chat view — including the manual session transfer and proxy setup commands — plus:
+
+- **Open Dashboard** — a live webview panel (not a terminal) showing RTK's own token-savings stats (`rtk gain --format json`, polled) alongside a real-time feed of every skill/plugin the current project's Claude Code session invokes, tailed directly from its own session transcript as it happens.
+
 ## Requirements
 
 Nothing needs to be pre-installed. On a totally clean Windows 10 (2004+) or Windows 11 machine, the script installs everything itself via `winget`, `npm`, and `pip` as needed:
@@ -63,6 +114,9 @@ If `winget` isn't available on the machine (very old Windows 10 builds, or it's 
 | `-ProjectPath "C:\path"` | Opens a single project directly (bypasses the multi-window picker). |
 | `-ChildWindow` | Internal: marks this process as a spawned project window so it skips setup the launcher window already did, and never blocks on a prompt nobody may be watching. Set automatically when the launcher opens a project for you. |
 | `-IsolateClaudeConfig` | Gives this project its own `CLAUDE_CONFIG_DIR` so settings, history, and credentials are separate from your normal `~/.claude`. |
+| `-SetupProxy` | Interactive credential setup for the Antigravity/Codex/Cursor fallback backends. Exits after — doesn't open a project. |
+| `-TransferTo Codex` \| `-TransferTo Cursor` | Manual-only: stop the current session and hand off to Codex or Cursor with session context + skills bundled in. Requires `-ProjectPath`. Normally triggered from the VS Code extension, not typed by hand. |
+| `-ContinueLocally` | Same idea as `-TransferTo` but hands off to the best benchmarked local model instead. Requires `-ProjectPath`. |
 
 ### First run
 
@@ -119,6 +173,9 @@ Graph extraction failing on its own is **not** a fatal exit condition — the la
 | Graph output + studio | `<project>\.graphify\graph.json`, `<project>\.graphify\studio\studio.html` |
 | RTK binary | `%LOCALAPPDATA%\rtk\rtk.exe` |
 | RTK's Claude Code hook | `~\.claude\hooks\rtk-rewrite.sh` |
+| Proxy fallback credentials (DPAPI-encrypted) | `%USERPROFILE%\.llm-token-optimizer\proxy-credentials\<provider>.cred` |
+| Benchmark results (git-ignored) | `<repo>\benchmark_summary.json`/`.csv`, `<repo>\benchmark_<publisher>_<model>.json` |
+| Session handoff (manual transfer) | `<project>\.claude-handoff\session-handoff.md`, referenced from `<project>\AGENTS.md` |
 
 ## Troubleshooting
 
