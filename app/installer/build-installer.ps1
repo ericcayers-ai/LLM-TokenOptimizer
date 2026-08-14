@@ -29,6 +29,10 @@ if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
 Write-Host "==> Packaging the VS Code extension (.vsix)..." -ForegroundColor Cyan
 Push-Location (Join-Path $root "..\vscode-extension")
 try {
+    npm install
+    if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
+    npm run compile
+    if ($LASTEXITCODE -ne 0) { throw "npm run compile failed" }
     npx --yes @vscode/vsce package --allow-missing-repository --skip-license -o (Join-Path $vsixDir "llm-token-optimizer.vsix")
     if ($LASTEXITCODE -ne 0) { throw "vsce package failed" }
 } finally {
