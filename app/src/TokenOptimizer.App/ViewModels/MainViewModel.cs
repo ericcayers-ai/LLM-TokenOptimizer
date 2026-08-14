@@ -30,6 +30,7 @@ public partial class MainViewModel : ViewModelBase
     private readonly AntigravityAdapter _antigravityAdapter;
     private readonly CodexAdapter _codexAdapter;
     private readonly CursorAdapter _cursorAdapter;
+    private readonly GroqAdapter _groqAdapter;
     private readonly RateLimitTracker _rateLimits;
     private readonly FallbackChainResolver _fallbackResolver;
     private readonly BenchmarkSummaryReader _benchmarkReader;
@@ -53,9 +54,10 @@ public partial class MainViewModel : ViewModelBase
         _antigravityAdapter = new AntigravityAdapter(_credentials);
         _codexAdapter = new CodexAdapter(_credentials);
         _cursorAdapter = new CursorAdapter(_credentials);
+        _groqAdapter = new GroqAdapter(_credentials, _claudeLocator);
         _rateLimits = new RateLimitTracker(_configStore);
         _fallbackResolver = new FallbackChainResolver(
-            _claudeAdapter, _antigravityAdapter, _codexAdapter, _cursorAdapter, _lmStudioAdapter, _rateLimits);
+            _claudeAdapter, _antigravityAdapter, _codexAdapter, _cursorAdapter, _groqAdapter, _lmStudioAdapter, _rateLimits);
         _benchmarkReader = new BenchmarkSummaryReader(_configStore);
         _wingetInstaller = new WingetInstaller(_availability);
         _companionTooling = new CompanionToolingInstaller(_configStore, _claudeLocator, _availability, _pythonLocator);
@@ -65,7 +67,7 @@ public partial class MainViewModel : ViewModelBase
 
         _providers = new IProviderAdapter[]
         {
-            _claudeAdapter, _lmStudioAdapter, _antigravityAdapter, _codexAdapter, _cursorAdapter,
+            _claudeAdapter, _lmStudioAdapter, _antigravityAdapter, _codexAdapter, _cursorAdapter, _groqAdapter,
         };
         ProviderNames = new ObservableCollection<string>(
             new[] { AutoFallbackProviderName }.Concat(_providers.Select(p => p.Name)));
@@ -122,6 +124,9 @@ public partial class MainViewModel : ViewModelBase
 
     [ObservableProperty]
     public partial string CodexApiKeyInput { get; set; } = string.Empty;
+
+    [ObservableProperty]
+    public partial string GroqApiKeyInput { get; set; } = string.Empty;
 
     [ObservableProperty]
     public partial string MasterFolderPath { get; set; } = string.Empty;
@@ -497,6 +502,21 @@ public partial class MainViewModel : ViewModelBase
     }
 
     [RelayCommand]
+    private void SetGroqCredential()
+    {
+        if (string.IsNullOrWhiteSpace(GroqApiKeyInput))
+        {
+            Log("Enter a GROQ_API_KEY first.");
+            return;
+        }
+
+        _credentials.SetCredential(FallbackProvider.Groq, GroqApiKeyInput);
+        GroqApiKeyInput = string.Empty;
+        Log("Groq credential stored (DPAPI-encrypted, this account only).");
+        _ = RefreshAllAsync();
+    }
+
+    [RelayCommand]
     private void OptInAntigravity()
     {
         _credentials.SetCredential(FallbackProvider.Antigravity, "opted-in");
@@ -707,6 +727,7 @@ public partial class MainViewModel : ViewModelBase
             "Antigravity" => FallbackProvider.Antigravity,
             "Codex" => FallbackProvider.Codex,
             "Cursor" => FallbackProvider.Cursor,
+            "Groq" => FallbackProvider.Groq,
             _ => null,
         };
         if (provider is not { } trackedProvider || handle is not ProcessSessionHandle processHandle) return;

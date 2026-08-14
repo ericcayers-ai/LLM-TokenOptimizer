@@ -135,6 +135,10 @@
                         <Button Content="Save Codex Key" Command="{Binding SetCodexCredentialCommand}" />
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBox Text="{Binding GroqApiKeyInput}" PlaceholderText="GROQ_API_KEY for Groq" Width="200" PasswordChar="*" />
+                        <Button Content="Save Groq Key" Command="{Binding SetGroqCredentialCommand}" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
                         <Button Content="Opt in: Antigravity" Command="{Binding OptInAntigravityCommand}" />
                         <Button Content="Opt in: Cursor" Command="{Binding OptInCursorCommand}" />
                     </StackPanel>

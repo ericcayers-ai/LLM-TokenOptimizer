@@ -36,6 +36,7 @@ public sealed class RateLimitTracker
         FallbackProvider.Antigravity => config.AntigravityRateLimitedUntilUtc,
         FallbackProvider.Codex => config.CodexRateLimitedUntilUtc,
         FallbackProvider.Cursor => config.CursorRateLimitedUntilUtc,
+        FallbackProvider.Groq => config.GroqRateLimitedUntilUtc,
         _ => null,
     };
 
@@ -47,6 +48,7 @@ public sealed class RateLimitTracker
             case FallbackProvider.Antigravity: config.AntigravityRateLimitedUntilUtc = value; break;
             case FallbackProvider.Codex: config.CodexRateLimitedUntilUtc = value; break;
             case FallbackProvider.Cursor: config.CursorRateLimitedUntilUtc = value; break;
+            case FallbackProvider.Groq: config.GroqRateLimitedUntilUtc = value; break;
         }
     }
 }

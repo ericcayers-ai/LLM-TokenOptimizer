@@ -19,6 +19,7 @@ public sealed class FallbackChainResolver
     private readonly AntigravityAdapter _antigravity;
     private readonly CodexAdapter _codex;
     private readonly CursorAdapter _cursor;
+    private readonly GroqAdapter _groq;
     private readonly IProviderAdapter _localModel;
     private readonly RateLimitTracker _rateLimits;
 
@@ -27,6 +28,7 @@ public sealed class FallbackChainResolver
         AntigravityAdapter antigravity,
         CodexAdapter codex,
         CursorAdapter cursor,
+        GroqAdapter groq,
         IProviderAdapter localModel,
         RateLimitTracker rateLimits)
     {
@@ -34,6 +36,7 @@ public sealed class FallbackChainResolver
         _antigravity = antigravity;
         _codex = codex;
         _cursor = cursor;
+        _groq = groq;
         _localModel = localModel;
         _rateLimits = rateLimits;
     }
@@ -64,6 +67,7 @@ public sealed class FallbackChainResolver
             await DescribeAsync(_localModel, null),
             await DescribeManualOnlyAsync(_codex, FallbackProvider.Codex),
             await DescribeManualOnlyAsync(_cursor, FallbackProvider.Cursor),
+            await DescribeManualOnlyAsync(_groq, FallbackProvider.Groq),
         };
 
         return steps;

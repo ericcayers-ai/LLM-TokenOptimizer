@@ -43,6 +43,16 @@ public class RateLimitTrackerTests : IDisposable
         Assert.True(await _tracker.IsRateLimitedAsync(FallbackProvider.Codex));
         Assert.False(await _tracker.IsRateLimitedAsync(FallbackProvider.Cursor));
         Assert.False(await _tracker.IsRateLimitedAsync(FallbackProvider.Antigravity));
+        Assert.False(await _tracker.IsRateLimitedAsync(FallbackProvider.Groq));
+    }
+
+    [Fact]
+    public async Task RecordRateLimitAsync_TracksGroqIndependently()
+    {
+        await _tracker.RecordRateLimitAsync(FallbackProvider.Groq, DateTimeOffset.UtcNow.AddMinutes(30));
+
+        Assert.True(await _tracker.IsRateLimitedAsync(FallbackProvider.Groq));
+        Assert.False(await _tracker.IsRateLimitedAsync(FallbackProvider.Codex));
     }
 
     public void Dispose()

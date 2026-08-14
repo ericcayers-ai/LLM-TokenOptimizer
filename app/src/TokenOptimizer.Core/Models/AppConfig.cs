@@ -26,6 +26,7 @@ public sealed class AppConfig
     public string? CodexRateLimitedUntilUtc { get; set; }
     public string? CursorRateLimitedUntilUtc { get; set; }
     public string? ClaudeRateLimitedUntilUtc { get; set; }
+    public string? GroqRateLimitedUntilUtc { get; set; }
 
     public string? BestLocalModelId { get; set; }
     public double? BestLocalModelTokensPerSecond { get; set; }
