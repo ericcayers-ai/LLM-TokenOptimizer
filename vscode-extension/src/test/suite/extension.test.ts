@@ -7,7 +7,12 @@ const EXPECTED_COMMANDS = [
     'llmTokenOptimizer.openLauncherForFolder',
     'llmTokenOptimizer.changeMasterFolder',
     'llmTokenOptimizer.resetConfig',
-    'llmTokenOptimizer.reconfigureOmniRoute',
+    'llmTokenOptimizer.setupProxy',
+    'llmTokenOptimizer.transferToCodex',
+    'llmTokenOptimizer.transferToCursor',
+    'llmTokenOptimizer.continueLocally',
+    'llmTokenOptimizer.openDashboard',
+    'llmTokenOptimizer.openApp',
     'llmTokenOptimizer.quickMenu'
 ];
 
@@ -36,9 +41,9 @@ suite('LLM-TokenOptimizer extension', () => {
 
     test('configuration schema is registered with expected defaults', () => {
         const cfg = vscode.workspace.getConfiguration('llmTokenOptimizer');
-        assert.strictEqual(cfg.get('powershellExecutable'), 'powershell.exe');
         assert.strictEqual(cfg.get('isolateClaudeConfig'), false);
-        assert.strictEqual(cfg.get('verboseMode'), false);
+        assert.strictEqual(cfg.get('model'), '');
+        assert.strictEqual(cfg.get('appExecutablePath'), '');
     });
 
     test('Activity Bar view and chat participant are declared in package.json', () => {
@@ -58,15 +63,15 @@ suite('LLM-TokenOptimizer extension', () => {
         assert.ok(participantIds.includes('llmTokenOptimizer.agent'), 'llmTokenOptimizer.agent should be a declared chat participant');
     });
 
-    test('only the Start command is visible in the Command Palette', () => {
+    test('only Start and Open App are visible in the Command Palette', () => {
         const ext = vscode.extensions.getExtension(EXTENSION_ID);
         const paletteMenu: any[] = ext!.packageJSON.contributes.menus.commandPalette;
         const visible = paletteMenu.filter(m => m.when !== 'false').map(m => m.command);
         const hidden = paletteMenu.filter(m => m.when === 'false').map(m => m.command);
 
-        assert.deepStrictEqual(visible, ['llmTokenOptimizer.quickMenu']);
+        assert.deepStrictEqual(visible.sort(), ['llmTokenOptimizer.openApp', 'llmTokenOptimizer.quickMenu'].sort());
         for (const cmd of EXPECTED_COMMANDS) {
-            if (cmd === 'llmTokenOptimizer.quickMenu') { continue; }
+            if (cmd === 'llmTokenOptimizer.quickMenu' || cmd === 'llmTokenOptimizer.openApp') { continue; }
             assert.ok(hidden.includes(cmd), `${cmd} should be hidden from the Command Palette (still invocable from the tree view/chat)`);
         }
     });

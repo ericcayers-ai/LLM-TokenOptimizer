@@ -1,38 +1,25 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { spawn } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { openDashboard } from './dashboard';
 
-// This extension is deliberately a THIN WRAPPER, not a reimplementation.
-// Every command below just builds a `powershell.exe -File <script> <args>`
-// command line and sends it to a VS Code integrated terminal. All the real
-// logic (Graphify, companion tooling incl. Caveman + RTK, the rate-limit
-// watcher, multi-session support) stays in LLM-TokenOptimizer.ps1, unchanged
-// and already verified there - this extension only gives it a VS Code-native
-// front door (commands, a status bar entry, native folder pickers) instead
-// of a standalone console window you have to launch by hand.
+// This extension is a thin front door onto TokenOptimizer.App.exe's headless
+// CLI surface (`TokenOptimizer.App.exe --cli <command> [--opt value]`, one
+// JSON object on stdout). ALL real logic - Graphify, companion tooling
+// (Caveman/RTK/claude-mem/...), the fallback chain, provider hotswap,
+// benchmarking, session launch - lives in the C# app (TokenOptimizer.Core /
+// TokenOptimizer.Providers) and nowhere else, so the desktop UI and this
+// extension can never drift into different behavior. There is no PowerShell
+// script dependency here anymore.
 
 const TERMINAL_NAME = 'LLM-TokenOptimizer';
 const LAST_MASTER_FOLDER_KEY = 'llmTokenOptimizer.lastMasterFolder';
 
-function psQuote(value: string): string {
-    // PowerShell double-quoted string: wrap in quotes, escape embedded quotes
-    // with a backtick. Covers the common case (paths with spaces) the same
-    // way the wrapped script quotes its own spawned-window arguments.
-    return `"${value.replace(/"/g, '`"')}"`;
-}
-
-function resolveScriptPath(context: vscode.ExtensionContext): string | undefined {
-    const configured = vscode.workspace.getConfiguration('llmTokenOptimizer').get<string>('scriptPath', '').trim();
-    const candidate = configured || path.join(context.extensionPath, 'scripts', 'LLM-TokenOptimizer.ps1');
-    if (!fs.existsSync(candidate)) {
-        vscode.window.showErrorMessage(
-            `LLM-TokenOptimizer: script not found at "${candidate}". Check the "llmTokenOptimizer.scriptPath" setting.`
-        );
-        return undefined;
-    }
-    return candidate;
+interface CliResult<T = unknown> {
+    ok: boolean;
+    data?: T;
+    error?: string;
 }
 
 function resolveAppExecutablePath(context: vscode.ExtensionContext): string | undefined {
@@ -40,26 +27,60 @@ function resolveAppExecutablePath(context: vscode.ExtensionContext): string | un
     if (configured) {
         return fs.existsSync(configured) ? configured : undefined;
     }
-    // Auto-detect a local build of the new C# app: it lives as a sibling
-    // "app/" folder next to this extension's own repo root (extensionPath
-    // is .../LLM-TokenOptimizer/vscode-extension), Debug preferred since
-    // that's what `dotnet build` produces by default during development.
+    // Auto-detect a local build of the app: it lives as a sibling "app/"
+    // folder next to this extension's own repo root (extensionPath is
+    // .../LLM-TokenOptimizer/vscode-extension), or next to this extension
+    // itself once bundled into the MSI (see Product.wxs - both ship side by
+    // side under the same INSTALLFOLDER).
     const repoRoot = path.dirname(context.extensionPath);
     const candidates = [
+        path.join(context.extensionPath, 'TokenOptimizer.App.exe'),
+        path.join(repoRoot, 'TokenOptimizer.App.exe'),
         path.join(repoRoot, 'app', 'src', 'TokenOptimizer.App', 'bin', 'Debug', 'net10.0', 'TokenOptimizer.App.exe'),
         path.join(repoRoot, 'app', 'src', 'TokenOptimizer.App', 'bin', 'Release', 'net10.0', 'TokenOptimizer.App.exe'),
     ];
     return candidates.find(fs.existsSync);
 }
 
-function launchApp(context: vscode.ExtensionContext): void {
+function requireAppExecutable(context: vscode.ExtensionContext): string | undefined {
     const exePath = resolveAppExecutablePath(context);
     if (!exePath) {
         vscode.window.showErrorMessage(
             'LLM-TokenOptimizer: TokenOptimizer.App.exe not found. Build it (`dotnet build` under app/) or set "llmTokenOptimizer.appExecutablePath".'
         );
-        return;
     }
+    return exePath;
+}
+
+/**
+ * Runs one CLI command against TokenOptimizer.App.exe and parses its single
+ * JSON line of stdout. Errors are surfaced as CliResult.ok === false rather
+ * than throwing, so every call site can decide how to present a failure
+ * (status bar message, chat reply, etc.) without a try/catch of its own.
+ */
+function runCli<T = unknown>(context: vscode.ExtensionContext, args: string[]): Promise<CliResult<T>> {
+    return new Promise(resolve => {
+        const exePath = requireAppExecutable(context);
+        if (!exePath) {
+            resolve({ ok: false, error: 'TokenOptimizer.App.exe not found.' });
+            return;
+        }
+
+        execFile(exePath, ['--cli', ...args], { maxBuffer: 32 * 1024 * 1024, timeout: 0 }, (err, stdout) => {
+            const lastLine = stdout.trim().split('\n').pop() ?? '';
+            try {
+                const parsed = JSON.parse(lastLine) as CliResult<T>;
+                resolve(parsed);
+            } catch {
+                resolve({ ok: false, error: err ? err.message : (stdout.trim() || 'No output from TokenOptimizer.App.exe --cli.') });
+            }
+        });
+    });
+}
+
+function launchApp(context: vscode.ExtensionContext): void {
+    const exePath = requireAppExecutable(context);
+    if (!exePath) { return; }
 
     const folders = vscode.workspace.workspaceFolders;
     const args = folders && folders.length > 0 ? [folders[0].uri.fsPath] : [];
@@ -68,13 +89,12 @@ function launchApp(context: vscode.ExtensionContext): void {
     child.unref();
 }
 
-function commonArgs(): string[] {
+function commonLaunchArgs(): string[] {
     const cfg = vscode.workspace.getConfiguration('llmTokenOptimizer');
     const args: string[] = [];
     const model = cfg.get<string>('model', '').trim();
-    if (model) { args.push('-Model', model); }
-    if (cfg.get<boolean>('isolateClaudeConfig', false)) { args.push('-IsolateClaudeConfig'); }
-    if (cfg.get<boolean>('verboseMode', false)) { args.push('-VerboseMode'); }
+    if (model) { args.push('--model', model); }
+    if (cfg.get<boolean>('isolateClaudeConfig', false)) { args.push('--isolate'); }
     return args;
 }
 
@@ -84,32 +104,25 @@ function getOrCreateTerminal(): vscode.Terminal {
     return vscode.window.createTerminal({ name: TERMINAL_NAME });
 }
 
-function runScript(context: vscode.ExtensionContext, args: string[], cwd?: string): void {
-    const scriptPath = resolveScriptPath(context);
-    if (!scriptPath) { return; }
-    const psExe = vscode.workspace.getConfiguration('llmTokenOptimizer').get<string>('powershellExecutable', 'powershell.exe');
-
-    const parts = [
-        psExe,
-        '-NoProfile',
-        '-ExecutionPolicy', 'Bypass',
-        '-File', psQuote(scriptPath),
-        ...args
-    ];
-    const commandLine = parts.join(' ');
-
+/** Launches a project session via the CLI and reports the result in the managed terminal, mirroring the old script's terminal-based feedback without actually running PowerShell. */
+async function launchProjectSession(context: vscode.ExtensionContext, projectPath: string, extraArgs: string[] = []): Promise<void> {
     const terminal = getOrCreateTerminal();
     terminal.show();
-    if (cwd) {
-        terminal.sendText(`Set-Location ${psQuote(cwd)}`);
+    terminal.sendText(`# Launching TokenOptimizer session for ${projectPath} ...`, false);
+
+    const result = await runCli(context, ['launch', '--project', projectPath, ...commonLaunchArgs(), ...extraArgs]);
+    if (result.ok) {
+        const data = result.data as { provider?: string; processId?: number } | undefined;
+        terminal.sendText(`# Launched via ${data?.provider ?? 'provider'} (pid ${data?.processId ?? 'n/a'}).`, false);
+    } else {
+        terminal.sendText(`# Launch failed: ${result.error}`, false);
+        vscode.window.showErrorMessage(`LLM-TokenOptimizer: launch failed - ${result.error}`);
     }
-    terminal.sendText(commandLine);
 }
 
 async function transferSession(
     context: vscode.ExtensionContext,
-    flag: '-TransferTo' | '-ContinueLocally',
-    target: 'Codex' | 'Cursor' | undefined,
+    provider: 'Codex' | 'Cursor' | 'LM Studio (local)',
     targetLabel: string
 ): Promise<void> {
     const folders = vscode.workspace.workspaceFolders;
@@ -120,29 +133,13 @@ async function transferSession(
     const projectPath = folders[0].uri.fsPath;
 
     const confirmed = await vscode.window.showWarningMessage(
-        `Stop Claude Code and continue in ${targetLabel}? Session context and this project's skills (as reference material) will be handed off, but this is a best-effort bridge, not a full session migration.`,
+        `Continue in ${targetLabel}? Session context and this project's skills (as reference material) will be handed off, but this is a best-effort bridge, not a full session migration.`,
         { modal: true },
         'Transfer Session'
     );
     if (confirmed !== 'Transfer Session') { return; }
 
-    const terminal = getOrCreateTerminal();
-    terminal.show();
-    // Ctrl+C to whatever's currently running in the managed terminal (only
-    // reaches a Claude Code session that was itself launched through this
-    // extension's terminal - see runScript/getOrCreateTerminal. A session
-    // running in a terminal this extension doesn't control can't be
-    // stopped from here; the user would need to Ctrl+C it themselves first).
-    terminal.sendText('\x03', false);
-
-    const args = flag === '-TransferTo'
-        ? ['-TransferTo', target as string, '-ProjectPath', psQuote(projectPath)]
-        : ['-ContinueLocally', '-ProjectPath', psQuote(projectPath)];
-
-    // Small delay so the interrupt actually lands before the next command is
-    // queued - sendText immediately after Ctrl+C can race the shell's own
-    // handling of the signal.
-    setTimeout(() => runScript(context, args, projectPath), 500);
+    await launchProjectSession(context, projectPath, ['--provider', provider]);
 }
 
 async function pickMasterFolder(context: vscode.ExtensionContext): Promise<string | undefined> {
@@ -155,7 +152,43 @@ async function pickMasterFolder(context: vscode.ExtensionContext): Promise<strin
     if (!picked || picked.length === 0) { return undefined; }
     const folder = picked[0].fsPath;
     await context.globalState.update(LAST_MASTER_FOLDER_KEY, folder);
+    await runCli(context, ['master-folder-set', '--path', folder]);
     return folder;
+}
+
+async function setupProxyCredentials(context: vscode.ExtensionContext): Promise<void> {
+    type ProxyChoice = vscode.QuickPickItem & { action: 'key' | 'opt-in'; provider: string };
+    const choices: ProxyChoice[] = [
+        { label: 'Antigravity', description: 'Opt in (auto-activates when Claude Code hits a usage limit)', action: 'opt-in', provider: 'Antigravity' },
+        { label: 'Codex', description: 'Store OPENAI_API_KEY (manual transfer only)', action: 'key', provider: 'Codex' },
+        { label: 'Cursor', description: 'Opt in (manual transfer only)', action: 'opt-in', provider: 'Cursor' },
+        { label: 'Groq', description: 'Store GROQ_API_KEY (manual transfer only)', action: 'key', provider: 'Groq' },
+    ];
+    const choice = await vscode.window.showQuickPick(choices, { placeHolder: 'Set up which fallback provider?' });
+    if (!choice) { return; }
+
+    if (choice.action === 'opt-in') {
+        const result = await runCli(context, ['opt-in', '--provider', choice.provider]);
+        vscode.window.showInformationMessage(
+            result.ok ? `${choice.provider} opted into the fallback chain.` : `Failed: ${result.error}`
+        );
+        return;
+    }
+
+    const key = await vscode.window.showInputBox({
+        prompt: `Enter the API key for ${choice.provider}`,
+        password: true,
+        ignoreFocusOut: true,
+    });
+    if (!key) { return; }
+
+    // The key goes straight from this input box to the CLI process argument
+    // and from there into DPAPI-encrypted storage (ProxyCredentialStore) -
+    // never logged, never sent anywhere else by this extension.
+    const result = await runCli(context, ['set-credential', '--provider', choice.provider, '--key', key]);
+    vscode.window.showInformationMessage(
+        result.ok ? `${choice.provider} credential stored (DPAPI-encrypted, this account only).` : `Failed: ${result.error}`
+    );
 }
 
 // Single source of truth for "every function this extension exposes" - used
@@ -174,13 +207,13 @@ const ACTIONS: ActionEntry[] = [
         id: 'llmTokenOptimizer.openCurrentWorkspace',
         label: 'Open Current Workspace as Project',
         themeIcon: 'folder-opened',
-        description: 'Runs Graphify/OmniRoute setup and launches (or resumes) a Claude Code session for the folder open right now.'
+        description: 'Runs Graphify + companion-tooling setup and launches (or resumes) a session for the folder open right now.'
     },
     {
         id: 'llmTokenOptimizer.openLauncherForFolder',
         label: 'Open Launcher (Master Folder Picker)',
         themeIcon: 'list-selection',
-        description: 'Pick which project subfolders under a master folder to open, one independent window each.'
+        description: 'Pick which project subfolders under a master folder to open, one independent session each.'
     },
     {
         id: 'llmTokenOptimizer.changeMasterFolder',
@@ -192,31 +225,31 @@ const ACTIONS: ActionEntry[] = [
         id: 'llmTokenOptimizer.resetConfig',
         label: 'Reset Configuration',
         themeIcon: 'trash',
-        description: 'Forget everything saved: master folder and project history.'
+        description: 'Forget everything saved: master folder, project history, and provider preferences.'
     },
     {
         id: 'llmTokenOptimizer.setupProxy',
-        label: 'Set Up Proxy Fallback (Antigravity → Codex → Cursor)',
+        label: 'Set Up Fallback Providers (Antigravity / Codex / Cursor / Groq)',
         themeIcon: 'key',
-        description: 'Register credentials for backup coding agents. Only Antigravity auto-activates when Claude Code hits a usage limit - Codex and Cursor are manual transfer only (see below).'
+        description: 'Register credentials/opt-ins for backup providers. Antigravity auto-activates on a Claude Code usage limit; Codex/Cursor/Groq are manual transfer only.'
     },
     {
         id: 'llmTokenOptimizer.transferToCodex',
         label: 'Transfer Session to Codex',
         themeIcon: 'arrow-swap',
-        description: 'Stop Claude Code and continue in Codex, carrying over this session\'s context and this project\'s skills as reference material.'
+        description: 'Continue in Codex, carrying over this session\'s context and this project\'s skills as reference material.'
     },
     {
         id: 'llmTokenOptimizer.transferToCursor',
         label: 'Transfer Session to Cursor',
         themeIcon: 'arrow-swap',
-        description: 'Stop Claude Code and continue in Cursor, carrying over this session\'s context and this project\'s skills as reference material.'
+        description: 'Continue in Cursor, carrying over this session\'s context and this project\'s skills as reference material.'
     },
     {
         id: 'llmTokenOptimizer.continueLocally',
         label: 'Continue Locally',
         themeIcon: 'arrow-swap',
-        description: 'Stop Claude Code and continue with the best benchmarked local model - no credential needed.'
+        description: 'Continue with the configured local LM Studio model - no credential needed, hotswappable any time from the provider dropdown.'
     },
     {
         id: 'llmTokenOptimizer.openDashboard',
@@ -226,9 +259,9 @@ const ACTIONS: ActionEntry[] = [
     },
     {
         id: 'llmTokenOptimizer.openApp',
-        label: 'Open TokenOptimizer App (New)',
+        label: 'Open TokenOptimizer App',
         themeIcon: 'window',
-        description: 'Launches the new C# desktop app (project picker, dependency dashboard, provider/fallback-chain launcher) with this workspace pre-selected.'
+        description: 'Launches the full desktop app (project picker, dependency dashboard, provider/fallback-chain launcher, benchmark tab) with this workspace pre-selected.'
     }
 ];
 
@@ -270,14 +303,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 vscode.window.showErrorMessage('LLM-TokenOptimizer: open a folder or workspace first.');
                 return;
             }
-            const projectPath = folders[0].uri.fsPath;
-            // -ChildWindow: same code path the parent script's own picker
-            // spawns for a chosen subfolder - skips the machine-wide
-            // bootstrap (winget/dependency installs, update prompts) and
-            // goes straight into Invoke-ProjectMode for this one folder,
-            // including the v5.0 multi-session resume-mode prompt and the
-            // rate-limit watcher.
-            runScript(context, ['-ProjectPath', psQuote(projectPath), '-ChildWindow', ...commonArgs()], projectPath);
+            void launchProjectSession(context, folders[0].uri.fsPath);
         }),
 
         vscode.commands.registerCommand('llmTokenOptimizer.openLauncherForFolder', async () => {
@@ -286,7 +312,34 @@ export function activate(context: vscode.ExtensionContext): void {
                 masterFolder = await pickMasterFolder(context);
                 if (!masterFolder) { return; }
             }
-            runScript(context, ['-MasterFolder', psQuote(masterFolder), ...commonArgs()]);
+
+            const result = await runCli<{ candidates: { fullPath: string; name: string; seenBefore: boolean }[] }>(
+                context, ['master-folder-list', '--path', masterFolder]
+            );
+            if (!result.ok || !result.data) {
+                vscode.window.showErrorMessage(`LLM-TokenOptimizer: could not list projects - ${result.error}`);
+                return;
+            }
+            if (result.data.candidates.length === 0) {
+                vscode.window.showInformationMessage('No project subfolders found in that master folder.');
+                return;
+            }
+
+            type ProjectPick = vscode.QuickPickItem & { fullPath: string };
+            const items: ProjectPick[] = result.data.candidates.map(c => ({
+                label: c.name,
+                description: c.seenBefore ? 'previously opened' : 'new',
+                fullPath: c.fullPath,
+            }));
+            const picked = await vscode.window.showQuickPick(items, {
+                placeHolder: 'Select project(s) to open (multi-select)',
+                canPickMany: true,
+            });
+            if (!picked || picked.length === 0) { return; }
+
+            for (const p of picked) {
+                await launchProjectSession(context, p.fullPath);
+            }
         }),
 
         vscode.commands.registerCommand('llmTokenOptimizer.changeMasterFolder', async () => {
@@ -297,39 +350,29 @@ export function activate(context: vscode.ExtensionContext): void {
                 'Open Launcher', 'Not Now'
             );
             if (openNow === 'Open Launcher') {
-                runScript(context, ['-MasterFolder', psQuote(masterFolder), ...commonArgs()]);
+                await vscode.commands.executeCommand('llmTokenOptimizer.openLauncherForFolder');
             }
         }),
 
         vscode.commands.registerCommand('llmTokenOptimizer.resetConfig', async () => {
             const confirmed = await vscode.window.showWarningMessage(
-                'This forgets the saved master folder and project history. Continue?',
+                'This forgets the saved master folder, project history, and provider preferences. Continue?',
                 { modal: true },
                 'Reset Configuration'
             );
             if (confirmed !== 'Reset Configuration') { return; }
-            // Intentionally NOT -ChildWindow: -ResetConfig is a no-op on a
-            // child window by design (Initialize-Configuration guards it),
-            // so this must run as a launcher invocation.
-            runScript(context, ['-ResetConfig', ...commonArgs()]);
+            const result = await runCli(context, ['reset-config']);
+            vscode.window.showInformationMessage(result.ok ? 'Configuration reset.' : `Reset failed: ${result.error}`);
         }),
 
-        vscode.commands.registerCommand('llmTokenOptimizer.setupProxy', () => {
-            // -SetupProxy is an interactive, console-based credential prompt
-            // (Read-Host -AsSecureString, masked input) - it runs in the
-            // same integrated terminal as every other action rather than a
-            // webview/input-box flow, so the key never passes through this
-            // extension's own JS at all, only through the terminal directly
-            // to the script's DPAPI-backed storage.
-            runScript(context, ['-SetupProxy']);
-        }),
+        vscode.commands.registerCommand('llmTokenOptimizer.setupProxy', () => setupProxyCredentials(context)),
 
         vscode.commands.registerCommand('llmTokenOptimizer.transferToCodex', () =>
-            transferSession(context, '-TransferTo', 'Codex', 'Codex')),
+            transferSession(context, 'Codex', 'Codex')),
         vscode.commands.registerCommand('llmTokenOptimizer.transferToCursor', () =>
-            transferSession(context, '-TransferTo', 'Cursor', 'Cursor')),
+            transferSession(context, 'Cursor', 'Cursor')),
         vscode.commands.registerCommand('llmTokenOptimizer.continueLocally', () =>
-            transferSession(context, '-ContinueLocally', undefined, 'the local model')),
+            transferSession(context, 'LM Studio (local)', 'the local model')),
 
         vscode.commands.registerCommand('llmTokenOptimizer.openDashboard', () => openDashboard(context)),
         vscode.commands.registerCommand('llmTokenOptimizer.openApp', () => launchApp(context)),
@@ -404,8 +447,10 @@ function registerChatParticipant(context: vscode.ExtensionContext): void {
             matched = ACTIONS.find(a => a.id === 'llmTokenOptimizer.continueLocally');
         } else if (match('dashboard', 'token savings', 'live activity', 'skill activity')) {
             matched = ACTIONS.find(a => a.id === 'llmTokenOptimizer.openDashboard');
-        } else if (match('proxy', 'fallback', 'antigravity', 'codex', 'cursor', 'backup agent', 'usage limit')) {
+        } else if (match('proxy', 'fallback', 'antigravity', 'codex', 'cursor', 'groq', 'backup agent', 'usage limit')) {
             matched = ACTIONS.find(a => a.id === 'llmTokenOptimizer.setupProxy');
+        } else if (match('open app', 'desktop app', 'full app')) {
+            matched = ACTIONS.find(a => a.id === 'llmTokenOptimizer.openApp');
         }
 
         if (matched) {
@@ -416,9 +461,8 @@ function registerChatParticipant(context: vscode.ExtensionContext): void {
         }
 
         stream.markdown(
-            'I run [LLM-TokenOptimizer](https://github.com) actions - Graphify setup and Claude ' +
-            'Code project/session windows, all in the same terminal-based script this extension wraps. ' +
-            'Tell me what to do, or pick one:\n\n'
+            'I run TokenOptimizer actions against the app\'s CLI - Graphify + companion-tooling setup, ' +
+            'provider/fallback-chain session launches, and session transfers. Tell me what to do, or pick one:\n\n'
         );
         for (const action of ACTIONS) {
             stream.markdown(`- [${action.label}](command:${action.id}) - ${action.description}\n`);
@@ -431,7 +475,8 @@ function registerChatParticipant(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
-    // Nothing to tear down - the script itself owns cleanup (config saves,
-    // instance-lock release) via its own Invoke-Cleanup on process exit; this
-    // extension never holds process handles across command invocations.
+    // Nothing to tear down - TokenOptimizer.App.exe owns its own cleanup
+    // (config saves, instance-lock release) on process exit; this extension
+    // never holds a process handle across command invocations (--cli runs
+    // are fire-and-wait or detached, never tracked here).
 }

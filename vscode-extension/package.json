@@ -1,8 +1,8 @@
 {
   "name": "llm-token-optimizer",
   "displayName": "LLM-TokenOptimizer",
-  "description": "VS Code companion for the TokenOptimizer ecosystem - opens the v6.0 C# app (TokenOptimizer.App.exe) via 'Open TokenOptimizer App', or falls back to the legacy LLM-TokenOptimizer.ps1 launcher for Graphify + Claude Code project/session windows.",
-  "version": "5.9.2",
+  "description": "VS Code front door onto the TokenOptimizer app's headless CLI (TokenOptimizer.App.exe --cli): Graphify + companion-tooling setup, provider/fallback-chain session launches, and session transfers, all driven by the same C# app the desktop UI uses. No PowerShell dependency.",
+  "version": "6.0.0",
   "publisher": "local",
   "engines": {
     "vscode": "^1.95.0"
@@ -41,7 +41,7 @@
       },
       {
         "command": "llmTokenOptimizer.setupProxy",
-        "title": "LLM-TokenOptimizer: Set Up Proxy Fallback (Antigravity → Codex → Cursor)",
+        "title": "LLM-TokenOptimizer: Set Up Fallback Providers (Antigravity / Codex / Cursor / Groq)",
         "icon": "$(key)"
       },
       {
@@ -66,7 +66,7 @@
       },
       {
         "command": "llmTokenOptimizer.openApp",
-        "title": "LLM-TokenOptimizer: Open TokenOptimizer App (New)",
+        "title": "LLM-TokenOptimizer: Open TokenOptimizer App",
         "icon": "$(window)"
       }
     ],
@@ -161,40 +161,20 @@
     "configuration": {
       "title": "LLM-TokenOptimizer",
       "properties": {
-        "llmTokenOptimizer.scriptPath": {
-          "type": "string",
-          "default": "",
-          "description": "Path to LLM-TokenOptimizer.ps1. Leave blank to use the copy bundled with this extension."
-        },
-        "llmTokenOptimizer.powershellExecutable": {
-          "type": "string",
-          "default": "powershell.exe",
-          "description": "PowerShell executable used to run the script (e.g. powershell.exe or pwsh.exe)."
-        },
         "llmTokenOptimizer.model": {
           "type": "string",
-          "enum": [
-            "",
-            "sonnet",
-            "opus"
-          ],
           "default": "",
-          "description": "Session-only model override forwarded as -Model. Leave blank to use Claude Code's own saved default."
+          "description": "Session-only model override forwarded to `--cli launch --model`. Leave blank to use the provider's own default (or, for LM Studio, the app's configured local model)."
         },
         "llmTokenOptimizer.isolateClaudeConfig": {
           "type": "boolean",
           "default": false,
-          "description": "Forward -IsolateClaudeConfig: give each project its own CLAUDE_CONFIG_DIR instead of sharing ~/.claude."
-        },
-        "llmTokenOptimizer.verboseMode": {
-          "type": "boolean",
-          "default": false,
-          "description": "Forward -VerboseMode to the script."
+          "description": "Forward --isolate: give each project its own CLAUDE_CONFIG_DIR instead of sharing ~/.claude."
         },
         "llmTokenOptimizer.appExecutablePath": {
           "type": "string",
           "default": "",
-          "description": "Path to TokenOptimizer.App.exe (the new C# ecosystem app). Leave blank to auto-detect a build under this repo's app/ folder."
+          "description": "Path to TokenOptimizer.App.exe. Leave blank to auto-detect (bundled next to this extension, or a local `dotnet build` under this repo's app/ folder)."
         }
       }
     }

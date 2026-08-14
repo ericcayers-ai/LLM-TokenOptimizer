@@ -832,50 +832,9 @@ public partial class MainViewModel : ViewModelBase
         return null;
     }
 
-    /// <summary>
-    /// Keeps CLAUDE.md's graph-first + companion-tooling directives current,
-    /// warns on a bloated CLAUDE.md, and wires up Graphify strict mode for
-    /// projects big enough to warrant it - the same "runs every launch,
-    /// idempotent, marker-gated" checks Invoke-ProjectMode ran before
-    /// starting Claude Code.
-    /// </summary>
-    private async Task PrepareProjectDirectiveAsync(string projectDirectory)
-    {
-        if (ProjectClaudeMdService.CheckClaudeMdBloat(projectDirectory) is { } bloatWarning)
-        {
-            Log(bloatWarning);
-        }
-
-        var useGraphify = ProjectClaudeMdService.ExceedsGraphifyThreshold(projectDirectory);
-        if (useGraphify && _availability.IsOnPath("graphify", useCache: true))
-        {
-            await _claudeMdService.InstallGraphifyHookAsync(projectDirectory);
-            await _claudeMdService.InstallGraphifyStrictModeAsync(projectDirectory);
-        }
-
-        ProjectClaudeMdService.EnsureDirective(projectDirectory, useGraphify);
-
-        // claude-mem's context-injection defaults (50 observations / 10
-        // sessions / 5 full-detail) are tuned for larger, longer-lived
-        // codebases. Process-scoped only - never touches the shared
-        // ~/.claude-mem/settings.json, so it has no effect on any other
-        // project; the launched claude.exe inherits it since it's a child
-        // of this process either way (UseShellExecute true or false).
-        if (!useGraphify)
-        {
-            Environment.SetEnvironmentVariable("CLAUDE_MEM_CONTEXT_OBSERVATIONS", "20");
-            Environment.SetEnvironmentVariable("CLAUDE_MEM_CONTEXT_SESSION_COUNT", "5");
-            Environment.SetEnvironmentVariable("CLAUDE_MEM_CONTEXT_FULL_COUNT", "2");
-        }
-        else
-        {
-            Environment.SetEnvironmentVariable("CLAUDE_MEM_CONTEXT_OBSERVATIONS", null);
-            Environment.SetEnvironmentVariable("CLAUDE_MEM_CONTEXT_SESSION_COUNT", null);
-            Environment.SetEnvironmentVariable("CLAUDE_MEM_CONTEXT_FULL_COUNT", null);
-        }
-
-        await ClaudeMemRepair.RepairAsync();
-    }
+    /// <summary>Delegates to the shared ProjectSessionPrep so the CLI host (used by the VS Code extension) runs the exact same pre-launch checks as this UI.</summary>
+    private Task PrepareProjectDirectiveAsync(string projectDirectory) =>
+        ProjectSessionPrep.PrepareProjectDirectiveAsync(projectDirectory, _claudeMdService, _availability, Log);
 
     private void Log(string message) => LogLines.Add($"[{DateTime.Now:HH:mm:ss}] {message}");
 
