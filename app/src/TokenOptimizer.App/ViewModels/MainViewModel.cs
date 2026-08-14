@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using Avalonia.Input.Platform;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using TokenOptimizer.Core.Benchmarking;
@@ -482,6 +483,106 @@ public partial class MainViewModel : ViewModelBase
                 await RefreshBestLocalModelAsync();
             });
         });
+    }
+
+    /// <summary>
+    /// One-click "give this to an AI" export: zips every benchmark_&lt;model&gt;.json
+    /// plus a ready-to-paste review prompt (see BenchmarkExporter), reveals the
+    /// zip in Explorer so it's immediately at hand to attach/upload, and copies
+    /// the prompt text to the clipboard so the only remaining step is pasting it
+    /// alongside the zip into whatever AI the user wants to run the review.
+    /// </summary>
+    [RelayCommand]
+    private async Task ExportBenchmarksForAiReviewAsync()
+    {
+        var repoRoot = BenchmarkRunner.FindRepoRoot();
+        if (repoRoot is null)
+        {
+            BenchmarkStatusText = "run_benchmarks.py not found near the app - nothing to export.";
+            return;
+        }
+
+        var zipPath = Path.Combine(repoRoot, $"benchmark_results_{DateTime.Now:yyyyMMdd_HHmmss}.zip");
+        var count = await Task.Run(() => BenchmarkExporter.Export(repoRoot, zipPath));
+        if (count == 0)
+        {
+            BenchmarkStatusText = "No benchmark_<model>.json files found - run benchmarks first.";
+            return;
+        }
+
+        var clipboard = GetTopLevelClipboard();
+        if (clipboard is not null)
+        {
+            await clipboard.SetTextAsync(BenchmarkExporter.BuildPrompt(count));
+        }
+
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"/select,\"{zipPath}\"",
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            Log($"Could not open Explorer to reveal the export: {ex.Message}");
+        }
+
+        BenchmarkStatusText = $"Exported {count} model result(s) to {Path.GetFileName(zipPath)}" +
+                               (clipboard is not null ? " - review prompt copied to clipboard." : " - clipboard unavailable, prompt is inside the zip as " + BenchmarkExporter.PromptFileName + ".");
+        Log(BenchmarkStatusText);
+    }
+
+    /// <summary>
+    /// Generates the mechanical scoring-matrix/averages report (BenchmarkReportGenerator)
+    /// and opens it - deliberately separate from ExportBenchmarksForAiReviewAsync, which
+    /// handles the human/AI-written quality-review half of the picture via the zip+prompt.
+    /// </summary>
+    [RelayCommand]
+    private async Task GenerateBenchmarkReportAsync()
+    {
+        var repoRoot = BenchmarkRunner.FindRepoRoot();
+        if (repoRoot is null)
+        {
+            BenchmarkStatusText = "run_benchmarks.py not found near the app - nothing to report.";
+            return;
+        }
+
+        var reportPath = Path.Combine(repoRoot, "BENCHMARK_REPORT.md");
+        var count = await Task.Run(() => BenchmarkReportGenerator.Generate(repoRoot, reportPath));
+        if (count == 0)
+        {
+            BenchmarkStatusText = "No benchmark_<model>.json files found - run benchmarks first.";
+            return;
+        }
+
+        BenchmarkStatusText = $"Wrote BENCHMARK_REPORT.md ({count} model(s)).";
+        Log(BenchmarkStatusText);
+
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = reportPath,
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            Log($"Could not open the report: {ex.Message}");
+        }
+    }
+
+    private static IClipboard? GetTopLevelClipboard()
+    {
+        if (Avalonia.Application.Current?.ApplicationLifetime is Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime desktop
+            && desktop.MainWindow is { } window)
+        {
+            return Avalonia.Controls.TopLevel.GetTopLevel(window)?.Clipboard;
+        }
+        return null;
     }
 
     private static string Truncate(string text, int maxLength) => text.Length <= maxLength ? text : text[..maxLength] + "...";

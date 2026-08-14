@@ -130,8 +130,21 @@ MODEL_LIST = [
     {"id": "https://huggingface.co/lmstudio-community/Muse-Glimmer-30B-GGUF",         "size_gb": 18},
     {"id": "https://huggingface.co/poolside/Laguna-XS-2.1-GGUF",                       "size_gb": 18},
     {"id": "https://huggingface.co/tiiuae/Falcon-H1R-7B-GGUF",                         "size_gb": 5},
-    {"id": "https://huggingface.co/unsloth/gemma-4-12b-it-GGUF",                       "size_gb": 8},
-    {"id": "https://huggingface.co/Qwen/Qwen3-Coder-Next-GGUF",                        "size_gb": 48},
+    # Switched from the unsloth HF URL to LM Studio's own catalog id - the
+    # community upload crashed the runtime consistently (confirmed twice,
+    # even after an LM Studio update); google/gemma-4-12b is LM Studio's own
+    # staff-picked catalog entry, same naming pattern as google/gemma-4-26b-a4b
+    # which already ran successfully in round 1.
+    {"id": "google/gemma-4-12b",                                                        "size_gb": 8},
+    # Q4_K_M (default, 48GB) hard-failed LM Studio's own memory guardrail on
+    # this machine (needs ~47.87GB, system has ~31.8GB total RAM). Q2_K
+    # (29.2GB) also doesn't even fit on disk right now (28GB free). Dropped
+    # to unsloth's UD-IQ1_S dynamic quant (21.5GB) - still a real attempt at
+    # this specific model, just the smallest quant that has any realistic
+    # chance of fitting both disk and the ~31.8GB system RAM ceiling.
+    # "iq1_s" wasn't a recognized variant name ("Cannot find variant iq1_s");
+    # Q2_K (29.2GB) is a confirmed-valid quant name for this model.
+    {"id": "qwen/qwen3-coder-next@q2_k",                                               "size_gb": 29},
     {"id": "https://huggingface.co/unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF",   "size_gb": 14},
     {"id": "https://huggingface.co/mistralai/Ministral-3-14B-Instruct-2512-GGUF",      "size_gb": 9},
     {"id": "https://huggingface.co/mistralai/Ministral-3-8B-Instruct-2512-GGUF",       "size_gb": 5},
@@ -143,7 +156,30 @@ MODEL_LIST = [
     # (same base model, full precision) - a real test of whether extreme
     # quantization holds up on these coding tasks, not just PrismML's claimed
     # 94.6% FP16-quality retention on their own benchmark suite.
-    {"id": "https://huggingface.co/prism-ml/Ternary-Bonsai-27B-gguf",                  "size_gb": 8},
+    # Switched from the raw HF ternary-repo URL to LM Studio's own catalog id
+    # (prism-ml/bonsai-27b, confirmed via the LM Studio app's own model
+    # search - a staff pick) - the raw ternary GGUF crashed the runtime
+    # consistently even after an LM Studio update, but the catalog entry's
+    # own Q1_0 (binary, 4.73GB) quant is presumably what LM Studio actually
+    # tests/supports. Note this is the 1-bit binary variant (89.5% FP16
+    # quality per PrismML), not the higher-fidelity ternary variant (94.6%)
+    # originally targeted - letting `lms get` pick its own default rather
+    # than guessing another quant suffix that might not resolve either.
+    {"id": "prism-ml/bonsai-27b",                                                       "size_gb": 5},
+    # --- Round 3: added on request 2026-08-14 from LM Studio catalog browsing
+    # (GLM-4.7-Flash explicitly requested; DeepSeek + "anything promising"
+    # researched from the user's own screenshots). Catalog ids and sizes
+    # confirmed via lmstudio.ai model pages, not guessed. ---
+    # NOTE: zai-org/glm-4.7-flash is already in the original round-1 list
+    # above (it failed live back then with "Model not found" - since
+    # confirmed via lmstudio.ai/models/zai-org/glm-4.7-flash that this IS
+    # the correct catalog id, so the original failure was likely a download
+    # issue that day, not a bad slug; no need for a duplicate entry here,
+    # it'll just be re-attempted via --models like everything else pending).
+    {"id": "deepseek/deepseek-r1-0528-qwen3-8b", "size_gb": 5},
+    {"id": "allenai/olmo-3-32b-think",           "size_gb": 19},
+    {"id": "bytedance/seed-oss-36b",             "size_gb": 21},
+    {"id": "liquid/lfm2-24b-a2b",                "size_gb": 14},
 ]
 
 # ----------------------------------------------------------------------------
@@ -177,7 +213,7 @@ MODEL_LIST = [
 # guessing something more specific.
 DEFAULT_MODEL_CONFIG = {
     "temperature": 0.3, "top_p": None, "max_tokens": DEFAULT_MAX_TOKENS,
-    "context_length": 8192, "disable_thinking": False,
+    "context_length": 8192, "disable_thinking": False, "thinking_budget": None,
 }
 MODEL_CONFIG = {
     # --- Reasoning models: disable thinking via chat template + big fallback budget ---
@@ -186,7 +222,7 @@ MODEL_CONFIG = {
     # Ternary Bonsai 27B: a compressed Qwen3.6-27B, same reasoning-model
     # config as the full-precision original since it shares the base model's
     # chat template and thinking behavior.
-    "https://huggingface.co/prism-ml/Ternary-Bonsai-27B-gguf": {"temperature": 0.6, "top_p": 0.95, "max_tokens": 12000, "context_length": 32768, "disable_thinking": True},
+    "prism-ml/bonsai-27b": {"temperature": 0.6, "top_p": 0.95, "max_tokens": 12000, "context_length": 32768, "disable_thinking": True},
     "zai-org/glm-4.6v-flash": {"temperature": 0.6, "top_p": 0.95, "max_tokens": 10000, "context_length": 16384, "disable_thinking": True},
     "nvidia/nemotron-3-nano": {"temperature": 0.6, "top_p": 0.95, "max_tokens": 10000, "context_length": 16384, "disable_thinking": True},
     "nvidia/nemotron-3.5-lightning": {"temperature": 0.6, "top_p": 0.95, "max_tokens": 10000, "context_length": 16384, "disable_thinking": True},
@@ -217,11 +253,14 @@ MODEL_CONFIG = {
     # than the smaller Qwen3-Coder-30B - temp=1.0/top_p=0.95/top_k=40, not
     # 0.7/0.8/20 (confirmed via multiple sources incl. LM Studio community
     # presets specific to this model).
-    "https://huggingface.co/Qwen/Qwen3-Coder-Next-GGUF": {"temperature": 1.0, "top_p": 0.95, "max_tokens": 8000, "context_length": 16384, "disable_thinking": False},
+    # Trimmed context/budget vs. the other Qwen entries specifically to
+    # reduce total memory pressure at load time, since the prior attempt at
+    # this model failed on a RAM guardrail, not a quality issue.
+    "qwen/qwen3-coder-next@q2_k": {"temperature": 1.0, "top_p": 0.95, "max_tokens": 6000, "context_length": 8192, "disable_thinking": False},
     "openai/gpt-oss-20b": {"temperature": 0.7, "top_p": None, "max_tokens": 6000, "context_length": 16384, "disable_thinking": False},
     "kwaipilot/kat-dev": {"temperature": 0.3, "top_p": None, "max_tokens": 6000, "context_length": 16384, "disable_thinking": False},
     "google/gemma-4-26b-a4b": {"temperature": 1.0, "top_p": 0.95, "max_tokens": 6000, "context_length": 16384, "disable_thinking": False},
-    "https://huggingface.co/unsloth/gemma-4-12b-it-GGUF": {"temperature": 1.0, "top_p": 0.95, "max_tokens": 6000, "context_length": 16384, "disable_thinking": False},
+    "google/gemma-4-12b": {"temperature": 1.0, "top_p": 0.95, "max_tokens": 6000, "context_length": 16384, "disable_thinking": False},
     "https://huggingface.co/unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF": {"temperature": 0.15, "top_p": None, "max_tokens": 8000, "context_length": 16384, "disable_thinking": False},
     "https://huggingface.co/mistralai/Ministral-3-14B-Instruct-2512-GGUF": {"temperature": 0.1, "top_p": None, "max_tokens": 6000, "context_length": 16384, "disable_thinking": False},
     "https://huggingface.co/mistralai/Ministral-3-8B-Instruct-2512-GGUF": {"temperature": 0.1, "top_p": None, "max_tokens": 6000, "context_length": 16384, "disable_thinking": False},
@@ -235,6 +274,36 @@ MODEL_CONFIG = {
     # and recommend temperature=0 (deterministic) for most inferencing tasks
     # (research.ibm.com/blog/granite-4-1-ai-foundation-models).
     "https://huggingface.co/ibm-granite/granite-4.1-8b-GGUF": {"temperature": 0.0, "top_p": None, "max_tokens": 6000, "context_length": 16384, "disable_thinking": False},
+    # --- Round 3 configs ---
+    # GLM-4.7-Flash: same GLM reasoning-model treatment as glm-4.6v-flash
+    # (empirically confirmed reasoning behavior in that family this session).
+    "zai-org/glm-4.7-flash": {"temperature": 0.6, "top_p": 0.95, "max_tokens": 10000, "context_length": 16384, "disable_thinking": True},
+    # DeepSeek-R1-0528-Qwen3-8B: an R1 chain-of-thought distillation - temp
+    # 0.6/top_p 0.95 is DeepSeek's own widely-documented standard R1 sampling
+    # recommendation (avoids the repetition/incoherence R1 models show at
+    # low temperature). Reasoning IS the model's entire purpose here, so a
+    # big budget matters more than trying to suppress it.
+    "deepseek/deepseek-r1-0528-qwen3-8b": {"temperature": 0.6, "top_p": 0.95, "max_tokens": 12000, "context_length": 16384, "disable_thinking": True},
+    # Olmo 3 32B "Think": AllenAI's explicit reasoning-branded variant (vs.
+    # their own "Instruct" non-reasoning release) - no specific vendor
+    # sampling numbers found, so using the same conservative reasoning-model
+    # hedge as Muse Glimmer/Laguna XS (generous budget, no thinking-disable
+    # guess for an unconfirmed chat template), sized like qwen3.6-27b since
+    # that's the same weight class and that model's context bump was the
+    # actual fix for its failures.
+    "allenai/olmo-3-32b-think": {"temperature": 0.7, "top_p": 0.9, "max_tokens": 14000, "context_length": 32768, "disable_thinking": False},
+    # Seed-OSS-36B: the one model in this whole run with a CONFIRMED, documented
+    # thinking_budget chat-template parameter (github.com/ByteDance-Seed/seed-oss),
+    # not a guess - capped at 4096 (an integer multiple of 512, per their own
+    # guidance) rather than the model's default unlimited, to keep total
+    # generation bounded on this hardware. temp=1.1/top_p=0.95 is their own
+    # documented recommended setting.
+    "bytedance/seed-oss-36b": {"temperature": 1.1, "top_p": 0.95, "max_tokens": 10000, "context_length": 32768, "disable_thinking": False, "thinking_budget": 4096},
+    # LFM2-24B-A2B: Liquid AI's hybrid architecture, MoE with only 2B active
+    # params/token - not documented as a reasoning/thinking model, so treated
+    # as a standard non-reasoning entry; no specific vendor sampling found,
+    # using the same code-generation default as other undocumented models.
+    "liquid/lfm2-24b-a2b": {"temperature": 0.7, "top_p": 0.8, "max_tokens": 6000, "context_length": 16384, "disable_thinking": False},
 }
 
 
@@ -351,10 +420,32 @@ def _has_valid_python_syntax(code_blocks):
     return False
 
 
-def score_capability(test_name, response_text, checks):
-    """Returns (capability_score 0..1, detail dict) for one test's response."""
+# A response that never left <think> and was scored against its raw
+# reasoning trace (not a real final answer) gets its score capped here.
+# Confirmed live, repeatedly, across a full manual quality-review pass this
+# session: models scoring a perfect 1.00 this way were frequently NOT
+# actually delivering working code - e.g. falcon-h1r-7b's test 4 hit
+# capability=1.00 with 0 answer_tokens while a human read found the "code"
+# was an abandoned mid-draft; muse-glimmer-30b's automated 1.00-across-the-
+# board turned out to be 5.5/10 on manual review, with 2 of 4 tests
+# containing crash-level bugs (a read-only numpy write, a JS identifier with
+# a literal space in it) that ast.parse's syntax-only check can't catch, let
+# alone the reasoning-trace fallback which is even less reliable. Undelivered
+# work is a real failure mode worth SOME credit (the reasoning may show the
+# model understood the problem) but not full marks for a final answer that
+# never actually shipped.
+UNDELIVERED_SCORE_CAP = 0.4
+
+
+def score_capability(test_name, response_text, checks, delivered=True):
+    """Returns (capability_score 0..1, detail dict) for one test's response.
+
+    `delivered` should be False when response_text is the model's raw
+    reasoning trace rather than a real final answer (i.e. it never produced
+    any post-</think> content) - see UNDELIVERED_SCORE_CAP above.
+    """
     if not response_text or not response_text.strip():
-        return 0.0, {"syntax_valid": False, "rubric_hits": 0, "rubric_total": len(checks)}
+        return 0.0, {"syntax_valid": False, "rubric_hits": 0, "rubric_total": len(checks), "delivered": delivered}
 
     code_blocks = _extract_code_blocks(response_text)
     syntax_valid = _has_valid_python_syntax(code_blocks) if code_blocks else False
@@ -364,8 +455,9 @@ def score_capability(test_name, response_text, checks):
     if not syntax_valid:
         # SWE-bench-style hard gate: code that doesn't parse is a fail,
         # regardless of how many keywords/requirements it happens to mention.
-        return 0.0, {"syntax_valid": False, "rubric_hits": hits, "rubric_total": len(checks)}
-    return round(rubric_fraction, 3), {"syntax_valid": True, "rubric_hits": hits, "rubric_total": len(checks)}
+        return 0.0, {"syntax_valid": False, "rubric_hits": hits, "rubric_total": len(checks), "delivered": delivered}
+    score = rubric_fraction if delivered else min(rubric_fraction, UNDELIVERED_SCORE_CAP)
+    return round(score, 3), {"syntax_valid": True, "rubric_hits": hits, "rubric_total": len(checks), "delivered": delivered}
 
 
 def compute_composite_score(resolve_rate, tokens_per_second, max_tokens_per_second):
@@ -825,11 +917,20 @@ def run_benchmarks_for_model(model_id, config):
 
         try:
             extra_body = {}
+            chat_template_kwargs = {}
             if config["disable_thinking"]:
                 # llama.cpp (LM Studio's backend) reads this via chat_template_kwargs;
                 # ignored harmlessly by chat templates that don't recognize it, which
                 # is why a generous max_tokens fallback is still set regardless.
-                extra_body["chat_template_kwargs"] = {"enable_thinking": False}
+                chat_template_kwargs["enable_thinking"] = False
+            if config["thinking_budget"] is not None:
+                # A more precise reasoning-length control than the enable_thinking
+                # boolean, but only known to actually work for models whose docs
+                # confirm it (e.g. Seed-OSS-36B: github.com/ByteDance-Seed/seed-oss) -
+                # same chat_template_kwargs mechanism, ignored harmlessly elsewhere.
+                chat_template_kwargs["thinking_budget"] = config["thinking_budget"]
+            if chat_template_kwargs:
+                extra_body["chat_template_kwargs"] = chat_template_kwargs
             create_kwargs = dict(
                 model=model_id,
                 messages=messages,
@@ -906,11 +1007,15 @@ def run_benchmarks_for_model(model_id, config):
             # (reasoning models often draft/refine code IN their thinking
             # before ever reaching a final answer - a response truncated
             # mid-thought is itself a real failure mode worth scoring, not
-            # something to hide by only looking at an empty `content`).
-            scoring_text = content_text if content_text.strip() else reasoning_text
+            # something to hide by only looking at an empty `content`) - but
+            # capped via UNDELIVERED_SCORE_CAP since that fallback path is
+            # far less reliable than a real final answer (see score_capability).
+            delivered = bool(content_text.strip())
+            scoring_text = content_text if delivered else reasoning_text
             full_output = (f"<think>\n{reasoning_text}\n</think>\n\n{content_text}"
                            if reasoning_text else content_text)
-            capability_score, capability_detail = score_capability(test["name"], scoring_text, test.get("checks", []))
+            capability_score, capability_detail = score_capability(
+                test["name"], scoring_text, test.get("checks", []), delivered=delivered)
 
             log(f"[{model_id}]     TTFT: {ttft:.3f}s | Speed: {tok_per_sec:.2f} tok/s | "
                 f"Tokens: {total_tokens} (reasoning={reasoning_tokens}, answer={completion_tokens}) | "
@@ -1000,7 +1105,11 @@ def rescore_existing_results():
                 continue
             test = next((t for t in TEST_PROMPTS if t["name"] == r["test_name"]), None)
             checks = test["checks"] if test else []
-            score, detail = score_capability(r["test_name"], r.get("full_code_output", ""), checks)
+            # completion_tokens > 0 means the model produced real post-</think>
+            # content (not just an unclosed reasoning trace) - same signal
+            # used live in run_benchmarks_for_model, see UNDELIVERED_SCORE_CAP.
+            delivered = r.get("completion_tokens", 0) > 0
+            score, detail = score_capability(r["test_name"], r.get("full_code_output", ""), checks, delivered=delivered)
             r["capability_score"] = score
             r["capability_detail"] = detail
             changed = True

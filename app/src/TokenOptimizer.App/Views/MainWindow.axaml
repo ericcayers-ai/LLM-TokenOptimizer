@@ -163,6 +163,16 @@
                         <StackPanel Spacing="4" VerticalAlignment="Bottom">
                             <Button Content="Refresh Leaderboard" Command="{Binding RefreshBestLocalModelCommand}" />
                         </StackPanel>
+                        <StackPanel Spacing="4" VerticalAlignment="Bottom">
+                            <Button Content="Export for AI Review"
+                                    Command="{Binding ExportBenchmarksForAiReviewCommand}"
+                                    ToolTip.Tip="Zips every benchmark result plus a ready-to-paste quality-review prompt, reveals the zip in Explorer, and copies the prompt to the clipboard." />
+                        </StackPanel>
+                        <StackPanel Spacing="4" VerticalAlignment="Bottom">
+                            <Button Content="Generate Report"
+                                    Command="{Binding GenerateBenchmarkReportCommand}"
+                                    ToolTip.Tip="Writes BENCHMARK_REPORT.md - scoring matrix and per-model averages only (no quality-review text, that's the AI-review zip's job) - and opens it." />
+                        </StackPanel>
                     </StackPanel>
                     <TextBlock Text="{Binding BenchmarkStatusText}" Opacity="0.7" FontSize="11" />
 

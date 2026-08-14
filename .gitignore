@@ -32,3 +32,5 @@ __pycache__/
 benchmark_*.json
 benchmark_summary.csv
 run_benchmarks*.log
+BENCHMARK_REPORT.md
+benchmark_results_*.zip
