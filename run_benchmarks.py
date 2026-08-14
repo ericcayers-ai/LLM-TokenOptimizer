@@ -567,6 +567,92 @@ def check_disk_space(size_gb, min_free_gb=DEFAULT_MIN_FREE_GB):
     return True, free_gb
 
 
+# ----------------------------------------------------------------------------
+# System resource detection - decides which MODEL_LIST entries can even be
+# attempted on this machine before a single byte downloads. Windows-only
+# (matches the rest of this repo): RAM via ctypes GlobalMemoryStatusEx (no
+# extra dependency), VRAM via `nvidia-smi` if present (best-effort - AMD/Intel
+# GPUs and machines with no discrete GPU fall back to RAM-only CPU inference,
+# same as LM Studio itself does with `--gpu max` when there's nothing to
+# offload to). A model whose size_gb doesn't comfortably fit in whichever
+# pool is larger (VRAM if present, else system RAM) gets excluded rather than
+# attempted and left to OOM/thrash mid-run.
+# ----------------------------------------------------------------------------
+RESOURCE_SAFETY_MARGIN = 1.15  # same spirit as DEFAULT_MIN_FREE_GB - leave headroom, don't cut it exactly at the edge
+
+
+def detect_total_ram_gb():
+    """Total (not free) system RAM in GB, or None if it can't be determined.
+
+    Used as the fallback pool for models with no usable GPU - `lms load`
+    with no VRAM to offload to loads into system RAM instead.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        stat = MEMORYSTATUSEX()
+        stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+            return None
+        return stat.ullTotalPhys / (1024 ** 3)
+    except Exception:
+        return None
+
+
+def detect_total_vram_gb():
+    """Total VRAM of the first NVIDIA GPU in GB via `nvidia-smi`, or None if
+    unavailable (no NVIDIA GPU, driver not installed, or nvidia-smi not on
+    PATH) - callers fall back to RAM-only CPU inference in that case."""
+    nvidia_smi = shutil.which("nvidia-smi")
+    if not nvidia_smi:
+        return None
+    try:
+        result = subprocess.run(
+            [nvidia_smi, "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        first_line = result.stdout.strip().splitlines()[0].strip()
+        return float(first_line) / 1024  # nvidia-smi reports MiB
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return None
+
+
+def filter_models_by_resources(models, ram_gb, vram_gb):
+    """Excludes models whose size_gb can't realistically fit this machine's
+    inference pool (VRAM if a GPU was detected, else system RAM), each with
+    RESOURCE_SAFETY_MARGIN headroom. Returns (runnable, excluded) where
+    excluded is a list of (model, reason) pairs - never a silent drop, the
+    caller logs every exclusion.
+    """
+    pool_gb = vram_gb if vram_gb is not None else ram_gb
+    pool_label = "VRAM" if vram_gb is not None else "system RAM"
+    if pool_gb is None:
+        return list(models), []  # couldn't detect anything - don't block the run over it, same policy as check_disk_space
+
+    runnable, excluded = [], []
+    for m in models:
+        needed = m["size_gb"] * RESOURCE_SAFETY_MARGIN
+        if needed > pool_gb:
+            excluded.append((m, f"needs ~{m['size_gb']} GB (~{needed:.1f} GB with headroom), "
+                                 f"only {pool_gb:.1f} GB {pool_label} detected"))
+        else:
+            runnable.append(m)
+    return runnable, excluded
+
+
 def get_installed_model_ids(lms_path):
     """Model IDs already fully present on disk, per `lms ls --json`.
 
@@ -1064,6 +1150,9 @@ def parse_args():
     p.add_argument("--batch-size", type=int, default=DOWNLOAD_BATCH_SIZE)
     p.add_argument("--min-free-gb", type=int, default=DEFAULT_MIN_FREE_GB,
                     help="Safety margin left free after each download (default: %(default)s GB)")
+    p.add_argument("--ignore-resource-limits", action="store_true",
+                    help="Run every requested model even if it doesn't fit detected VRAM/RAM "
+                         "(default: models too big for this machine are auto-excluded)")
     p.add_argument("--keep-on-disk", action="store_true", help="Don't delete models after benchmarking")
     p.add_argument("--skip-download", action="store_true", help="Assume models are already on disk")
     p.add_argument("--dry-run", action="store_true", help="Print the execution plan and exit")
@@ -1176,13 +1265,32 @@ def main():
         if missing:
             log(f"Unknown model id(s) ignored: {', '.join(sorted(missing))}", "WARN")
 
+    ram_gb = detect_total_ram_gb()
+    vram_gb = detect_total_vram_gb()
+    if args.ignore_resource_limits:
+        excluded = []
+    else:
+        models, excluded = filter_models_by_resources(models, ram_gb, vram_gb)
+
+    pool_desc = (f"{vram_gb:.1f} GB VRAM" if vram_gb is not None
+                 else f"{ram_gb:.1f} GB RAM (no GPU detected)" if ram_gb is not None
+                 else "unknown (skipping resource gating)")
+    log(f"Detected inference pool: {pool_desc}")
+    for m, reason in excluded:
+        log(f"[{m['id']}] Excluded - {reason}. Re-run with --ignore-resource-limits to force it anyway.", "WARN")
+
     print("=" * 60)
-    print(f" LM STUDIO BENCHMARK PIPELINE - {len(models)} model(s)")
+    print(f" LM STUDIO BENCHMARK PIPELINE - {len(models)} model(s)"
+          + (f" ({len(excluded)} excluded, doesn't fit this machine)" if excluded else ""))
     print("=" * 60)
 
     if args.dry_run:
         for m in models:
             print(f"  - {m['id']}  (~{m['size_gb']} GB)")
+        if excluded:
+            print(f"\nExcluded ({pool_desc} too small):")
+            for m, reason in excluded:
+                print(f"  - {m['id']}: {reason}")
         print(f"\nBatch size: {args.batch_size} | max_tokens: {args.max_tokens} | context: {args.context_length}")
         return
 

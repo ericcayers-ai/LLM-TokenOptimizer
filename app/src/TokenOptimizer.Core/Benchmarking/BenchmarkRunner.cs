@@ -10,6 +10,12 @@ namespace TokenOptimizer.Core.Benchmarking;
 /// run at a chosen quality tier against a chosen model set. The scoring
 /// pipeline itself stays entirely in Python, untouched - this is a launcher
 /// and a results reader (see BenchmarkSummaryReader), not a reimplementation.
+///
+/// Resource gating (VRAM/RAM vs. each model's size_gb) also lives entirely
+/// in the script (filter_models_by_resources, unconditional - applies even
+/// to an explicit --models list) rather than being duplicated here, for the
+/// same single-source-of-truth reason. A model too big for this machine is
+/// excluded and logged, never silently skipped or force-run.
 /// </summary>
 public sealed class BenchmarkRunner
 {

@@ -27,10 +27,37 @@ __pycache__/
 
 # run_benchmarks.py OUTPUT - per-machine hardware results and run logs, not
 # repo content. Anyone running the pipeline generates their own; committing
-# one person's numbers would misrepresent them as canonical. Re-run with
-# `--rescore` any time to regenerate benchmark_summary.json/csv locally.
+# one person's numbers would misrepresent them as canonical (different
+# CPU/GPU/RAM, different model catalog availability, different day's HF/LM
+# Studio catalog state). Re-run with `--rescore` any time to regenerate
+# benchmark_summary.json/csv locally. Broad globs (not just exact filenames)
+# so a renamed/rotated log or an extra benchmark_<model>.json variant is
+# still caught automatically.
 benchmark_*.json
-benchmark_summary.csv
+benchmark_*.csv
+benchmark_summary.*
+benchmark_results_*
 run_benchmarks*.log
+*.benchmark.log
 BENCHMARK_REPORT.md
-benchmark_results_*.zip
+BENCHMARK_REPORT_*.md
+
+# Generic build/dependency/log noise that shouldn't ever land in a commit,
+# regardless of which subproject (app/, vscode-extension/, root Python)
+# produces it.
+node_modules/
+*.log
+*.tmp
+*.temp
+.env
+.env.*
+!.env.example
+*.msi
+*.vsix
+# ...except the one committed copy Install.bat expects to find next to it
+# for the manual (non-MSI) extension install path - see vscode-extension/Install.bat.
+!vscode-extension/llm-token-optimizer-*.vsix
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
