@@ -310,26 +310,60 @@ public partial class MainViewModel : ViewModelBase
         await RefreshAllAsync();
     }
 
+    [ObservableProperty]
+    public partial double CompanionToolingProgress { get; set; }
+
+    [ObservableProperty]
+    public partial bool IsCompanionToolingInstalling { get; set; }
+
+    [ObservableProperty]
+    public partial double DependencyInstallProgress { get; set; }
+
+    [ObservableProperty]
+    public partial bool IsDependencyInstalling { get; set; }
+
+    /// <summary>Named async best-effort installers run in a fixed, numbered sequence so StatusText can show "N/total: name" live instead of only a final summary.</summary>
+    private (string Name, Func<Task<bool>> Install)[] CompanionToolingSteps => new (string, Func<Task<bool>>)[]
+    {
+        ("Graphify", _companionTooling.InstallGraphifyAsync),
+        ("claude-mem", _companionTooling.InstallClaudeMemAsync),
+        ("headroom", _companionTooling.InstallHeadroomStatuslineAsync),
+        ("rtk", _companionTooling.InstallRtkCliAsync),
+        ("context7", _companionTooling.RegisterContext7McpAsync),
+        ("context-mode", _companionTooling.InstallContextModeMcpAsync),
+        ("caveman", _companionTooling.InstallCavemanPluginAsync),
+        ("claude-md-management", _companionTooling.InstallClaudeMdManagementPluginAsync),
+        ("impeccable", _companionTooling.InstallImpeccableSkillAsync),
+        ("task-observer", _companionTooling.InstallTaskObserverSkillAsync),
+        ("LM Studio support", _companionTooling.InstallLMStudioSupportAsync),
+    };
+
     [RelayCommand]
     private async Task InstallCompanionToolingAsync()
     {
         IsBusy = true;
-        StatusText = "Installing companion tooling...";
+        IsCompanionToolingInstalling = true;
+        CompanionToolingProgress = 0;
         try
         {
-            Log((await _companionTooling.InstallGraphifyAsync()) ? "Graphify: OK" : "Graphify: failed");
-            Log((await _companionTooling.InstallClaudeMemAsync()) ? "claude-mem: OK" : "claude-mem: failed");
-            Log((await _companionTooling.InstallHeadroomStatuslineAsync()) ? "headroom: OK" : "headroom: failed");
-            Log((await _companionTooling.InstallRtkCliAsync()) ? "rtk: OK" : "rtk: failed");
-            Log((await _companionTooling.RegisterContext7McpAsync()) ? "context7: OK" : "context7: failed");
-            Log((await _companionTooling.InstallContextModeMcpAsync()) ? "context-mode: OK" : "context-mode: failed");
-            Log((await _companionTooling.InstallCavemanPluginAsync()) ? "caveman: OK" : "caveman: failed");
-            Log((await _companionTooling.InstallClaudeMdManagementPluginAsync()) ? "claude-md-management: OK" : "claude-md-management: failed");
-            Log((await _companionTooling.InstallTaskObserverSkillAsync()) ? "task-observer: OK" : "task-observer: failed");
-            Log((await _companionTooling.InstallLMStudioSupportAsync()) ? "LM Studio support: OK" : "LM Studio support: not detected");
+            var steps = CompanionToolingSteps;
+            var total = steps.Length + (SelectedProject is not null ? 1 : 0);
+            var stepNumber = 0;
+
+            foreach (var (name, install) in steps)
+            {
+                stepNumber++;
+                StatusText = $"Installing companion tooling... ({stepNumber}/{total}: {name})";
+                CompanionToolingProgress = (double)stepNumber / total;
+                var ok = await install();
+                Log(ok ? $"{name}: OK" : $"{name}: failed");
+            }
 
             if (SelectedProject is not null)
             {
+                stepNumber++;
+                StatusText = $"Installing companion tooling... ({stepNumber}/{total}: code intelligence)";
+                CompanionToolingProgress = (double)stepNumber / total;
                 var codeIntelPlugin = await _companionTooling.InstallCodeIntelligencePluginAsync(SelectedProject.FullPath);
                 Log(codeIntelPlugin is not null ? $"code intelligence: {codeIntelPlugin}" : "code intelligence: not applicable");
             }
@@ -337,11 +371,13 @@ public partial class MainViewModel : ViewModelBase
             var active = await _companionTooling.DescribeActiveCompressionAsync();
             foreach (var line in active) Log($"Compression active: {line}");
 
+            CompanionToolingProgress = 1;
             StatusText = "Ready.";
         }
         finally
         {
             IsBusy = false;
+            IsCompanionToolingInstalling = false;
         }
     }
 
@@ -356,17 +392,27 @@ public partial class MainViewModel : ViewModelBase
         }
 
         IsBusy = true;
+        IsDependencyInstalling = true;
+        DependencyInstallProgress = 0;
         StatusText = "Installing missing dependencies via winget...";
         try
         {
-            var installed = await _wingetInstaller.InstallMissingAsync(missing);
-            foreach (var name in installed) Log($"Installed via winget: {name}");
+            var progress = new Progress<InstallStepProgress>(p =>
+            {
+                StatusText = $"Installing missing dependencies... ({p.StepNumber}/{p.TotalSteps}: {p.Name} - {p.Status})";
+                DependencyInstallProgress = p.TotalSteps == 0 ? 0 : (double)p.StepNumber / p.TotalSteps;
+                if (p.Status is "done" or "failed") Log($"{p.Name}: {p.Status} (winget)");
+            });
+
+            var installed = await _wingetInstaller.InstallMissingAsync(missing, progress);
             if (installed.Count == 0) Log("winget could not install any of the missing dependencies (unavailable or all failed).");
+            DependencyInstallProgress = 1;
             await RefreshAllAsync();
         }
         finally
         {
             IsBusy = false;
+            IsDependencyInstalling = false;
         }
     }
 

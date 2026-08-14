@@ -7,7 +7,7 @@
        side-by-side. -->
   <Package Name="TokenOptimizer"
            Manufacturer="TokenOptimizer"
-           Version="1.2.0"
+           Version="1.3.0"
            UpgradeCode="8f2c1a4e-6b3d-4e7a-9c1f-2d5e8a7b6c4d"
            Language="1033"
            Scope="perUserOrMachine">
@@ -25,6 +25,9 @@
         </Component>
         <Component Id="VsixPayload" Guid="a1b2c3d4-1111-4a5b-8c9d-000000000002">
           <File Id="ExtensionVsix" Source="$(var.VsixDir)\llm-token-optimizer.vsix" KeyPath="yes" />
+        </Component>
+        <Component Id="BenchmarkScript" Guid="a1b2c3d4-1111-4a5b-8c9d-000000000004">
+          <File Id="RunBenchmarksPy" Source="$(var.PublishDir)\run_benchmarks.py" KeyPath="yes" />
         </Component>
       </Directory>
     </StandardDirectory>
@@ -71,6 +74,7 @@
     <Feature Id="MainFeature" Title="TokenOptimizer" Level="1">
       <ComponentRef Id="AppExecutable" />
       <ComponentRef Id="VsixPayload" />
+      <ComponentRef Id="BenchmarkScript" />
       <ComponentRef Id="StartMenuShortcut" />
     </Feature>
 

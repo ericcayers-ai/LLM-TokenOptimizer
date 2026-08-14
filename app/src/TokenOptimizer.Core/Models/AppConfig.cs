@@ -15,6 +15,7 @@ public sealed class AppConfig
     public bool ContextModeMcpInstalled { get; set; }
     public bool Context7McpInstalled { get; set; }
     public bool TaskObserverSkillInstalled { get; set; }
+    public bool ImpeccableSkillInstalled { get; set; }
     public bool AutoSkillsCliInstalled { get; set; }
     public bool RtkCliInstalled { get; set; }
     public bool LMStudioSupportInstalled { get; set; }

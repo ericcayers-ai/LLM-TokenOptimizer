@@ -26,6 +26,11 @@ dotnet publish (Join-Path $root "src\TokenOptimizer.App") -c Release -r win-x64 
     -o $publishDir
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
 
+Write-Host "==> Bundling run_benchmarks.py next to the published exe..." -ForegroundColor Cyan
+$benchmarkScript = Join-Path (Split-Path -Parent $root) "run_benchmarks.py"
+if (-not (Test-Path $benchmarkScript)) { throw "run_benchmarks.py not found at $benchmarkScript" }
+Copy-Item $benchmarkScript -Destination $publishDir -Force
+
 Write-Host "==> Packaging the VS Code extension (.vsix)..." -ForegroundColor Cyan
 Push-Location (Join-Path $root "..\vscode-extension")
 try {

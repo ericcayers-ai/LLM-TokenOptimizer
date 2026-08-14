@@ -251,7 +251,7 @@ public sealed class CompanionToolingInstaller
     // ------------------------------------------------------------------
 
     private static readonly string[] LegacyPlaceholderSkillStubs =
-        ["last30days", "frontend-design", "bencium-controlled-ux-designer", "impeccable"];
+        ["last30days", "frontend-design", "bencium-controlled-ux-designer"];
 
     public async Task InstallClaudePluginsAndSkillsAsync()
     {
@@ -446,6 +446,46 @@ public sealed class CompanionToolingInstaller
 
         var installed = await InstallMarketplacePluginAsync("anthropics/claude-plugins-official", info.Plugin, "claude-plugins-official");
         return installed ? info.Plugin : null;
+    }
+
+    // ------------------------------------------------------------------
+    // IMPECCABLE SKILL (https://github.com/pbakaus/impeccable)
+    // ------------------------------------------------------------------
+
+    public async Task<bool> InstallImpeccableSkillAsync()
+    {
+        var config = await _configStore.LoadAsync();
+        var skillDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "skills", "impeccable");
+        if (config.ImpeccableSkillInstalled && File.Exists(Path.Combine(skillDir, "SKILL.md"))) return true;
+
+        if (!_availability.IsOnPath("git", useCache: true)) return false;
+
+        if (Directory.Exists(skillDir))
+        {
+            // Re-clone cleanly rather than trying to reconcile a partial/stale checkout.
+            var pull = await ExternalCommandRunner.RunAsync("git", "pull --quiet --ff-only", skillDir, timeoutSeconds: 30);
+            if (!pull.Success)
+            {
+                try { Directory.Delete(skillDir, recursive: true); } catch (IOException) { }
+            }
+        }
+
+        if (!Directory.Exists(skillDir))
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(skillDir)!);
+            var clone = await ExternalCommandRunner.RunAsync(
+                "git", $"clone --quiet --depth 1 \"https://github.com/pbakaus/impeccable.git\" \"{skillDir}\"",
+                timeoutSeconds: 60, extraEnvironment: new Dictionary<string, string> { ["GIT_TERMINAL_PROMPT"] = "0" });
+            if (!clone.Success && !Directory.Exists(skillDir)) return false;
+        }
+
+        var installed = File.Exists(Path.Combine(skillDir, "SKILL.md"));
+        if (installed)
+        {
+            config.ImpeccableSkillInstalled = true;
+            await _configStore.SaveAsync(config);
+        }
+        return installed;
     }
 
     // ------------------------------------------------------------------

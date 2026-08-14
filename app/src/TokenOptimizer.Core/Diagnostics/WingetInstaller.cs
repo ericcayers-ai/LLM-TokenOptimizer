@@ -1,5 +1,8 @@
 namespace TokenOptimizer.Core.Diagnostics;
 
+/// <summary>Reports one step of a multi-step best-effort install pass, for live progress UI.</summary>
+public readonly record struct InstallStepProgress(string Name, int StepNumber, int TotalSteps, string Status);
+
 /// <summary>
 /// winget-based dependency install/update, ported from Install-ViaWinget /
 /// Update-ViaWinget / Test-WingetAvailable / Update-AllDependencies /
@@ -78,19 +81,30 @@ public sealed class WingetInstaller
     }
 
     /// <summary>Installs whichever missing dependencies winget can handle, deduped by package id (Node.js/npm collapse to one reinstall).</summary>
-    public async Task<IReadOnlyList<string>> InstallMissingAsync(IEnumerable<string> missingDependencyNames)
+    public async Task<IReadOnlyList<string>> InstallMissingAsync(
+        IEnumerable<string> missingDependencyNames, IProgress<InstallStepProgress>? progress = null)
     {
         var toInstall = missingDependencyNames.Where(InstallMap.ContainsKey).ToList();
         if (toInstall.Count == 0) return Array.Empty<string>();
-        if (!await IsWingetAvailableAsync()) return Array.Empty<string>();
+
+        if (!await IsWingetAvailableAsync())
+        {
+            progress?.Report(new InstallStepProgress("winget", 0, toInstall.Count, "winget is not available"));
+            return Array.Empty<string>();
+        }
 
         var installed = new List<string>();
         var seenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var name in toInstall)
+        var step = 0;
+        var dedupedNames = toInstall.Where(name => seenIds.Add(InstallMap[name].WingetId)).ToList();
+        foreach (var name in dedupedNames)
         {
+            step++;
             var (wingetId, friendlyName) = InstallMap[name];
-            if (!seenIds.Add(wingetId)) continue;
-            if (await InstallAsync(wingetId, friendlyName)) installed.Add(friendlyName);
+            progress?.Report(new InstallStepProgress(friendlyName, step, dedupedNames.Count, "installing..."));
+            var ok = await InstallAsync(wingetId, friendlyName);
+            if (ok) installed.Add(friendlyName);
+            progress?.Report(new InstallStepProgress(friendlyName, step, dedupedNames.Count, ok ? "done" : "failed"));
         }
 
         return installed;
