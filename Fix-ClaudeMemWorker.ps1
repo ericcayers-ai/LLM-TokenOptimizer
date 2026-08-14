@@ -1,4 +1,7 @@
 <#
+.LEGACY
+    Ported into the C# app as TokenOptimizer.Providers.Claude.ClaudeMemRepair,
+    which runs this repair automatically. Kept standalone for manual/offline use.
 .SYNOPSIS
     Fix-ClaudeMemWorker - one-shot repair for claude-mem's stuck-worker bug.
 .DESCRIPTION

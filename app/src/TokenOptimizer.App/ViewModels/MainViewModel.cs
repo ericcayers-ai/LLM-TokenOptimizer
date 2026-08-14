@@ -292,7 +292,7 @@ public partial class MainViewModel : ViewModelBase
 
                 var options = new SessionLaunchOptions(
                     candidate.FullPath,
-                    string.IsNullOrWhiteSpace(ModelOverride) ? null : ModelOverride,
+                    await ResolveEffectiveModelAsync(provider),
                     IsolateClaudeConfig,
                     Enum.Parse<SessionResumeMode>(SelectedResumeModeName));
                 var handle = await provider.LaunchSessionAsync(options);
@@ -410,12 +410,32 @@ public partial class MainViewModel : ViewModelBase
         }
 
         var best = await _benchmarkReader.RefreshBestLocalModelAsync(summaryPath);
+        var config = await _configStore.LoadAsync();
+        var overrideNote = config.BestLocalModelIsManualOverride
+            ? $" (manual pick in effect: {config.BestLocalModelId} - composite_score auto-pick shown below is informational only)"
+            : "";
         BestLocalModelText = best is null
             ? "benchmark_summary.json has no successful benchmark rows."
             : $"Best local model: {best.Model} ({best.AvgTokensPerSecond:F1} tok/s" +
-              (best.CompositeScore is { } cs ? $", composite={cs:F3}" : "") + ")";
+              (best.CompositeScore is { } cs ? $", composite={cs:F3}" : "") + ")" + overrideNote;
 
         RefreshLeaderboard(summaryPath);
+    }
+
+    /// <summary>
+    /// Any explicit ModelOverride text wins. Otherwise, for the local LM
+    /// Studio adapter, fall back to the configured local-model pick
+    /// (manual override or the auto composite_score winner) so selecting
+    /// "LM Studio (local)" in the provider dropdown actually loads a model
+    /// instead of silently starting the server with nothing loaded.
+    /// </summary>
+    private async Task<string?> ResolveEffectiveModelAsync(IProviderAdapter provider)
+    {
+        if (!string.IsNullOrWhiteSpace(ModelOverride)) return ModelOverride;
+        if (provider != _lmStudioAdapter) return null;
+
+        var config = await _configStore.LoadAsync();
+        return config.BestLocalModelId;
     }
 
     private void RefreshLeaderboard(string? summaryPath)
@@ -734,7 +754,7 @@ public partial class MainViewModel : ViewModelBase
 
             var options = new SessionLaunchOptions(
                 SelectedProject.FullPath,
-                string.IsNullOrWhiteSpace(ModelOverride) ? null : ModelOverride,
+                await ResolveEffectiveModelAsync(provider),
                 IsolateClaudeConfig,
                 Enum.Parse<SessionResumeMode>(SelectedResumeModeName));
 

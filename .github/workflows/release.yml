@@ -1,0 +1,41 @@
+name: Release MSI
+
+on:
+  push:
+    tags:
+      - "app-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-msi:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install WiX 5.0.2
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add WixToolset.UI.wixext/5.0.2 WixToolset.Util.wixext/5.0.2
+        working-directory: app/installer
+
+      - name: Build TokenOptimizer.msi
+        run: ./build-installer.ps1
+        working-directory: app/installer
+
+      - name: Upload MSI to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: app/installer/TokenOptimizer.msi
+          fail_on_unmatched_files: true

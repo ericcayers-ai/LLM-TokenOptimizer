@@ -1,7 +1,7 @@
 {
   "name": "llm-token-optimizer",
   "displayName": "LLM-TokenOptimizer",
-  "description": "Thin VS Code wrapper around LLM-TokenOptimizer.ps1 - launches Graphify + Claude Code project/session windows from inside VS Code instead of a standalone console.",
+  "description": "VS Code companion for the TokenOptimizer ecosystem - opens the v6.0 C# app (TokenOptimizer.App.exe) via 'Open TokenOptimizer App', or falls back to the legacy LLM-TokenOptimizer.ps1 launcher for Graphify + Claude Code project/session windows.",
   "version": "5.9.2",
   "publisher": "local",
   "engines": {

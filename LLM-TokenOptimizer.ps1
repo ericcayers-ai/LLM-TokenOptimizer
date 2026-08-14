@@ -1,5 +1,9 @@
 #Requires -Version 5.1
 <#
+.LEGACY
+    Superseded by the v6.0 C# app in app/ (see root README.md). Kept for
+    reference/rollback; new installs should use app/installer/TokenOptimizer.msi
+    or `dotnet run --project app/src/TokenOptimizer.App` instead.
 .SYNOPSIS
     LLM-TokenOptimizer - Production Quality v4.0
 .DESCRIPTION

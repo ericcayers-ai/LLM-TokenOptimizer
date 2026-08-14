@@ -31,4 +31,12 @@ public sealed class AppConfig
     public string? BestLocalModelId { get; set; }
     public double? BestLocalModelTokensPerSecond { get; set; }
     public string? BestLocalModelUpdatedUtc { get; set; }
+
+    /// <summary>
+    /// When true, RefreshBestLocalModelAsync's automatic composite_score pick
+    /// won't overwrite BestLocalModelId - set after a human deliberately
+    /// picks a model (e.g. from BENCHMARK_REPORT.md's human quality review,
+    /// which the composite_score heuristic can disagree with).
+    /// </summary>
+    public bool BestLocalModelIsManualOverride { get; set; }
 }

@@ -1,8 +1,53 @@
 # LLM-TokenOptimizer
 
-A self-bootstrapping, production-quality PowerShell launcher for Windows that indexes a local codebase with [Graphify](https://graphify.com), installs matching AI skills with `autoskills`, and launches [Claude Code](https://claude.ai) with real token-saving tooling installed directly — [Caveman](https://github.com/JuliusBrussee/caveman) for terser model output and [RTK](https://github.com/rtk-ai/rtk) for terminal/tool-output compression — all with zero manual setup, on a completely clean Windows install.
+**TokenOptimizer** is a Windows desktop app (C# / Avalonia, `app/`) that indexes a local codebase with [Graphify](https://graphify.com), installs matching AI skills with `autoskills`, and launches [Claude Code](https://claude.ai) with real token-saving tooling installed directly — [Caveman](https://github.com/JuliusBrussee/caveman) for terser model output and [RTK](https://github.com/rtk-ai/rtk) for terminal/tool-output compression — with an automatic fallback chain to Antigravity, Groq, or a local LM Studio model when Claude Code itself is unavailable.
 
-As of v5.5, this no longer routes through [OmniRoute](https://github.com/diegosouzapw/OmniRoute) or any other third-party gateway. Claude Code launches natively, on your own account, with its own default models. See AUDIT.md Finding 0 and Finding 10 for why.
+## Install (fastest path)
+
+Download the latest `TokenOptimizer.msi` from [Releases](../../releases) and run it. That's it — no PowerShell, no manual dependency installs. The installer bundles the app itself, the VS Code extension, and the WiX-built MSI takes care of Start Menu shortcuts.
+
+## Build from source
+
+Prerequisites:
+- **.NET 10 SDK** ([dotnet.microsoft.com](https://dotnet.microsoft.com/download)) — the app and its projects all target `net10.0`.
+- **Node.js + npm** (only needed to build the VS Code extension / MSI, not to run `dotnet build`).
+
+```powershell
+cd app
+dotnet build TokenOptimizer.slnx          # build everything
+dotnet run --project src\TokenOptimizer.App   # run the app directly
+```
+
+To build the installable `TokenOptimizer.msi` yourself (what CI/Releases produce):
+
+```powershell
+# one-time setup
+dotnet tool install --global wix --version 5.0.2
+cd app\installer
+wix extension add WixToolset.UI.wixext/5.0.2 WixToolset.Util.wixext/5.0.2
+
+# build the MSI (publishes the app self-contained, packages the VS Code extension, then packages the MSI)
+.\build-installer.ps1
+```
+
+WiX is pinned to **5.0.2** deliberately — v6+ requires accepting a paid-tier EULA for some usage; 5.0.2 predates that and is free. The output lands at `app\installer\TokenOptimizer.msi`.
+
+## How the pieces fit together
+
+| Piece | What it is | Where |
+|---|---|---|
+| **TokenOptimizer.App** | The current product — an Avalonia desktop app with providers for Claude Code, Antigravity, Groq, Codex/Cursor handoff, and a local LM Studio model, all behind one fallback chain. | `app/src/TokenOptimizer.App` |
+| **VS Code extension** | Companion sidebar/chat-participant that launches `TokenOptimizer.App.exe` (falls back to the legacy `.ps1` if the app isn't built/found). | `vscode-extension/` |
+| **`run_benchmarks.py`** and friends | The tooling that produces `benchmark_summary.json`, which the app reads to pick/offer a local LM Studio model. Dev/maintenance tooling, not something a normal user runs. | repo root |
+| **`LLM-TokenOptimizer.ps1`** | The original v5.x PowerShell launcher, superseded by the C# app in v6.0. Kept for reference/rollback, not the recommended entry point anymore. | repo root |
+
+See [`AUDIT.md`](AUDIT.md) — that document covers v5.0–v5.5 of the legacy PowerShell launcher and predates the v6.0 app; treat it as project history, not current-state documentation.
+
+---
+
+## Legacy: the PowerShell launcher (pre-v6.0)
+
+Everything below this line describes `LLM-TokenOptimizer.ps1`, the original self-bootstrapping launcher that the C# app above replaced. It still works and is kept for reference, but new users should use the MSI/app path above instead.
 
 **Ensure you run this command in PowerShell before first use:**
 

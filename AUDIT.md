@@ -1,3 +1,5 @@
+> **Legacy document.** This audits the PowerShell launcher (`LLM-TokenOptimizer.ps1`), which v6.0's C# app (`app/`) superseded as the product. Kept as project history only — see the root [README.md](README.md) for current install/build instructions.
+
 # LLM-TokenOptimizer — Tooling Audit (v5.0 - v5.5)
 
 Written alongside a pass that added quota auto-retry and multi-session

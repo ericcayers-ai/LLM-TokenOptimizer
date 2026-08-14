@@ -71,10 +71,18 @@ public sealed class BenchmarkSummaryReader
             : candidates.OrderByDescending(r => r.AvgTokensPerSecond).First();
 
         var config = await _configStore.LoadAsync();
-        config.BestLocalModelId = best.Model;
-        config.BestLocalModelTokensPerSecond = best.AvgTokensPerSecond;
-        config.BestLocalModelUpdatedUtc = DateTimeOffset.UtcNow.ToString("o");
-        await _configStore.SaveAsync(config);
+        // composite_score is a syntax+keyword heuristic, not a correctness
+        // check - it has been observed to disagree sharply with human review
+        // (e.g. picking a model with runtime-breaking bugs over one that
+        // reliably ships working code). Once a human has deliberately picked
+        // a model, don't let this automatic re-scan silently overwrite it.
+        if (!config.BestLocalModelIsManualOverride)
+        {
+            config.BestLocalModelId = best.Model;
+            config.BestLocalModelTokensPerSecond = best.AvgTokensPerSecond;
+            config.BestLocalModelUpdatedUtc = DateTimeOffset.UtcNow.ToString("o");
+            await _configStore.SaveAsync(config);
+        }
 
         return best;
     }
