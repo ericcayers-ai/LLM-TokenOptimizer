@@ -63,6 +63,11 @@
         "command": "llmTokenOptimizer.openDashboard",
         "title": "LLM-TokenOptimizer: Open Dashboard",
         "icon": "$(graph-line)"
+      },
+      {
+        "command": "llmTokenOptimizer.openApp",
+        "title": "LLM-TokenOptimizer: Open TokenOptimizer App (New)",
+        "icon": "$(window)"
       }
     ],
     "viewsContainers": {
@@ -137,6 +142,10 @@
         {
           "command": "llmTokenOptimizer.openDashboard",
           "when": "false"
+        },
+        {
+          "command": "llmTokenOptimizer.openApp",
+          "when": "true"
         }
       ]
     },
@@ -181,6 +190,11 @@
           "type": "boolean",
           "default": false,
           "description": "Forward -VerboseMode to the script."
+        },
+        "llmTokenOptimizer.appExecutablePath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to TokenOptimizer.App.exe (the new C# ecosystem app). Leave blank to auto-detect a build under this repo's app/ folder."
         }
       }
     }

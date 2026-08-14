@@ -116,7 +116,130 @@ MODEL_LIST = [
     {"id": "nvidia/nemotron-3-nano",        "size_gb": 18},
     {"id": "nvidia/nemotron-3.5-lightning", "size_gb": 18},
     {"id": "nvidia/nemotron-3-super",       "size_gb": 70},
+    # --- Round 2: 10 more candidates, researched 2026-08-13 (SOTA / last-30-days
+    # sweep across HF trending + coding-model roundups). Flagship-scale releases
+    # from this window (Kimi K2.7-Code ~325GB+ even at 2-bit, GLM-5.1/5.2
+    # ~400GB+, DeepSeek-V4-Pro 1.6T total) are excluded outright - they don't
+    # fit this machine's 8GB VRAM / ~94GB free disk under any quant. IDs are
+    # full Hugging Face GGUF URLs rather than guessed catalog slugs (`lms get`
+    # accepts either per --help) specifically because a guessed catalog slug
+    # already failed live once in this list (zai-org/glm-4.7-flash, see
+    # benchmark_summary.json). Sizes are approximate Q4_K_M estimates from
+    # each repo's own docs/README, same "best effort" caveat as round 1 -
+    # a bad resolution just skips that one model (see download_model).
+    {"id": "https://huggingface.co/lmstudio-community/Muse-Glimmer-30B-GGUF",         "size_gb": 18},
+    {"id": "https://huggingface.co/poolside/Laguna-XS-2.1-GGUF",                       "size_gb": 18},
+    {"id": "https://huggingface.co/tiiuae/Falcon-H1R-7B-GGUF",                         "size_gb": 5},
+    {"id": "https://huggingface.co/unsloth/gemma-4-12b-it-GGUF",                       "size_gb": 8},
+    {"id": "https://huggingface.co/Qwen/Qwen3-Coder-Next-GGUF",                        "size_gb": 48},
+    {"id": "https://huggingface.co/unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF",   "size_gb": 14},
+    {"id": "https://huggingface.co/mistralai/Ministral-3-14B-Instruct-2512-GGUF",      "size_gb": 9},
+    {"id": "https://huggingface.co/mistralai/Ministral-3-8B-Instruct-2512-GGUF",       "size_gb": 5},
+    {"id": "https://huggingface.co/unsloth/Seed-Coder-8B-Instruct-GGUF",               "size_gb": 5},
+    {"id": "https://huggingface.co/ibm-granite/granite-4.1-8b-GGUF",                   "size_gb": 5},
+    # Added on request 2026-08-14: PrismML's ternary (1.71-bit) compression of
+    # Qwen3.6-27B - a 27B model at ~5.9GB (PQ2_0 quant + vision mmproj
+    # companion file, rounded up). Directly comparable to qwen/qwen3.6-27b
+    # (same base model, full precision) - a real test of whether extreme
+    # quantization holds up on these coding tasks, not just PrismML's claimed
+    # 94.6% FP16-quality retention on their own benchmark suite.
+    {"id": "https://huggingface.co/prism-ml/Ternary-Bonsai-27B-gguf",                  "size_gb": 8},
 ]
+
+# ----------------------------------------------------------------------------
+# Per-model generation config - researched 2026-08-13 to replace the single
+# global (max_tokens=4096, context=8192, temperature=0.2) config that badly
+# penalized reasoning/"thinking" models in the first two runs: qwen3.6-35b-a3b,
+# qwen3.6-27b, glm-4.6v-flash, and nemotron-3.5-lightning all burned their
+# entire 4096-token budget on hidden <think> reasoning and scored near-0 on
+# manual quality review, while non-reasoning models with the SAME budget
+# produced full working code. Two independent fixes are applied per model:
+#   1. "disable_thinking" - when True, pass chat_template_kwargs:
+#      {"enable_thinking": false} via extra_body. This is llama.cpp's actual
+#      toggle (LM Studio's backend) confirmed against the llama.cpp server
+#      README and Qwen3.6's own docs (https://unsloth.ai/docs/models/qwen3.6).
+#      Nemotron 3.x also exposes a reasoning toggle per its own LM Studio
+#      model page (nemotron_v3 reasoning parser). This is best-effort per
+#      model - if a chat template doesn't recognize the kwarg, it's silently
+#      ignored, which is why (2) exists as a safety net regardless.
+#   2. Bigger "max_tokens" + "context_length" - so a model that reasons
+#      anyway (kwarg ignored, or a model with no known toggle at all, e.g.
+#      Falcon-H1R-7B, Muse-Glimmer-30B, Laguna-XS-2.1) still has room to
+#      finish reasoning AND emit a complete answer instead of truncating.
+# temperature/top_p are vendor/community-recommended values where sourced
+# (Qwen3.6 thinking-mode: unsloth.ai/docs/models/qwen3.6 and HF discussion
+# Qwen/Qwen3.6-27B#10; Gemma 4: ai.google.dev/gemma/docs/core/model_card_4;
+# Devstral Small 2 & Ministral 3 Instruct: their respective HF model cards,
+# both recommend low temperature ~0.1-0.15 for deterministic agentic/coding
+# output; Falcon-H1R-7B: falcon-lm.github.io/blog/falcon-h1r-7b). Where no
+# vendor guidance was found (Muse Glimmer, Laguna XS, Seed-Coder, Granite),
+# a conservative code-generation default (temp 0.7) is used instead of
+# guessing something more specific.
+DEFAULT_MODEL_CONFIG = {
+    "temperature": 0.3, "top_p": None, "max_tokens": DEFAULT_MAX_TOKENS,
+    "context_length": 8192, "disable_thinking": False,
+}
+MODEL_CONFIG = {
+    # --- Reasoning models: disable thinking via chat template + big fallback budget ---
+    "qwen/qwen3.6-35b-a3b": {"temperature": 0.6, "top_p": 0.95, "max_tokens": 12000, "context_length": 32768, "disable_thinking": True},
+    "qwen/qwen3.6-27b": {"temperature": 0.6, "top_p": 0.95, "max_tokens": 12000, "context_length": 32768, "disable_thinking": True},
+    # Ternary Bonsai 27B: a compressed Qwen3.6-27B, same reasoning-model
+    # config as the full-precision original since it shares the base model's
+    # chat template and thinking behavior.
+    "https://huggingface.co/prism-ml/Ternary-Bonsai-27B-gguf": {"temperature": 0.6, "top_p": 0.95, "max_tokens": 12000, "context_length": 32768, "disable_thinking": True},
+    "zai-org/glm-4.6v-flash": {"temperature": 0.6, "top_p": 0.95, "max_tokens": 10000, "context_length": 16384, "disable_thinking": True},
+    "nvidia/nemotron-3-nano": {"temperature": 0.6, "top_p": 0.95, "max_tokens": 10000, "context_length": 16384, "disable_thinking": True},
+    "nvidia/nemotron-3.5-lightning": {"temperature": 0.6, "top_p": 0.95, "max_tokens": 10000, "context_length": 16384, "disable_thinking": True},
+    # Falcon-H1R-7B: confirmed reasoning model (the "R"), no documented
+    # disable-thinking toggle found - budget alone is the mitigation.
+    "https://huggingface.co/tiiuae/Falcon-H1R-7B-GGUF": {"temperature": 0.6, "top_p": 0.95, "max_tokens": 12000, "context_length": 16384, "disable_thinking": False},
+    # --- Confirmed reasoning models where vendor guidance explicitly wants
+    # thinking ON (not suppressed) for coding tasks - so disable_thinking
+    # stays False here and the mitigation is budget, same lesson qwen3.6-27b's
+    # turnaround taught: context_length was the actual fix there, not
+    # suppressing reasoning, so both get the same generous 32768 context. ---
+    # Muse Glimmer: Meta's own eval methodology uses "high" reasoning
+    # strength + temp=1.0/top_p=0.95/top_k=64 for coding/agentic benchmarks
+    # (research.meta.ai/static/muse-glimmer-methodology). No llama.cpp kwarg
+    # confirmed for setting reasoning "strength" specifically (unlike
+    # gpt-oss's reasoning_effort), so leaving it at its default and relying
+    # on budget headroom.
+    "https://huggingface.co/lmstudio-community/Muse-Glimmer-30B-GGUF": {"temperature": 1.0, "top_p": 0.95, "max_tokens": 14000, "context_length": 32768, "disable_thinking": False},
+    # Laguna XS 2.1: Poolside's own benchmarking config runs with thinking
+    # mode enabled, temp=1.0, top_p=1.0, top_k=20 (poolside.ai/blog/introducing-laguna-xs-2-1).
+    "https://huggingface.co/poolside/Laguna-XS-2.1-GGUF": {"temperature": 1.0, "top_p": 1.0, "max_tokens": 14000, "context_length": 32768, "disable_thinking": False},
+    # --- Non-reasoning models: moderate budget increase (4096 -> 6-8K) for
+    # headroom, vendor-recommended sampling where sourced ---
+    "qwen/qwen3-coder-30b": {"temperature": 0.7, "top_p": 0.8, "max_tokens": 6000, "context_length": 16384, "disable_thinking": False},
+    "qwen/qwen3-vl-8b": {"temperature": 0.7, "top_p": 0.8, "max_tokens": 6000, "context_length": 16384, "disable_thinking": False},
+    "qwen/qwen2.5-coder-7b": {"temperature": 0.7, "top_p": 0.8, "max_tokens": 6000, "context_length": 16384, "disable_thinking": False},
+    # Qwen3-Coder-Next (80B-A3B MoE) has DIFFERENT vendor-recommended sampling
+    # than the smaller Qwen3-Coder-30B - temp=1.0/top_p=0.95/top_k=40, not
+    # 0.7/0.8/20 (confirmed via multiple sources incl. LM Studio community
+    # presets specific to this model).
+    "https://huggingface.co/Qwen/Qwen3-Coder-Next-GGUF": {"temperature": 1.0, "top_p": 0.95, "max_tokens": 8000, "context_length": 16384, "disable_thinking": False},
+    "openai/gpt-oss-20b": {"temperature": 0.7, "top_p": None, "max_tokens": 6000, "context_length": 16384, "disable_thinking": False},
+    "kwaipilot/kat-dev": {"temperature": 0.3, "top_p": None, "max_tokens": 6000, "context_length": 16384, "disable_thinking": False},
+    "google/gemma-4-26b-a4b": {"temperature": 1.0, "top_p": 0.95, "max_tokens": 6000, "context_length": 16384, "disable_thinking": False},
+    "https://huggingface.co/unsloth/gemma-4-12b-it-GGUF": {"temperature": 1.0, "top_p": 0.95, "max_tokens": 6000, "context_length": 16384, "disable_thinking": False},
+    "https://huggingface.co/unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF": {"temperature": 0.15, "top_p": None, "max_tokens": 8000, "context_length": 16384, "disable_thinking": False},
+    "https://huggingface.co/mistralai/Ministral-3-14B-Instruct-2512-GGUF": {"temperature": 0.1, "top_p": None, "max_tokens": 6000, "context_length": 16384, "disable_thinking": False},
+    "https://huggingface.co/mistralai/Ministral-3-8B-Instruct-2512-GGUF": {"temperature": 0.1, "top_p": None, "max_tokens": 6000, "context_length": 16384, "disable_thinking": False},
+    # Seed-Coder-8B-Instruct: official ByteDance-Seed vLLM example uses
+    # temp=0.6, top_p=0.8 (github.com/ByteDance-Seed/Seed-Coder). Their
+    # example max_tokens=512 is clearly just a short-demo value, not a real
+    # constraint - kept at 6000 here for these longer coding tasks.
+    "https://huggingface.co/unsloth/Seed-Coder-8B-Instruct-GGUF": {"temperature": 0.6, "top_p": 0.8, "max_tokens": 6000, "context_length": 16384, "disable_thinking": False},
+    # Granite 4.1: NOT a reasoning model - IBM's own docs are explicit that
+    # there are no extended thinking chains or CoT toggles in this family,
+    # and recommend temperature=0 (deterministic) for most inferencing tasks
+    # (research.ibm.com/blog/granite-4-1-ai-foundation-models).
+    "https://huggingface.co/ibm-granite/granite-4.1-8b-GGUF": {"temperature": 0.0, "top_p": None, "max_tokens": 6000, "context_length": 16384, "disable_thinking": False},
+}
+
+
+def get_model_config(model_id):
+    return {**DEFAULT_MODEL_CONFIG, **MODEL_CONFIG.get(model_id, {})}
 
 # Tailored test prompts derived from your GitHub architecture (Neiro & Restoration-Workflow)
 # Each "checks" list is a SWE-bench-style rubric for that prompt: regexes
@@ -462,24 +585,69 @@ def run_lms_download(lms_path, model_id, timeout, stall_seconds=180, grace_secon
             return False, f"TIMEOUT after {timeout}s"
 
 
+def resolve_downloaded_model_key(lms_path, model_id, ids_before):
+    """After downloading model_id, find the actual catalog modelKey now on
+    disk so load_model()/the OpenAI API get something they can use.
+
+    Confirmed live: `lms get -y <full-hf-url>` downloads fine (its --help
+    text says it accepts a full HF URL), but `lms load <full-hf-url>` fails
+    with "Model not found" - only `lms get` accepts a URL, `lms load` and
+    the OpenAI-compat server need the resolved catalog key. Every URL-sourced
+    model in MODEL_LIST (round 2) downloaded successfully then failed to
+    load for exactly this reason, on every single attempt - a run-invalidating
+    bug, not a flaky one, since retrying changes nothing. Each failure then
+    cascaded into a mis-targeted purge (see resolve_disk_path) that left
+    ~50GB of orphaned downloads across the run.
+
+    If model_id isn't a URL, it's already a catalog key - return unchanged
+    (this is round 1's existing, working behavior).
+    """
+    if not model_id.startswith("http"):
+        return model_id
+    all_ids = get_installed_model_ids(lms_path)
+    new_ids = all_ids - ids_before
+    if len(new_ids) == 1:
+        return next(iter(new_ids))
+    if new_ids:
+        # Ambiguous - shouldn't happen at DOWNLOAD_BATCH_SIZE=1. Best-effort.
+        log(f"[{model_id}] Multiple new model keys appeared after download "
+            f"({sorted(new_ids)}) - resolution is ambiguous, picking one.", "WARN")
+        return sorted(new_ids)[-1]
+    # Nothing NEW appeared - covers the case where the model was already
+    # fully registered before ids_before was even snapshotted (e.g. left
+    # over from an earlier model in this same run). Fall back to a token
+    # match against every currently-installed key, same approach
+    # resolve_disk_path uses to disambiguate by name.
+    id_tokens = [t for t in re.split(r"[/\-_. :]+", model_id.lower())
+                 if len(t) > 2 and t not in ("http", "https", "com", "huggingface", "gguf")]
+    token_matches = [k for k in all_ids if any(t in k.lower() for t in id_tokens)]
+    if len(token_matches) == 1:
+        return token_matches[0]
+    return model_id  # resolution failed; load will fail loudly, same as before this fix
+
+
 def download_model(lms_path, model, installed_ids=None, min_free_gb=DEFAULT_MIN_FREE_GB):
     model_id = model["id"]
+    ids_before = get_installed_model_ids(lms_path)
     if installed_ids and model_id in installed_ids:
         log(f"[{model_id}] Already on disk - skipping download.")
-        return model_id, True, ""
+        return model_id, True, "", model_id
 
     ok_space, free_gb = check_disk_space(model["size_gb"], min_free_gb)
     if not ok_space:
         msg = (f"Skipping download - only {free_gb:.1f} GB free, need ~"
                f"{model['size_gb'] + min_free_gb} GB (model + safety margin)")
         log(f"[{model_id}] {msg}", "WARN")
-        return model_id, False, msg
+        return model_id, False, msg, model_id
 
     log(f"[{model_id}] Downloading (~{model['size_gb']} GB estimated)...")
     ok, out = run_lms_download(lms_path, model_id, timeout=3 * 3600)
     if ok:
         log(f"[{model_id}] Download complete.")
-        return model_id, True, ""
+        resolved = resolve_downloaded_model_key(lms_path, model_id, ids_before)
+        if resolved != model_id:
+            log(f"[{model_id}] Resolved to catalog key: {resolved}")
+        return model_id, True, "", resolved
 
     # `lms get`'s exit code can lie: confirmed live under this script's own
     # nohup/background/log-redirected invocation, three models (qwen3-vl-8b,
@@ -487,14 +655,15 @@ def download_model(lms_path, model, installed_ids=None, min_free_gb=DEFAULT_MIN_
     # up fully downloaded and registered anyway - likely a progress-bar/TTY
     # detection quirk when stdout isn't a real console. Don't trust the exit
     # code alone; check the model registry before declaring failure.
-    if model_id in get_installed_model_ids(lms_path):
+    resolved = resolve_downloaded_model_key(lms_path, model_id, ids_before)
+    if resolved != model_id or model_id in get_installed_model_ids(lms_path):
         log(f"[{model_id}] Exit code indicated failure but the model is fully "
             f"registered - treating as success.")
-        return model_id, True, ""
+        return model_id, True, "", resolved
 
     log(f"[{model_id}] Download failed: {out.strip()[-500:]}", "ERROR")
     _cleanup_partial_download(model_id)
-    return model_id, False, out.strip()[-500:]
+    return model_id, False, out.strip()[-500:], model_id
 
 
 def _cleanup_partial_download(model_id):
@@ -596,10 +765,25 @@ def resolve_disk_path(lms_path, model_id):
             continue
         dir_totals[gguf.parent] = dir_totals.get(gguf.parent, 0) + size
     tolerance = 0.05  # slack for rounding
-    for directory, total in dir_totals.items():
-        if abs(total - target_size) / target_size <= tolerance:
-            return directory
-    return None
+    size_matches = [d for d, total in dir_totals.items() if abs(total - target_size) / target_size <= tolerance]
+    if not size_matches:
+        return None
+    if len(size_matches) == 1:
+        return size_matches[0]
+    # Multiple directories landed within the size tolerance of each other -
+    # confirmed live: a failed qwen3-coder-30b load triggered a purge that
+    # matched Muse-Glimmer-30B-GGUF's directory by size coincidence alone and
+    # deleted ~18GB of the WRONG model, leaving the actual target orphaned on
+    # disk (repeated across multiple models, ~50GB of accumulated orphans).
+    # Disambiguate using the same token-match approach _cleanup_partial_download
+    # already uses for `.part` files - only trust a size match whose directory
+    # path also contains a token from the model id/key.
+    id_tokens = [t for t in re.split(r"[/\-_. :]+", model_id.lower())
+                 if len(t) > 2 and t not in ("http", "https", "com", "huggingface", "gguf")]
+    token_matches = [d for d in size_matches if any(t in str(d).lower() for t in id_tokens)]
+    if len(token_matches) == 1:
+        return token_matches[0]
+    return None  # still ambiguous - leave everything alone rather than guess wrong
 
 
 def delete_model_from_disk(lms_path, model_id):
@@ -619,11 +803,14 @@ def delete_model_from_disk(lms_path, model_id):
 # Benchmarking
 # ----------------------------------------------------------------------------
 
-def run_benchmarks_for_model(model_id, max_tokens):
+def run_benchmarks_for_model(model_id, config):
     client = OpenAI(base_url=LMS_BASE_URL, api_key="not-needed")
     results = []
+    max_tokens = config["max_tokens"]
 
-    log(f"[{model_id}] Running {len(TEST_PROMPTS)} architectural benchmarks...")
+    log(f"[{model_id}] Running {len(TEST_PROMPTS)} architectural benchmarks "
+        f"(temperature={config['temperature']}, max_tokens={max_tokens}, "
+        f"disable_thinking={config['disable_thinking']})...")
 
     for test in TEST_PROMPTS:
         log(f"[{model_id}]  -> {test['name']}")
@@ -637,14 +824,24 @@ def run_benchmarks_for_model(model_id, max_tokens):
         full_response_parts = []
 
         try:
-            stream = client.chat.completions.create(
+            extra_body = {}
+            if config["disable_thinking"]:
+                # llama.cpp (LM Studio's backend) reads this via chat_template_kwargs;
+                # ignored harmlessly by chat templates that don't recognize it, which
+                # is why a generous max_tokens fallback is still set regardless.
+                extra_body["chat_template_kwargs"] = {"enable_thinking": False}
+            create_kwargs = dict(
                 model=model_id,
                 messages=messages,
-                temperature=0.2,
+                temperature=config["temperature"],
                 max_tokens=max_tokens,
                 stream=True,
                 timeout=300,
+                extra_body=extra_body,
             )
+            if config["top_p"] is not None:
+                create_kwargs["top_p"] = config["top_p"]
+            stream = client.chat.completions.create(**create_kwargs)
             # Live token/heartbeat output: previously nothing printed between
             # "-> test name" and the final TTFT/speed summary line, which for
             # a slow model (confirmed live: kat-dev took 35-40 minutes on a
@@ -903,11 +1100,13 @@ def main():
             log(f"### BATCH {i // args.batch_size + 1} ({i + 1}-{i + len(batch)}/{len(models)}): {ids} ###")
 
             download_ok = {m["id"]: True for m in batch}
+            resolved_keys = {m["id"]: m["id"] for m in batch}
             if not args.skip_download:
                 with ThreadPoolExecutor(max_workers=len(batch)) as executor:
                     dl = lambda m: download_model(lms_path, m, installed_ids, args.min_free_gb)
-                    for model_id, ok, err in executor.map(dl, batch):
+                    for model_id, ok, err, resolved in executor.map(dl, batch):
                         download_ok[model_id] = ok
+                        resolved_keys[model_id] = resolved
                         if not ok:
                             summary.append({"model": model_id, "stage": "download", "status": "failed", "detail": err})
 
@@ -916,16 +1115,30 @@ def main():
                 if not download_ok.get(model_id):
                     log(f"[{model_id}] Skipping (download did not succeed)", "WARN")
                     continue
+                # The catalog key `lms load`/the inference API actually recognize -
+                # for round-1 catalog ids this is just model_id unchanged; for
+                # round-2 HF-URL ids it's the resolved key from download_model()
+                # (see resolve_downloaded_model_key - `lms load <url>` doesn't work).
+                serve_key = resolved_keys.get(model_id, model_id)
+
+                # Per-model config (MODEL_CONFIG) is the default; explicit --max-tokens/
+                # --context-length CLI flags (detected by differing from the argparse
+                # defaults) override it uniformly, e.g. for manual debugging of one model.
+                config = get_model_config(model_id)
+                if args.max_tokens != DEFAULT_MAX_TOKENS:
+                    config["max_tokens"] = args.max_tokens
+                if args.context_length != 8192:
+                    config["context_length"] = args.context_length
 
                 unload_all(lms_path)
-                loaded, load_err = load_model(lms_path, model_id, args.context_length)
+                loaded, load_err = load_model(lms_path, serve_key, config["context_length"])
                 if not loaded:
                     summary.append({"model": model_id, "stage": "load", "status": "failed", "detail": load_err})
                     unload_all(lms_path)
                     continue
 
                 try:
-                    results = run_benchmarks_for_model(model_id, args.max_tokens)
+                    results = run_benchmarks_for_model(serve_key, config)
                     ok_count = sum(1 for r in results if r["status"] == "ok")
                     # resolve_rate mirrors SWE-bench's headline "% resolved" -
                     # the average capability_score (syntax-valid AND rubric-
@@ -934,7 +1147,7 @@ def main():
                         sum(r.get("capability_score", 0) for r in results if r["status"] == "ok") / ok_count, 3
                     ) if ok_count else 0
                     summary.append({
-                        "model": model_id, "stage": "benchmark",
+                        "model": serve_key, "stage": "benchmark",
                         "status": "ok" if ok_count == len(results) else "partial",
                         "tests_ok": ok_count, "tests_total": len(results),
                         "avg_tokens_per_second": round(
@@ -956,7 +1169,10 @@ def main():
                 if purge_ids:
                     log(f"### PURGING BATCH FROM DISK: {purge_ids} ###")
                     for model_id in purge_ids:
-                        delete_model_from_disk(lms_path, model_id)
+                        # Purge by the resolved catalog key, not the original id -
+                        # resolve_disk_path looks entries up by modelKey, which a
+                        # source URL never matches.
+                        delete_model_from_disk(lms_path, resolved_keys.get(model_id, model_id))
                 skipped_purge = [m["id"] for m in batch if m["id"] in installed_ids]
                 if skipped_purge:
                     log(f"Leaving pre-existing model(s) on disk (not purging): {skipped_purge}")

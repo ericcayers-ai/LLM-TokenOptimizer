@@ -1,0 +1,187 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:TokenOptimizer.App.ViewModels"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="1040" d:DesignHeight="700"
+        x:Class="TokenOptimizer.App.Views.MainWindow"
+        x:DataType="vm:MainViewModel"
+        Icon="/Assets/avalonia-logo.ico"
+        Title="TokenOptimizer" Width="1040" Height="700">
+
+    <Design.DataContext>
+        <!-- This only sets the DataContext for the previewer in an IDE,
+             to set the actual DataContext for runtime, set the DataContext property in code (look at App.axaml.cs) -->
+        <vm:MainViewModel />
+    </Design.DataContext>
+
+    <Grid Margin="12" ColumnDefinitions="280,*">
+
+        <!-- Left column: projects, dependencies, tooling -->
+        <StackPanel Grid.Column="0" Spacing="8" Margin="0,0,12,0">
+            <TextBlock Text="Projects" FontWeight="Bold" FontSize="16" />
+            <ListBox ItemsSource="{Binding ProjectHistoryList}"
+                     SelectedItem="{Binding SelectedProject}"
+                     Height="200">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel>
+                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                            <TextBlock Text="{Binding FullPath}" FontSize="10" Opacity="0.6" />
+                        </StackPanel>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+
+            <TextBlock Text="Add project folder" FontWeight="Bold" Margin="0,8,0,0" />
+            <TextBox PlaceholderText="C:\path\to\project" Text="{Binding NewProjectPath}" />
+            <Button Content="Add" Command="{Binding AddProjectCommand}" HorizontalAlignment="Stretch" />
+
+            <TextBlock Text="Dependencies" FontWeight="Bold" Margin="0,16,0,0" />
+            <ItemsControl ItemsSource="{Binding Dependencies}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <TextBlock Text="{Binding IsAvailable}" Width="36" FontSize="10" Opacity="0.8" />
+                            <TextBlock Text="{Binding Name}" />
+                            <TextBlock Text="{Binding Version}" Opacity="0.6" FontSize="10" />
+                        </StackPanel>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button Content="Refresh" Command="{Binding RefreshAllCommand}" />
+                <Button Content="Install Missing" Command="{Binding InstallMissingDependenciesCommand}" />
+            </StackPanel>
+            <Button Content="Install Companion Tooling" Command="{Binding InstallCompanionToolingCommand}" HorizontalAlignment="Stretch" Margin="0,4,0,0" />
+
+            <TextBlock Text="Master folder" FontWeight="Bold" Margin="0,16,0,0" />
+            <TextBox Text="{Binding MasterFolderPath}" PlaceholderText="C:\path\to\projects" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button Content="Set" Command="{Binding SetMasterFolderCommand}" />
+                <Button Content="Refresh" Command="{Binding RefreshMasterFolderCandidatesCommand}" />
+            </StackPanel>
+            <ListBox ItemsSource="{Binding MasterFolderCandidates}" Height="140">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <CheckBox IsChecked="{Binding IsSelected}" />
+                            <TextBlock Text="{Binding Name}" />
+                            <TextBlock Text="(seen)" FontSize="10" Opacity="0.6" IsVisible="{Binding SeenBefore}" />
+                        </StackPanel>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBox Text="{Binding NewProjectFolderName}" PlaceholderText="new folder name" Width="130" />
+                <Button Content="Create" Command="{Binding CreateProjectFolderCommand}" />
+            </StackPanel>
+            <Button Content="Launch Checked" Command="{Binding LaunchSelectedCandidatesCommand}" HorizontalAlignment="Stretch" />
+
+            <TextBlock Text="Danger zone" FontWeight="Bold" Foreground="IndianRed" Margin="0,16,0,0" />
+            <TextBox Text="{Binding UninstallConfirmationInput}" PlaceholderText="Type UNINSTALL to confirm" />
+            <Button Content="Uninstall Everything" Command="{Binding UninstallEverythingCommand}" HorizontalAlignment="Stretch" />
+        </StackPanel>
+
+        <!-- Right column: launch panel + log -->
+        <Grid Grid.Column="1" RowDefinitions="*,Auto">
+            <ScrollViewer Grid.Row="0">
+                <StackPanel Spacing="8">
+                    <TextBlock Text="Session Launch" FontWeight="Bold" FontSize="16" />
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <StackPanel Spacing="4" Width="220">
+                            <TextBlock Text="Provider" />
+                            <ComboBox ItemsSource="{Binding ProviderNames}"
+                                      SelectedItem="{Binding SelectedProviderName}"
+                                      HorizontalAlignment="Stretch" />
+                        </StackPanel>
+                        <StackPanel Spacing="4" Width="220">
+                            <TextBlock Text="Model override (optional)" />
+                            <TextBox Text="{Binding ModelOverride}" PlaceholderText="e.g. sonnet, opus, qwen/qwen3-coder-30b" />
+                        </StackPanel>
+                        <StackPanel Spacing="4" Width="130">
+                            <TextBlock Text="Resume mode" />
+                            <ComboBox ItemsSource="{Binding ResumeModeNames}"
+                                      SelectedItem="{Binding SelectedResumeModeName}"
+                                      HorizontalAlignment="Stretch" />
+                        </StackPanel>
+                        <StackPanel Spacing="4" VerticalAlignment="Bottom">
+                            <Button Content="Launch Session" Command="{Binding LaunchSessionCommand}" />
+                        </StackPanel>
+                        <StackPanel Spacing="4" VerticalAlignment="Bottom">
+                            <Button Content="Export Handoff" Command="{Binding ExportHandoffCommand}" />
+                        </StackPanel>
+                    </StackPanel>
+                    <CheckBox Content="Isolate Claude config for this project (separate CLAUDE_CONFIG_DIR)" IsChecked="{Binding IsolateClaudeConfig}" />
+                    <TextBlock Text="{Binding StatusText}" Opacity="0.7" />
+                    <TextBlock Text="{Binding BestLocalModelText}" Opacity="0.7" FontSize="11" />
+
+                    <TextBlock Text="Fallback chain (priority order)" FontWeight="Bold" Margin="0,12,0,0" />
+                    <ItemsControl ItemsSource="{Binding FallbackChain}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <TextBlock Text="{Binding IsAvailable}" Width="36" FontSize="10" Opacity="0.8" />
+                                    <TextBlock Text="{Binding ProviderName}" Width="100" />
+                                    <TextBlock Text="{Binding UnavailableReason}" Opacity="0.6" FontSize="10" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock Text="Fallback credentials" FontWeight="Bold" Margin="0,12,0,0" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBox Text="{Binding CodexApiKeyInput}" PlaceholderText="OPENAI_API_KEY for Codex" Width="200" PasswordChar="*" />
+                        <Button Content="Save Codex Key" Command="{Binding SetCodexCredentialCommand}" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button Content="Opt in: Antigravity" Command="{Binding OptInAntigravityCommand}" />
+                        <Button Content="Opt in: Cursor" Command="{Binding OptInCursorCommand}" />
+                    </StackPanel>
+
+                    <TextBlock Text="Benchmark" FontWeight="Bold" FontSize="16" Margin="0,16,0,0" />
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <StackPanel Spacing="4" Width="260">
+                            <TextBlock Text="Model (blank = all in catalog)" />
+                            <ComboBox ItemsSource="{Binding CatalogModels}"
+                                      SelectedItem="{Binding SelectedCatalogModel}"
+                                      HorizontalAlignment="Stretch" />
+                        </StackPanel>
+                        <StackPanel Spacing="4" Width="160">
+                            <TextBlock Text="Quality tier" />
+                            <ComboBox ItemsSource="{Binding QualityTierNames}"
+                                      SelectedItem="{Binding SelectedQualityTierName}"
+                                      HorizontalAlignment="Stretch" />
+                        </StackPanel>
+                        <StackPanel Spacing="4" VerticalAlignment="Bottom">
+                            <Button Content="Run Benchmark" Command="{Binding RunBenchmarkCommand}" />
+                        </StackPanel>
+                        <StackPanel Spacing="4" VerticalAlignment="Bottom">
+                            <Button Content="Refresh Leaderboard" Command="{Binding RefreshBestLocalModelCommand}" />
+                        </StackPanel>
+                    </StackPanel>
+                    <TextBlock Text="{Binding BenchmarkStatusText}" Opacity="0.7" FontSize="11" />
+
+                    <TextBlock Text="Leaderboard" FontWeight="Bold" Margin="0,8,0,0" />
+                    <ItemsControl ItemsSource="{Binding Leaderboard}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <TextBlock Text="{Binding Model}" Width="220" FontSize="11" />
+                                    <TextBlock Text="{Binding CompositeScore}" Width="70" FontSize="11" Opacity="0.8" />
+                                    <TextBlock Text="{Binding AvgTokensPerSecond}" FontSize="11" Opacity="0.6" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </ScrollViewer>
+
+            <!-- Log pane -->
+            <Border Grid.Row="1" BorderBrush="Gray" BorderThickness="1" CornerRadius="4" Margin="0,8,0,0" Height="160">
+                <ListBox ItemsSource="{Binding LogLines}" />
+            </Border>
+        </Grid>
+    </Grid>
+
+</Window>

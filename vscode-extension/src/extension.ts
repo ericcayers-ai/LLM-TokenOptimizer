@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { spawn } from 'child_process';
 import { openDashboard } from './dashboard';
 
 // This extension is deliberately a THIN WRAPPER, not a reimplementation.
@@ -32,6 +33,39 @@ function resolveScriptPath(context: vscode.ExtensionContext): string | undefined
         return undefined;
     }
     return candidate;
+}
+
+function resolveAppExecutablePath(context: vscode.ExtensionContext): string | undefined {
+    const configured = vscode.workspace.getConfiguration('llmTokenOptimizer').get<string>('appExecutablePath', '').trim();
+    if (configured) {
+        return fs.existsSync(configured) ? configured : undefined;
+    }
+    // Auto-detect a local build of the new C# app: it lives as a sibling
+    // "app/" folder next to this extension's own repo root (extensionPath
+    // is .../LLM-TokenOptimizer/vscode-extension), Debug preferred since
+    // that's what `dotnet build` produces by default during development.
+    const repoRoot = path.dirname(context.extensionPath);
+    const candidates = [
+        path.join(repoRoot, 'app', 'src', 'TokenOptimizer.App', 'bin', 'Debug', 'net10.0', 'TokenOptimizer.App.exe'),
+        path.join(repoRoot, 'app', 'src', 'TokenOptimizer.App', 'bin', 'Release', 'net10.0', 'TokenOptimizer.App.exe'),
+    ];
+    return candidates.find(fs.existsSync);
+}
+
+function launchApp(context: vscode.ExtensionContext): void {
+    const exePath = resolveAppExecutablePath(context);
+    if (!exePath) {
+        vscode.window.showErrorMessage(
+            'LLM-TokenOptimizer: TokenOptimizer.App.exe not found. Build it (`dotnet build` under app/) or set "llmTokenOptimizer.appExecutablePath".'
+        );
+        return;
+    }
+
+    const folders = vscode.workspace.workspaceFolders;
+    const args = folders && folders.length > 0 ? [folders[0].uri.fsPath] : [];
+
+    const child = spawn(exePath, args, { detached: true, stdio: 'ignore' });
+    child.unref();
 }
 
 function commonArgs(): string[] {
@@ -189,6 +223,12 @@ const ACTIONS: ActionEntry[] = [
         label: 'Open Dashboard',
         themeIcon: 'graph-line',
         description: 'Live panel: RTK token-savings stats and every skill/plugin this project\'s Claude Code session invokes, as it happens.'
+    },
+    {
+        id: 'llmTokenOptimizer.openApp',
+        label: 'Open TokenOptimizer App (New)',
+        themeIcon: 'window',
+        description: 'Launches the new C# desktop app (project picker, dependency dashboard, provider/fallback-chain launcher) with this workspace pre-selected.'
     }
 ];
 
@@ -292,6 +332,7 @@ export function activate(context: vscode.ExtensionContext): void {
             transferSession(context, '-ContinueLocally', undefined, 'the local model')),
 
         vscode.commands.registerCommand('llmTokenOptimizer.openDashboard', () => openDashboard(context)),
+        vscode.commands.registerCommand('llmTokenOptimizer.openApp', () => launchApp(context)),
 
         // The ONE Command Palette entrypoint (see contributes.menus.commandPalette
         // in package.json, which hides the other five from the palette while

@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <!-- Fixed UpgradeCode - never change this across versions, it's what lets
+       a newer MSI find and replace an older install instead of installing
+       side-by-side. -->
+  <Package Name="TokenOptimizer"
+           Manufacturer="TokenOptimizer"
+           Version="1.0.0"
+           UpgradeCode="8f2c1a4e-6b3d-4e7a-9c1f-2d5e8a7b6c4d"
+           Language="1033"
+           Scope="perUserOrMachine">
+
+    <SummaryInformation Description="TokenOptimizer ecosystem app + VS Code extension installer" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of TokenOptimizer is already installed." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="TokenOptimizer">
+        <Component Id="AppExecutable" Guid="a1b2c3d4-1111-4a5b-8c9d-000000000001">
+          <File Id="TokenOptimizerExe" Source="$(var.PublishDir)\TokenOptimizer.App.exe" KeyPath="yes" />
+        </Component>
+        <Component Id="VsixPayload" Guid="a1b2c3d4-1111-4a5b-8c9d-000000000002">
+          <File Id="ExtensionVsix" Source="$(var.VsixDir)\llm-token-optimizer.vsix" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppShortcutFolder" Name="TokenOptimizer">
+        <Component Id="StartMenuShortcut" Guid="a1b2c3d4-1111-4a5b-8c9d-000000000003">
+          <Shortcut Id="AppStartMenuShortcut"
+                    Name="TokenOptimizer"
+                    Description="Claude Code project launcher, provider translation layer, and benchmark suite"
+                    Target="[INSTALLFOLDER]TokenOptimizer.App.exe"
+                    WorkingDirectory="INSTALLFOLDER" />
+          <RemoveFolder Id="RemoveAppShortcutFolder" On="uninstall" />
+          <RegistryValue Root="HKCU"
+                          Key="Software\TokenOptimizer"
+                          Name="StartMenuShortcutInstalled"
+                          Type="integer"
+                          Value="1"
+                          KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <!-- Best effort VS Code extension install: runs the code CLI's install
+         extension command against the bundled .vsix if that CLI is on PATH.
+         Return="ignore" so a machine without VS Code (or with it not on
+         PATH) still completes the app install cleanly; this is a bonus
+         step, never a blocker. -->
+    <SetProperty Id="InstallVsCodeExtension"
+                 Value="&quot;code&quot; --install-extension &quot;[INSTALLFOLDER]llm-token-optimizer.vsix&quot; --force"
+                 Before="InstallVsCodeExtension"
+                 Sequence="execute" />
+    <CustomAction Id="InstallVsCodeExtension"
+                  BinaryRef="Wix4UtilCA_X86"
+                  DllEntry="WixQuietExec"
+                  Execute="deferred"
+                  Return="ignore"
+                  Impersonate="yes" />
+
+    <InstallExecuteSequence>
+      <Custom Action="InstallVsCodeExtension" After="InstallFiles" Condition="NOT Installed" />
+    </InstallExecuteSequence>
+
+    <Feature Id="MainFeature" Title="TokenOptimizer" Level="1">
+      <ComponentRef Id="AppExecutable" />
+      <ComponentRef Id="VsixPayload" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <UIRef Id="WixUI_ErrorProgressText" />
+
+  </Package>
+</Wix>

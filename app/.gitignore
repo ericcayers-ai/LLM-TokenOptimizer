@@ -1,0 +1,15 @@
+# Build outputs - regenerate via `dotnet build` / installer/build-installer.ps1
+**/bin/
+**/obj/
+publish/
+
+# MSI build outputs - regenerate via installer/build-installer.ps1;
+# the shipped .msi is attached to GitHub Releases, not committed here.
+installer/.wix/
+installer/*.msi
+installer/*.wixpdb
+installer/*.vsix
+
+# Rider/VS user-specific files
+.vs/
+*.user
