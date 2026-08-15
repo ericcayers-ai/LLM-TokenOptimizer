@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+
 namespace TokenOptimizer.Core.Diagnostics;
 
 /// <summary>
@@ -9,6 +11,24 @@ namespace TokenOptimizer.Core.Diagnostics;
 /// </summary>
 public static class HardwareInfo
 {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MEMORYSTATUSEX
+    {
+        public uint dwLength;
+        public uint dwMemoryLoad;
+        public ulong ullTotalPhys;
+        public ulong ullAvailPhys;
+        public ulong ullTotalPageFile;
+        public ulong ullAvailPageFile;
+        public ulong ullTotalVirtual;
+        public ulong ullAvailVirtual;
+        public ulong ullAvailExtendedVirtual;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
+
     /// <summary>Total VRAM of the first NVIDIA GPU in GB via nvidia-smi, or null if unavailable (no NVIDIA GPU, driver not installed, or nvidia-smi not on PATH).</summary>
     public static async Task<double?> GetVramGbAsync()
     {
@@ -23,9 +43,21 @@ public static class HardwareInfo
         return double.TryParse(firstLine, out var mib) ? mib / 1024.0 : null;
     }
 
-    /// <summary>Total physical system RAM in GB - the fallback inference pool when no VRAM was detected.</summary>
-    public static double GetSystemRamGb() =>
-        GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / 1024.0 / 1024.0 / 1024.0;
+    /// <summary>
+    /// Total physical system RAM in GB - the fallback inference pool when no
+    /// VRAM was detected. GC.GetGCMemoryInfo().TotalAvailableMemoryBytes
+    /// looked like the obvious .NET API for this but is wrong here: it
+    /// reports the GC's own configured heap limit (a workstation-GC default
+    /// fraction of RAM, ~8GB on a 32GB machine when tested live), not actual
+    /// physical memory - GlobalMemoryStatusEx is the real number.
+    /// </summary>
+    public static double GetSystemRamGb()
+    {
+        var status = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>() };
+        return GlobalMemoryStatusEx(ref status)
+            ? status.ullTotalPhys / 1024.0 / 1024.0 / 1024.0
+            : GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / 1024.0 / 1024.0 / 1024.0;
+    }
 
     /// <summary>VRAM if a GPU was detected, else system RAM - the pool a local model actually has to fit in.</summary>
     public static async Task<double> GetInferencePoolGbAsync() =>
