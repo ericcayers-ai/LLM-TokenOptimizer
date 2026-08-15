@@ -49,4 +49,7 @@ public sealed class AppConfig
 
     /// <summary>Provider (or "Auto (fallback chain)" / "Custom (fallback chain)") to launch under when a master-folder subdirectory is double-clicked in the tree browser. Null = use whatever SelectedProviderName currently is.</summary>
     public string? AutoLaunchProviderName { get; set; }
+
+    /// <summary>Fast/Balanced/Max - see LmStudioContextPreset. Stored by name so old configs missing this default cleanly to Balanced.</summary>
+    public string LmStudioContextPresetName { get; set; } = nameof(LmStudioContextPreset.Balanced);
 }

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using TokenOptimizer.Core.Diagnostics;
+using TokenOptimizer.Core.Models;
 using TokenOptimizer.Providers.Claude;
 using TokenOptimizer.Providers.Manifests;
 
@@ -47,7 +48,9 @@ public sealed class LmStudioAdapter : IProviderAdapter
                 var type = entry.TryGetProperty("type", out var typeProp) ? typeProp.GetString() : null;
                 if (type != "llm") continue;
                 var key = entry.TryGetProperty("modelKey", out var keyProp) ? keyProp.GetString() : null;
-                if (key is not null) models.Add(new LmStudioModel(key, type));
+                var sizeBytes = entry.TryGetProperty("sizeBytes", out var sizeProp) && sizeProp.TryGetInt64(out var size) ? size : (long?)null;
+                var maxContext = entry.TryGetProperty("maxContextLength", out var ctxProp) && ctxProp.TryGetInt32(out var ctx) ? ctx : (int?)null;
+                if (key is not null) models.Add(new LmStudioModel(key, type, sizeBytes, maxContext));
             }
             return models;
         }
@@ -78,17 +81,115 @@ public sealed class LmStudioAdapter : IProviderAdapter
         return false;
     }
 
-    public async Task<ProviderResult> LoadModelAsync(string modelId, int contextLength = 8192)
+    /// <summary>ttlSeconds null = never auto-unload (lms's own default when --ttl is omitted); a value = unload after that many idle seconds. --parallel is fixed at 1: one interactive coding session, no concurrent-request need.</summary>
+    public async Task<ProviderResult> LoadModelAsync(string modelId, int contextLength = 8192, int? ttlSeconds = null)
     {
         var lms = ResolveLmsPath();
         if (lms is null) return ProviderResult.Fail("lms CLI not found");
 
-        var result = await ExternalCommandRunner.RunAsync(
-            lms, $"load {modelId} --gpu max --context-length {contextLength} -y", timeoutSeconds: 600);
+        var args = $"load {modelId} --gpu max --context-length {contextLength} --parallel 1 -y";
+        if (ttlSeconds is { } ttl) args += $" --ttl {ttl}";
+
+        var result = await ExternalCommandRunner.RunAsync(lms, args, timeoutSeconds: 600);
 
         return result.Success
             ? ProviderResult.Ok($"Model '{modelId}' loaded")
             : ProviderResult.Fail($"Load failed: {Truncate(result.Output, 500)}");
+    }
+
+    private const int AbsoluteContextFloor = 2048;
+    private const int DefaultMaxContextGuess = 32768; // used only if LM Studio doesn't report the model's own maxContextLength
+
+    /// <summary>
+    /// Sizes context length off the ACTUAL model (its own reported
+    /// maxContextLength/sizeBytes from `lms ls --json`) and this ACTUAL
+    /// machine's detected VRAM/RAM (HardwareInfo), not fixed constants -
+    /// a 4B model and a 70B model, or an 8GB-VRAM laptop and a 24GB-VRAM
+    /// desktop, land on different numbers by design:
+    ///   - Fast:     min(4096, model's max) - smallest useful window, favors load/inference speed.
+    ///   - Balanced: min(model's max, half of it) - most single-file work fits without Max's cost.
+    ///   - Max:      the model's own reported ceiling, scaled down first if the
+    ///               detected inference pool (VRAM else system RAM) looks tight
+    ///               relative to the model's on-disk size, THEN halved further
+    ///               and retried on any real load failure - lms load fails
+    ///               outright rather than silently truncating when a context
+    ///               doesn't fit, so the floor is discovered empirically, not guessed.
+    /// GPU offload is always "max" (best available), parallel requests fixed
+    /// at 1 (single interactive coding session, no concurrent-request need),
+    /// and TTL scales with the preset: Fast unloads quickly when idle to free
+    /// resources, Balanced is more lenient, Max never auto-unloads.
+    /// </summary>
+    public async Task<ProviderResult> LoadModelWithPresetAsync(string modelId, LmStudioContextPreset preset)
+    {
+        var modelMaxContext = await GetModelMaxContextAsync(modelId) ?? DefaultMaxContextGuess;
+        var modelSizeBytes = await GetModelSizeBytesAsync(modelId);
+
+        if (preset == LmStudioContextPreset.Fast)
+        {
+            return await LoadModelAsync(modelId, Math.Min(4096, modelMaxContext), ttlSeconds: 300);
+        }
+
+        if (preset == LmStudioContextPreset.Balanced)
+        {
+            var balanced = Math.Max(AbsoluteContextFloor, Math.Min(modelMaxContext, modelMaxContext / 2));
+            return await LoadModelAsync(modelId, balanced, ttlSeconds: 1800);
+        }
+
+        // Max: start from the model's own ceiling, pre-scaled down if the
+        // detected pool looks tight relative to the model's size on disk, so
+        // the first attempt is realistic instead of guaranteed to fail on
+        // small hardware.
+        var pool = await HardwareInfo.GetInferencePoolGbAsync();
+        var modelSizeGb = modelSizeBytes.HasValue ? modelSizeBytes.Value / 1024.0 / 1024.0 / 1024.0 : (double?)null;
+        var attempt = modelMaxContext;
+        if (modelSizeGb is { } sizeGb && sizeGb > 0)
+        {
+            if (pool < sizeGb * 1.2) attempt = Math.Max(AbsoluteContextFloor, modelMaxContext / 4);
+            else if (pool < sizeGb * 2) attempt = Math.Max(AbsoluteContextFloor, modelMaxContext / 2);
+            // pool >= 2x model size: plenty of headroom, try the model's full native context.
+        }
+
+        ProviderResult last = ProviderResult.Fail("No load attempted");
+        while (attempt >= AbsoluteContextFloor)
+        {
+            last = await LoadModelAsync(modelId, attempt, ttlSeconds: null);
+            if (last.Success) return ProviderResult.Ok($"Model '{modelId}' loaded at {attempt} tokens of context (Max preset).");
+            attempt /= 2;
+        }
+
+        return ProviderResult.Fail($"Max preset could not load '{modelId}' even at the floor context length ({AbsoluteContextFloor}): {last.Message}");
+    }
+
+    private async Task<int?> GetModelMaxContextAsync(string modelId)
+    {
+        var models = await ListInstalledModelsAsync();
+        return FindMatchingModel(models, modelId)?.MaxContextLength;
+    }
+
+    private async Task<long?> GetModelSizeBytesAsync(string modelId)
+    {
+        var models = await ListInstalledModelsAsync();
+        return FindMatchingModel(models, modelId)?.SizeBytes;
+    }
+
+    private static LmStudioModel? FindMatchingModel(IReadOnlyList<LmStudioModel> models, string modelId) =>
+        models.FirstOrDefault(m => string.Equals(m.ModelKey, modelId, StringComparison.OrdinalIgnoreCase))
+        ?? models.FirstOrDefault(m => m.ModelKey.Contains(modelId, StringComparison.OrdinalIgnoreCase) || modelId.Contains(m.ModelKey, StringComparison.OrdinalIgnoreCase));
+
+    public async Task<bool> UnloadAllModelsAsync()
+    {
+        var lms = ResolveLmsPath();
+        if (lms is null) return false;
+
+        var result = await ExternalCommandRunner.RunAsync(lms, "unload --all", timeoutSeconds: 30);
+        return result.Success;
+    }
+
+    /// <summary>Restart = unload whatever's currently loaded, then reload the same model under a (possibly new) context preset - the UI's "Restart Local Model" action after changing Fast/Balanced/Max.</summary>
+    public async Task<ProviderResult> RestartModelAsync(string modelId, LmStudioContextPreset preset)
+    {
+        await UnloadAllModelsAsync();
+        return await LoadModelWithPresetAsync(modelId, preset);
     }
 
     public Task<IReadOnlyList<string>> ListInstalledSkillsAsync() =>
@@ -121,7 +222,7 @@ public sealed class LmStudioAdapter : IProviderAdapter
 
         if (!string.IsNullOrWhiteSpace(options.Model))
         {
-            var loadResult = await LoadModelAsync(options.Model);
+            var loadResult = await LoadModelWithPresetAsync(options.Model, options.ContextPreset ?? LmStudioContextPreset.Balanced);
             if (!loadResult.Success)
             {
                 throw new InvalidOperationException(loadResult.Message);

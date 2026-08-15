@@ -29,6 +29,14 @@ public sealed class ProviderCliInstaller
         return ExecutableLocators.FindAntigravity() is not null;
     }
 
+    /// <summary>ccusage: local, offline CLI reporting token/cost usage across Claude Code, Codex, Gemini CLI, Copilot, and more - no proxy, no MCP server, reads the same session logs already on disk. github.com/ryoppippi/ccusage.</summary>
+    public async Task<bool> InstallCcusageAsync()
+    {
+        if (new CommandAvailability().ResolveOnPath("ccusage") is not null) return true;
+        await ExternalCommandRunner.RunAsync("npm", "install -g ccusage", timeoutSeconds: 180);
+        return new CommandAvailability().ResolveOnPath("ccusage") is not null;
+    }
+
     public async Task<bool> InstallCursorCliAsync()
     {
         if (ExecutableLocators.FindCursor() is not null) return true;
@@ -71,5 +79,53 @@ public sealed class ProviderCliInstaller
         return isScript
             ? ExternalCommandRunner.RunAsync("cmd.exe", $"/c \"\"{exePath}\" {arguments}\"", timeoutSeconds: 20)
             : ExternalCommandRunner.RunAsync(exePath, arguments, timeoutSeconds: 20);
+    }
+
+    /// <summary>
+    /// Plugin parity for Antigravity: `agy plugin install &lt;local-directory&gt;`
+    /// natively understands Claude Code's plugin folder format (verified live -
+    /// it tags the import "source": "claude-code" and pulls in skills/agents/
+    /// hooks), so every plugin `claude plugin install` has already cached
+    /// locally under ~/.claude/plugins/cache/&lt;marketplace&gt;/&lt;plugin&gt; gets handed
+    /// to Antigravity's own native plugin system the same way - no hardcoded
+    /// plugin list to keep in sync, whatever Claude has installed gets mirrored.
+    /// Idempotent: re-installing an already-imported plugin just re-syncs it.
+    /// </summary>
+    public async Task<int> SyncClaudePluginsIntoAntigravityAsync()
+    {
+        var agyExe = ExecutableLocators.FindAntigravity();
+        if (agyExe is null) return 0;
+
+        var cacheDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "plugins", "cache");
+        if (!Directory.Exists(cacheDir)) return 0;
+
+        var installed = 0;
+
+        // ~/.claude/plugins/cache/<marketplace>/<plugin>/<commit-hash>/.claude-plugin/plugin.json
+        // - depth varies (some marketplaces add a commit-hash layer, some
+        // don't), so search for plugin.json directly rather than assume a
+        // fixed depth; the plugin root is always two levels up from it.
+        foreach (var manifestPath in Directory.EnumerateFiles(cacheDir, "plugin.json", SearchOption.AllDirectories))
+        {
+            if (Path.GetFileName(Path.GetDirectoryName(manifestPath)) != ".claude-plugin") continue;
+            var pluginRoot = Path.GetDirectoryName(Path.GetDirectoryName(manifestPath));
+            if (pluginRoot is null) continue;
+
+            var result = await ExternalCommandRunner.RunAsync(agyExe, $"plugin install \"{pluginRoot}\"", timeoutSeconds: 30);
+            if (result.Success) installed++;
+        }
+
+        // The impeccable skill is git-cloned separately (its own repo IS a
+        // Claude-format plugin), not routed through the marketplace cache.
+        var impeccableDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "skills", "impeccable", "plugin");
+        if (File.Exists(Path.Combine(impeccableDir, ".claude-plugin", "plugin.json")))
+        {
+            var result = await ExternalCommandRunner.RunAsync(agyExe, $"plugin install \"{impeccableDir}\"", timeoutSeconds: 30);
+            if (result.Success) installed++;
+        }
+
+        return installed;
     }
 }

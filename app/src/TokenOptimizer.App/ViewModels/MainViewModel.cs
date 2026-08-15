@@ -133,9 +133,14 @@ public partial class MainViewModel : ViewModelBase
     public ObservableCollection<string> BenchmarkLogLines { get; } = new();
     public ObservableCollection<string> ActiveSkills { get; } = new();
     public ObservableCollection<string> ActivePlugins { get; } = new();
+    public ObservableCollection<SkillGuideEntry> SkillGuide { get; } = new();
+    public ObservableCollection<SkillGuideEntry> PluginGuide { get; } = new();
 
     [ObservableProperty]
     public partial string ActiveProviderLabel { get; set; } = "Not resolved yet.";
+
+    [ObservableProperty]
+    public partial string TokenUsageSummaryText { get; set; } = "ccusage not installed - run Install Companion Tooling to add it.";
 
     [ObservableProperty]
     public partial bool IsDashboardRefreshing { get; set; }
@@ -201,6 +206,16 @@ public partial class MainViewModel : ViewModelBase
     public partial bool IsolateClaudeConfig { get; set; }
 
     public ObservableCollection<string> ResumeModeNames { get; } = new(Enum.GetNames<SessionResumeMode>());
+    public ObservableCollection<string> LmStudioPresetNames { get; } = new(Enum.GetNames<LmStudioContextPreset>());
+
+    [ObservableProperty]
+    public partial string SelectedLmStudioPresetName { get; set; } = nameof(LmStudioContextPreset.Balanced);
+
+    partial void OnSelectedLmStudioPresetNameChanged(string value) =>
+        _ = _configStore.UpdateAsync(config => config.LmStudioContextPresetName = value);
+
+    [ObservableProperty]
+    public partial string LmStudioRestartStatusText { get; set; } = string.Empty;
 
     [ObservableProperty]
     public partial string SelectedResumeModeName { get; set; } = nameof(SessionResumeMode.Continue);
@@ -309,6 +324,12 @@ public partial class MainViewModel : ViewModelBase
             }
 
             await RefreshBestLocalModelAsync();
+
+            var config = await _configStore.LoadAsync();
+            if (Enum.TryParse<LmStudioContextPreset>(config.LmStudioContextPresetName, out var parsedPreset))
+            {
+                SelectedLmStudioPresetName = parsedPreset.ToString();
+            }
 
             if (string.IsNullOrWhiteSpace(MasterFolderPath))
             {
@@ -470,7 +491,8 @@ public partial class MainViewModel : ViewModelBase
                 path,
                 await ResolveEffectiveModelAsync(provider),
                 IsolateClaudeConfig,
-                Enum.Parse<SessionResumeMode>(SelectedResumeModeName));
+                Enum.Parse<SessionResumeMode>(SelectedResumeModeName),
+                CurrentLmStudioPreset());
             var handle = await provider.LaunchSessionAsync(options);
             await _projectHistory.AddAsync(path);
             TrackRateLimitOutcome(handle);
@@ -552,7 +574,8 @@ public partial class MainViewModel : ViewModelBase
                     candidate.FullPath,
                     await ResolveEffectiveModelAsync(provider),
                     IsolateClaudeConfig,
-                    Enum.Parse<SessionResumeMode>(SelectedResumeModeName));
+                    Enum.Parse<SessionResumeMode>(SelectedResumeModeName),
+                    CurrentLmStudioPreset());
                 var handle = await provider.LaunchSessionAsync(options);
                 await _projectHistory.AddAsync(candidate.FullPath);
                 TrackRateLimitOutcome(handle);
@@ -597,6 +620,8 @@ public partial class MainViewModel : ViewModelBase
         ("Codex CLI", _providerCliInstaller.InstallCodexCliAsync),
         ("Antigravity CLI", _providerCliInstaller.InstallAntigravityCliAsync),
         ("Cursor CLI", _providerCliInstaller.InstallCursorCliAsync),
+        ("Antigravity plugin parity", async () => { await _providerCliInstaller.SyncClaudePluginsIntoAntigravityAsync(); return true; }),
+        ("ccusage (token/cost tracking)", _providerCliInstaller.InstallCcusageAsync),
     };
 
     [RelayCommand]
@@ -707,6 +732,45 @@ public partial class MainViewModel : ViewModelBase
         }
     }
 
+    /// <summary>Unloads whatever LM Studio has loaded and reloads the current best/override model under the currently-selected Fast/Balanced/Max preset - lets a user apply a new preset (or recover from an unhealthy load) without leaving the app.</summary>
+    [RelayCommand]
+    private async Task RestartLocalModelAsync()
+    {
+        var config = await _configStore.LoadAsync();
+        var modelId = !string.IsNullOrWhiteSpace(ModelOverride) ? ModelOverride : config.BestLocalModelId;
+        if (string.IsNullOrWhiteSpace(modelId))
+        {
+            LmStudioRestartStatusText = "No model to load - set Model override or run a benchmark first.";
+            return;
+        }
+
+        if (!Enum.TryParse<LmStudioContextPreset>(SelectedLmStudioPresetName, out var preset))
+        {
+            preset = LmStudioContextPreset.Balanced;
+        }
+
+        LmStudioRestartStatusText = $"Restarting '{modelId}' ({preset})...";
+        Log(LmStudioRestartStatusText);
+        try
+        {
+            if (!await _lmStudioAdapter.EnsureServerRunningAsync())
+            {
+                LmStudioRestartStatusText = "Could not bring up the LM Studio local server.";
+                Log(LmStudioRestartStatusText);
+                return;
+            }
+
+            var result = await _lmStudioAdapter.RestartModelAsync(modelId, preset);
+            LmStudioRestartStatusText = result.Message;
+            Log($"LM Studio restart: {result.Message}");
+        }
+        catch (Exception ex)
+        {
+            LmStudioRestartStatusText = $"Restart failed: {ex.Message}";
+            Log(LmStudioRestartStatusText);
+        }
+    }
+
     [RelayCommand]
     private async Task RefreshBestLocalModelAsync()
     {
@@ -793,6 +857,18 @@ public partial class MainViewModel : ViewModelBase
             var plugins = await _claudeAdapter.ListInstalledPluginsAsync();
             ActivePlugins.Clear();
             foreach (var plugin in plugins) ActivePlugins.Add(plugin);
+
+            var (skillGuide, pluginGuide) = await Task.Run(() =>
+                (SkillCatalogService.ListSkillGuide(), SkillCatalogService.ListPluginGuide()));
+            SkillGuide.Clear();
+            foreach (var entry in skillGuide) SkillGuide.Add(entry);
+            PluginGuide.Clear();
+            foreach (var entry in pluginGuide) PluginGuide.Add(entry);
+
+            var usage = await TokenUsageReader.GetSummaryAsync();
+            TokenUsageSummaryText = usage is null
+                ? "ccusage not installed - run Install Companion Tooling to add it."
+                : $"Today: {usage.TodayTokens:N0} tokens, ${usage.TodayCostUsd:F2} - All-time: {usage.AllTimeTokens:N0} tokens, ${usage.AllTimeCostUsd:F2}";
         }
         finally
         {
@@ -982,6 +1058,9 @@ public partial class MainViewModel : ViewModelBase
     }
 
     private static string Truncate(string text, int maxLength) => text.Length <= maxLength ? text : text[..maxLength] + "...";
+
+    private LmStudioContextPreset CurrentLmStudioPreset() =>
+        Enum.TryParse<LmStudioContextPreset>(SelectedLmStudioPresetName, out var preset) ? preset : LmStudioContextPreset.Balanced;
 
     [RelayCommand]
     private void SetCodexCredential()
@@ -1233,7 +1312,8 @@ public partial class MainViewModel : ViewModelBase
                 SelectedProject.FullPath,
                 await ResolveEffectiveModelAsync(provider),
                 IsolateClaudeConfig,
-                Enum.Parse<SessionResumeMode>(SelectedResumeModeName));
+                Enum.Parse<SessionResumeMode>(SelectedResumeModeName),
+                CurrentLmStudioPreset());
 
             var handle = await provider.LaunchSessionAsync(options);
             await _projectHistory.AddAsync(SelectedProject.FullPath);

@@ -1,3 +1,4 @@
+using TokenOptimizer.Core.Models;
 using TokenOptimizer.Providers.Manifests;
 
 namespace TokenOptimizer.Providers;
@@ -14,7 +15,8 @@ public sealed record SessionLaunchOptions(
     string ProjectPath,
     string? Model = null,
     bool IsolateConfig = false,
-    SessionResumeMode ResumeMode = SessionResumeMode.Continue);
+    SessionResumeMode ResumeMode = SessionResumeMode.Continue,
+    LmStudioContextPreset? ContextPreset = null);
 
 /// <summary>
 /// The translation-layer contract: every coding-agent provider (Claude Code,

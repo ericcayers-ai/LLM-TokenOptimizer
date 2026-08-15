@@ -19,10 +19,11 @@ public static class ExternalCommandRunner
         IReadOnlyDictionary<string, string>? extraEnvironment = null,
         CancellationToken cancellationToken = default)
     {
+        var (resolvedFile, resolvedArgs) = ResolveCommand(fileName, arguments);
         var psi = new ProcessStartInfo
         {
-            FileName = fileName,
-            Arguments = arguments,
+            FileName = resolvedFile,
+            Arguments = resolvedArgs,
             WorkingDirectory = string.IsNullOrWhiteSpace(workingDirectory) ? Environment.CurrentDirectory : workingDirectory,
             UseShellExecute = false,
             RedirectStandardOutput = true,
@@ -118,10 +119,11 @@ public static class ExternalCommandRunner
         IReadOnlyDictionary<string, string>? extraEnvironment = null,
         CancellationToken cancellationToken = default)
     {
+        var (resolvedFile, resolvedArgs) = ResolveCommand(fileName, arguments);
         var psi = new ProcessStartInfo
         {
-            FileName = fileName,
-            Arguments = arguments,
+            FileName = resolvedFile,
+            Arguments = resolvedArgs,
             WorkingDirectory = string.IsNullOrWhiteSpace(workingDirectory) ? Environment.CurrentDirectory : workingDirectory,
             UseShellExecute = false,
             RedirectStandardOutput = true,
@@ -212,6 +214,28 @@ public static class ExternalCommandRunner
                 Output = allOutput.ToString().Trim(),
             };
         }
+    }
+
+    /// <summary>
+    /// Windows' CreateProcess (what Process.Start uses under UseShellExecute
+    /// = false) cannot launch a .cmd/.bat directly - a bare command name like
+    /// "npm" resolves on PATH to npm.cmd, and starting it without cmd.exe /c
+    /// fails outright (or, worse, silently reports "started" via a stale
+    /// PATH entry while doing nothing). Every caller here passes bare
+    /// command names ("npm", "graphify", "git") or absolute paths - resolve
+    /// through PATH first (same lookup CommandAvailability already does) so
+    /// script wrappers get the cmd.exe wrapping real .exe files never need.
+    /// </summary>
+    private static (string File, string Arguments) ResolveCommand(string fileName, string arguments)
+    {
+        var resolved = Path.IsPathRooted(fileName)
+            ? fileName
+            : new CommandAvailability().ResolveOnPath(fileName) ?? fileName;
+
+        var isScript = resolved.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase) || resolved.EndsWith(".bat", StringComparison.OrdinalIgnoreCase);
+        if (!isScript) return (resolved, arguments);
+
+        return ("cmd.exe", $"/c \"\"{resolved}\"{(string.IsNullOrEmpty(arguments) ? "" : " " + arguments)}\"");
     }
 
     private static async Task<string> SafeAwait(Task<string> task)

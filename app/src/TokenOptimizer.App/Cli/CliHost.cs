@@ -72,6 +72,7 @@ public static class CliHost
         var benchmarkRunner = new BenchmarkRunner(availability, pythonLocator);
         var claudeMdService = new ProjectClaudeMdService();
         var uninstaller = new CompanionUninstaller(availability, configStore);
+        var providerCliInstaller = new ProviderCliInstaller();
 
         var providers = new IProviderAdapter[]
         {
@@ -186,6 +187,11 @@ public static class CliHost
                         ("impeccable", companionTooling.InstallImpeccableSkillAsync),
                         ("task-observer", companionTooling.InstallTaskObserverSkillAsync),
                         ("LM Studio support", companionTooling.InstallLMStudioSupportAsync),
+                        ("Codex CLI", providerCliInstaller.InstallCodexCliAsync),
+                        ("Antigravity CLI", providerCliInstaller.InstallAntigravityCliAsync),
+                        ("Cursor CLI", providerCliInstaller.InstallCursorCliAsync),
+                        ("Antigravity plugin parity", async () => { await providerCliInstaller.SyncClaudePluginsIntoAntigravityAsync(); return true; }),
+                        ("ccusage (token/cost tracking)", providerCliInstaller.InstallCcusageAsync),
                     };
 
                     var results = new List<object>();

@@ -220,6 +220,21 @@
                                 </StackPanel>
                                 <CheckBox Content="Isolate Claude config for this project (separate CLAUDE_CONFIG_DIR)" IsChecked="{Binding IsolateClaudeConfig}" />
                                 <TextBlock Text="{Binding BestLocalModelText}" Opacity="0.7" FontSize="11" />
+
+                                <StackPanel Orientation="Horizontal" Spacing="12">
+                                    <StackPanel Spacing="4" Width="160">
+                                        <TextBlock Text="LM Studio context preset" />
+                                        <ComboBox ItemsSource="{Binding LmStudioPresetNames}"
+                                                  SelectedItem="{Binding SelectedLmStudioPresetName}"
+                                                  HorizontalAlignment="Stretch"
+                                                  ToolTip.Tip="Fast: smallest context, quickest load. Balanced: half the model's max context. Max: the model's full native context, scaled down automatically if this PC's VRAM/RAM looks tight, retried smaller on any real load failure." />
+                                    </StackPanel>
+                                    <StackPanel Spacing="4" VerticalAlignment="Bottom">
+                                        <Button Content="Restart Local Model" Command="{Binding RestartLocalModelCommand}"
+                                                ToolTip.Tip="Unloads whatever LM Studio has loaded and reloads it under the preset above." />
+                                    </StackPanel>
+                                </StackPanel>
+                                <TextBlock Text="{Binding LmStudioRestartStatusText}" Opacity="0.7" FontSize="11" TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>
 
@@ -332,6 +347,8 @@
                                               HorizontalAlignment="Stretch" />
                                 </StackPanel>
                                 <TextBlock Text="{Binding ActiveProviderLabel}" FontWeight="SemiBold" />
+                                <TextBlock Text="{Binding TokenUsageSummaryText}" Opacity="0.75" FontSize="12"
+                                           ToolTip.Tip="Via ccusage - local, offline, reads Claude Code/Codex/etc session logs already on disk. No proxy, no upload." />
                                 <ProgressBar IsIndeterminate="True" Height="4" IsVisible="{Binding IsDashboardRefreshing}" />
                                 <TextBlock Text="Switching providers applies to the NEXT session launch - Claude Code can't hot-swap the backend of an already-running session. Switching to/from Custom fallback chain also needs a fresh launch."
                                            TextWrapping="Wrap" Opacity="0.65" FontSize="11" />
@@ -362,6 +379,46 @@
                                         </DataTemplate>
                                     </ItemsControl.ItemTemplate>
                                 </ItemsControl>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Classes="Card">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="Guide: what's available, and when to use it" Classes="SectionHeader" />
+                                <TextBlock Text="Every skill/plugin this Claude Code environment can reach, with its own description - the same text Claude reads to decide when to trigger it." Opacity="0.6" FontSize="11" TextWrapping="Wrap" />
+
+                                <TextBlock Text="Skills" Classes="SubHeader" />
+                                <Border BorderBrush="Gray" BorderThickness="1" CornerRadius="4" Height="220">
+                                    <ScrollViewer>
+                                        <ItemsControl ItemsSource="{Binding SkillGuide}" Margin="6">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Grid ColumnDefinitions="160,Auto,*" Margin="0,3">
+                                                        <TextBlock Grid.Column="0" Text="{Binding Name}" FontWeight="SemiBold" FontSize="12" TextWrapping="Wrap" />
+                                                        <TextBlock Grid.Column="1" Text="{Binding Source}" Opacity="0.5" FontSize="10" Margin="6,0" VerticalAlignment="Top" />
+                                                        <TextBlock Grid.Column="2" Text="{Binding Description}" Opacity="0.75" FontSize="11" TextWrapping="Wrap" Margin="6,0,0,0" />
+                                                    </Grid>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </ScrollViewer>
+                                </Border>
+
+                                <TextBlock Text="Plugins" Classes="SubHeader" />
+                                <Border BorderBrush="Gray" BorderThickness="1" CornerRadius="4" Height="160">
+                                    <ScrollViewer>
+                                        <ItemsControl ItemsSource="{Binding PluginGuide}" Margin="6">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Grid ColumnDefinitions="160,*" Margin="0,3">
+                                                        <TextBlock Grid.Column="0" Text="{Binding Name}" FontWeight="SemiBold" FontSize="12" TextWrapping="Wrap" />
+                                                        <TextBlock Grid.Column="1" Text="{Binding Description}" Opacity="0.75" FontSize="11" TextWrapping="Wrap" Margin="6,0,0,0" />
+                                                    </Grid>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </ScrollViewer>
+                                </Border>
                             </StackPanel>
                         </Border>
                     </StackPanel>
