@@ -7,12 +7,14 @@ using TokenOptimizer.Providers.Manifests;
 namespace TokenOptimizer.Providers.Fallback;
 
 /// <summary>
-/// Google Antigravity IDE - first in the fallback chain after Claude Code.
-/// Gated on a stored opt-in credential (see ProxyCredentialStore), not just
-/// "is it installed": a user with Antigravity on disk but no intention of
-/// using it as a fallback shouldn't have this silently open it. Real login
-/// happens interactively inside the app itself (OAuth) - nothing here
-/// automates that.
+/// Google Antigravity's terminal CLI (agy) - first in the fallback chain
+/// after Claude Code. CLI-only: the desktop IDE app is deliberately not
+/// launched here, so every provider opens a single terminal-style session
+/// rather than a separate GUI window. Gated on a stored opt-in credential
+/// (see ProxyCredentialStore), not just "is it installed": a user with
+/// Antigravity on disk but no intention of using it as a fallback shouldn't
+/// have this silently launch it. Real login happens interactively inside
+/// the CLI itself (OAuth) - nothing here automates that.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class AntigravityAdapter : IProviderAdapter
@@ -44,34 +46,12 @@ public sealed class AntigravityAdapter : IProviderAdapter
     public Task<ISessionHandle> LaunchSessionAsync(SessionLaunchOptions options)
     {
         var exe = ExecutableLocators.FindAntigravity()
-                  ?? throw new InvalidOperationException("Antigravity executable not found.");
+                  ?? throw new InvalidOperationException("Antigravity CLI (agy) not found - the desktop IDE is no longer used as a fallback.");
 
         SessionHandoffExporter.Export(options.ProjectPath);
 
-        Process? process;
-        var isTerminalCli = exe.EndsWith("agy.exe", StringComparison.OrdinalIgnoreCase);
-        if (isTerminalCli)
-        {
-            process = Process.Start(new ProcessStartInfo
-            {
-                FileName = exe,
-                Arguments = $"\"{options.ProjectPath}\"",
-                WorkingDirectory = options.ProjectPath,
-                UseShellExecute = false,
-            });
-        }
-        else
-        {
-            process = Process.Start(new ProcessStartInfo
-            {
-                FileName = exe,
-                Arguments = $"\"{options.ProjectPath}\"",
-                UseShellExecute = true,
-            });
-        }
+        var process = ProcessLaunchHelper.Start(exe, $"\"{options.ProjectPath}\"", options.ProjectPath);
 
-        // Only the terminal CLI variant (agy.exe) has a console to watch -
-        // the desktop IDE is a GUI window with no console text to scan.
-        return Task.FromResult<ISessionHandle>(new ProcessSessionHandle(Name, options.ProjectPath, process, watchForRateLimit: isTerminalCli));
+        return Task.FromResult<ISessionHandle>(new ProcessSessionHandle(Name, options.ProjectPath, process, watchForRateLimit: true));
     }
 }

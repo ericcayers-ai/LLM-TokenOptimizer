@@ -3,49 +3,41 @@ using TokenOptimizer.Core.Diagnostics;
 namespace TokenOptimizer.Providers.Fallback;
 
 /// <summary>
-/// Confirmed install locations for the three fallback-chain tools, ported
-/// from Find-AntigravityExecutable / Find-CodexExecutable / Find-CursorExecutable.
+/// Confirmed install locations for the fallback-chain tools' CLI binaries
+/// only. Every provider routes through a single terminal session (Claude
+/// Code, or its own CLI when it isn't API-redirectable) - GUI/IDE
+/// executables are deliberately not resolved here anymore, so a
+/// GUI-only install correctly reports as unavailable instead of popping a
+/// separate app window.
 /// </summary>
 public static class ExecutableLocators
 {
     public static string? FindAntigravity()
     {
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-        var candidates = new[]
-        {
-            Path.Combine(localAppData, "Programs", "Antigravity IDE", "Antigravity IDE.exe"),
-            Path.Combine(localAppData, "Programs", "Antigravity", "Antigravity.exe"),
-            Path.Combine(programFiles, "Google", "Antigravity", "Antigravity IDE.exe"),
-            Path.Combine(programFiles, "Google", "Antigravity", "Antigravity.exe"),
-            Path.Combine(localAppData, "agy", "bin", "agy.exe"),
-        };
-
-        foreach (var candidate in candidates)
-        {
-            if (File.Exists(candidate)) return candidate;
-        }
+        var candidate = Path.Combine(localAppData, "agy", "bin", "agy.exe");
+        if (File.Exists(candidate)) return candidate;
 
         return new CommandAvailability().ResolveOnPath("agy");
     }
 
-    public static string? FindCodex() => new CommandAvailability().ResolveOnPath("codex");
-
-    public static string? FindCursor()
+    public static string? FindCodex()
     {
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-        var candidates = new[]
-        {
-            Path.Combine(localAppData, "Programs", "cursor", "Cursor.exe"),
-            Path.Combine(programFiles, "Cursor", "Cursor.exe"),
-        };
-
-        foreach (var candidate in candidates)
+        var roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        foreach (var candidate in new[] { Path.Combine(roaming, "npm", "codex.cmd"), Path.Combine(roaming, "npm", "codex") })
         {
             if (File.Exists(candidate)) return candidate;
         }
 
-        return new CommandAvailability().ResolveOnPath("cursor");
+        return new CommandAvailability().ResolveOnPath("codex");
+    }
+
+    public static string? FindCursor()
+    {
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var candidate = Path.Combine(localAppData, "cursor-agent", "cursor-agent.cmd");
+        if (File.Exists(candidate)) return candidate;
+
+        return new CommandAvailability().ResolveOnPath("cursor-agent");
     }
 }

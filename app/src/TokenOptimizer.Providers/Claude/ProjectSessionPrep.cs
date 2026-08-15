@@ -32,6 +32,7 @@ public static class ProjectSessionPrep
         }
 
         ProjectClaudeMdService.EnsureDirective(projectDirectory, useGraphify);
+        ProjectClaudeMdService.EnsureHandoffReference(projectDirectory);
 
         // claude-mem's context-injection defaults (50 observations / 10
         // sessions / 5 full-detail) are tuned for larger, longer-lived

@@ -84,10 +84,19 @@ public sealed class BenchmarkRunner
         return File.Exists(scriptPath) ? File.ReadAllText(scriptPath) : null;
     }
 
+    public Task<CommandResult> RunAsync(
+        string repoRoot,
+        IReadOnlyList<string>? modelIds,
+        BenchmarkQualityTier tier,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(repoRoot, modelIds, tier, onLine: null, cancellationToken);
+
+    /// <summary>Same as RunAsync, but streams each stdout/stderr line to onLine as the run produces it - for a live log view instead of only a final result after the whole (possibly hours-long) run completes.</summary>
     public async Task<CommandResult> RunAsync(
         string repoRoot,
         IReadOnlyList<string>? modelIds,
         BenchmarkQualityTier tier,
+        Action<string>? onLine,
         CancellationToken cancellationToken = default)
     {
         var scriptPath = Path.Combine(repoRoot, "run_benchmarks.py");
@@ -127,8 +136,11 @@ public sealed class BenchmarkRunner
         // fall back to a plain verified Python interpreter if uv isn't installed.
         if (_availability.IsOnPath("uv", useCache: true))
         {
-            return await ExternalCommandRunner.RunAsync(
-                "uv", $"run {string.Join(' ', args)}", repoRoot, timeoutSeconds: 0, cancellationToken: cancellationToken);
+            return onLine is null
+                ? await ExternalCommandRunner.RunAsync(
+                    "uv", $"run {string.Join(' ', args)}", repoRoot, timeoutSeconds: 0, cancellationToken: cancellationToken)
+                : await ExternalCommandRunner.RunStreamingAsync(
+                    "uv", $"run {string.Join(' ', args)}", repoRoot, onLine, timeoutSeconds: 0, cancellationToken: cancellationToken);
         }
 
         var pythonExe = await _pythonLocator.FindWorkingPythonAsync();
@@ -137,7 +149,10 @@ public sealed class BenchmarkRunner
             return new CommandResult { Success = false, Output = "No working Python interpreter and uv is not installed - cannot run benchmarks." };
         }
 
-        return await ExternalCommandRunner.RunAsync(
-            pythonExe, string.Join(' ', args), repoRoot, timeoutSeconds: 0, cancellationToken: cancellationToken);
+        return onLine is null
+            ? await ExternalCommandRunner.RunAsync(
+                pythonExe, string.Join(' ', args), repoRoot, timeoutSeconds: 0, cancellationToken: cancellationToken)
+            : await ExternalCommandRunner.RunStreamingAsync(
+                pythonExe, string.Join(' ', args), repoRoot, onLine, timeoutSeconds: 0, cancellationToken: cancellationToken);
     }
 }

@@ -20,6 +20,7 @@ public sealed class ProjectClaudeMdService
 
     private const string GraphifyMarkerHeading = "# Graphify enforcement";
     private const string CompanionMarkerHeading = "# Companion tooling";
+    private const string HandoffMarkerHeading = "# Session handoff";
 
     /// <summary>A project below this file count skips Graphify entirely - not worth the setup/token overhead.</summary>
     public static bool ExceedsGraphifyThreshold(string projectDirectory)
@@ -138,6 +139,47 @@ public sealed class ProjectClaudeMdService
             if (toAppend is null) return;
 
             File.WriteAllText(claudeMdPath, existing.TrimEnd() + "\r\n\r\n" + toAppend);
+        }
+        catch (IOException)
+        {
+            // Best effort - a write failure here must never block launch.
+        }
+    }
+
+    /// <summary>
+    /// If a fallback-chain handoff exists (see SessionHandoffExporter - written
+    /// automatically at the start of every Antigravity/Cursor/Codex/Groq
+    /// launch), points CLAUDE.md at it so the NEXT Claude Code session in this
+    /// project picks the context up automatically. CLAUDE.md is auto-loaded by
+    /// every Claude Code session, unlike AGENTS.md (which only the other tools
+    /// read) - so this closes the loop with no user action needed on either
+    /// end of the handoff.
+    /// </summary>
+    public static void EnsureHandoffReference(string projectDirectory)
+    {
+        var handoffFile = Path.Combine(projectDirectory, ".claude-handoff", "session-handoff.md");
+        if (!File.Exists(handoffFile)) return;
+
+        var claudeMdPath = Path.Combine(projectDirectory, "CLAUDE.md");
+        var section = $"{HandoffMarkerHeading}\n\n" +
+            "This project has a handoff file at `.claude-handoff/session-handoff.md` - a summary of the most " +
+            "recent session run through a different fallback-chain provider (Antigravity, Cursor, Codex, or " +
+            "Groq). Read it at the start of this session so context and decisions from that session carry " +
+            "over. The skills/plugins it lists as available in the source session are installed here too via " +
+            "the companion-tooling sync that runs before every Claude Code (and Groq, which is Claude Code " +
+            "pointed at a different backend) launch, so nothing extra needs installing to pick the work back up.";
+
+        try
+        {
+            if (!File.Exists(claudeMdPath))
+            {
+                File.WriteAllText(claudeMdPath, section);
+                return;
+            }
+
+            var existing = File.ReadAllText(claudeMdPath);
+            if (existing.Contains(HandoffMarkerHeading)) return;
+            File.WriteAllText(claudeMdPath, existing.TrimEnd() + "\r\n\r\n" + section);
         }
         catch (IOException)
         {

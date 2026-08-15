@@ -7,9 +7,11 @@ using TokenOptimizer.Providers.Manifests;
 namespace TokenOptimizer.Providers.Fallback;
 
 /// <summary>
-/// Cursor IDE - last of the three IDE/CLI fallbacks before the local model.
+/// Cursor's terminal CLI (cursor-agent) - manual-only, CLI-only. The Cursor
+/// desktop IDE app is deliberately not launched here, so every provider
+/// opens a single terminal-style session rather than a separate GUI window.
 /// Same opt-in-credential gating as Antigravity; real auth happens via
-/// interactive sign-in inside Cursor itself.
+/// interactive sign-in inside the CLI itself.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class CursorAdapter : IProviderAdapter
@@ -41,19 +43,12 @@ public sealed class CursorAdapter : IProviderAdapter
     public Task<ISessionHandle> LaunchSessionAsync(SessionLaunchOptions options)
     {
         var exe = ExecutableLocators.FindCursor()
-                  ?? throw new InvalidOperationException("Cursor executable not found.");
+                  ?? throw new InvalidOperationException("Cursor CLI (cursor-agent) not found - the desktop app is no longer used as a fallback.");
 
         SessionHandoffExporter.Export(options.ProjectPath);
 
-        var isExe = Path.GetExtension(exe).Equals(".exe", StringComparison.OrdinalIgnoreCase);
-        var process = Process.Start(new ProcessStartInfo
-        {
-            FileName = exe,
-            Arguments = $"\"{options.ProjectPath}\"",
-            WorkingDirectory = isExe ? null : options.ProjectPath,
-            UseShellExecute = isExe,
-        });
+        var process = ProcessLaunchHelper.Start(exe, $"\"{options.ProjectPath}\"", options.ProjectPath);
 
-        return Task.FromResult<ISessionHandle>(new ProcessSessionHandle(Name, options.ProjectPath, process));
+        return Task.FromResult<ISessionHandle>(new ProcessSessionHandle(Name, options.ProjectPath, process, watchForRateLimit: true));
     }
 }

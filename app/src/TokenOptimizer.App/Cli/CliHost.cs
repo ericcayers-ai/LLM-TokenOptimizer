@@ -127,7 +127,7 @@ public static class CliHost
                         if (!await provider.IsAvailableAsync()) return Fail($"{provider.Name} is not available on this machine.");
                     }
 
-                    if (provider == claudeAdapter || provider == lmStudioAdapter)
+                    if (provider == claudeAdapter || provider == lmStudioAdapter || provider == groqAdapter)
                     {
                         // Same ~/.claude environment either way - keep it in sync
                         // before every launch, exactly like MainViewModel does,

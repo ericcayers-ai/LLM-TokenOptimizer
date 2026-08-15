@@ -48,15 +48,8 @@ public sealed class CodexAdapter : IProviderAdapter
 
         SessionHandoffExporter.Export(options.ProjectPath);
 
-        var psi = new ProcessStartInfo
-        {
-            FileName = exe,
-            WorkingDirectory = options.ProjectPath,
-            UseShellExecute = false,
-        };
-        psi.EnvironmentVariables["OPENAI_API_KEY"] = apiKey;
-
-        var process = Process.Start(psi);
+        var process = ProcessLaunchHelper.Start(exe, string.Empty, options.ProjectPath,
+            new Dictionary<string, string> { ["OPENAI_API_KEY"] = apiKey });
         return Task.FromResult<ISessionHandle>(new ProcessSessionHandle(Name, options.ProjectPath, process, watchForRateLimit: true));
     }
 }

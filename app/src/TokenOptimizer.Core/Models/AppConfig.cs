@@ -40,4 +40,13 @@ public sealed class AppConfig
     /// which the composite_score heuristic can disagree with).
     /// </summary>
     public bool BestLocalModelIsManualOverride { get; set; }
+
+    /// <summary>Provider names in user-chosen priority order for the "Custom (fallback chain)" option, drag-reordered in the Session tab.</summary>
+    public List<string>? CustomFallbackOrder { get; set; }
+
+    /// <summary>Provider names excluded from the custom chain (unchecked in the drag-reorder list) - everything else in CustomFallbackOrder is used.</summary>
+    public List<string>? CustomFallbackExcluded { get; set; }
+
+    /// <summary>Provider (or "Auto (fallback chain)" / "Custom (fallback chain)") to launch under when a master-folder subdirectory is double-clicked in the tree browser. Null = use whatever SelectedProviderName currently is.</summary>
+    public string? AutoLaunchProviderName { get; set; }
 }

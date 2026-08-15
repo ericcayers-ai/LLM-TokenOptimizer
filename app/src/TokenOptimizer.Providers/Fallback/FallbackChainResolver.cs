@@ -41,6 +41,31 @@ public sealed class FallbackChainResolver
         _rateLimits = rateLimits;
     }
 
+    /// <summary>All adapters this resolver knows about, keyed by Name, for custom-order resolution.</summary>
+    private IReadOnlyDictionary<string, (IProviderAdapter Adapter, FallbackProvider? RateLimitKey)> AdaptersByName => new Dictionary<string, (IProviderAdapter, FallbackProvider?)>
+    {
+        [_claudeAdapter.Name] = (_claudeAdapter, FallbackProvider.Claude),
+        [_antigravity.Name] = (_antigravity, FallbackProvider.Antigravity),
+        [_codex.Name] = (_codex, FallbackProvider.Codex),
+        [_cursor.Name] = (_cursor, FallbackProvider.Cursor),
+        [_groq.Name] = (_groq, FallbackProvider.Groq),
+        [_localModel.Name] = (_localModel, null),
+    };
+
+    /// <summary>Walks a user-defined, drag-reordered provider order (see AppConfig.CustomFallbackOrder), same availability/rate-limit gating as the auto chain, skipping any name not present in this adapter set.</summary>
+    public async Task<IProviderAdapter?> ResolveCustomAsync(IReadOnlyList<string> orderedProviderNames)
+    {
+        var byName = AdaptersByName;
+        foreach (var name in orderedProviderNames)
+        {
+            if (!byName.TryGetValue(name, out var entry)) continue;
+            if (entry.RateLimitKey is { } key && await _rateLimits.IsRateLimitedAsync(key)) continue;
+            if (await entry.Adapter.IsAvailableAsync()) return entry.Adapter;
+        }
+
+        return null;
+    }
+
     public async Task<IProviderAdapter?> ResolveAsync()
     {
         if (!await _rateLimits.IsRateLimitedAsync(FallbackProvider.Claude) && await _claudeAdapter.IsAvailableAsync())

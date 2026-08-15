@@ -55,12 +55,18 @@
             <!-- ==================== SETUP TAB ==================== -->
             <TabItem Header="Setup">
                 <ScrollViewer>
-                    <Grid ColumnDefinitions="320,*" Margin="8">
+                    <StackPanel Margin="8">
+                        <TextBlock Text="{Binding SetupStepsSummary}" FontWeight="SemiBold" Margin="0,0,0,8" />
+                        <Grid ColumnDefinitions="320,*">
 
                         <StackPanel Grid.Column="0" Spacing="10" Margin="0,0,12,0">
                             <Border Classes="Card">
                                 <StackPanel Spacing="8">
-                                    <TextBlock Text="Projects" Classes="SectionHeader" />
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <TextBlock Text="①" FontWeight="Bold" />
+                                        <TextBlock Text="Projects" Classes="SectionHeader" />
+                                        <TextBlock Text="✓ done" Foreground="MediumSeaGreen" FontSize="11" VerticalAlignment="Center" IsVisible="{Binding SetupStep1Done}" />
+                                    </StackPanel>
                                     <ListBox ItemsSource="{Binding ProjectHistoryList}"
                                              SelectedItem="{Binding SelectedProject}"
                                              Height="180">
@@ -75,14 +81,21 @@
                                     </ListBox>
 
                                     <TextBlock Text="Add project folder" Classes="SubHeader" />
-                                    <TextBox PlaceholderText="C:\path\to\project" Text="{Binding NewProjectPath}" />
+                                    <Grid ColumnDefinitions="*,Auto">
+                                        <TextBox Grid.Column="0" PlaceholderText="C:\path\to\project" Text="{Binding NewProjectPath}" />
+                                        <Button Grid.Column="1" Content="Browse..." Command="{Binding BrowseProjectFolderCommand}" Margin="4,0,0,0" />
+                                    </Grid>
                                     <Button Content="Add" Command="{Binding AddProjectCommand}" HorizontalAlignment="Stretch" />
 
                                     <TextBlock Text="Master folder" Classes="SubHeader" />
-                                    <TextBox Text="{Binding MasterFolderPath}" PlaceholderText="C:\path\to\projects" />
+                                    <Grid ColumnDefinitions="*,Auto">
+                                        <TextBox Grid.Column="0" Text="{Binding MasterFolderPath}" PlaceholderText="C:\path\to\projects" />
+                                        <Button Grid.Column="1" Content="Browse..." Command="{Binding BrowseMasterFolderCommand}" Margin="4,0,0,0" />
+                                    </Grid>
                                     <StackPanel Orientation="Horizontal" Spacing="8">
                                         <Button Content="Set" Command="{Binding SetMasterFolderCommand}" />
                                         <Button Content="Refresh" Command="{Binding RefreshMasterFolderCandidatesCommand}" />
+                                        <Button Content="{Binding MasterFolderTreeToggleLabel}" Command="{Binding ShowMasterFolderTreeCommand}" ToolTip.Tip="Show a tree of every subdirectory under this master folder - double-click one to launch a session there." />
                                     </StackPanel>
                                     <ListBox ItemsSource="{Binding MasterFolderCandidates}" Height="120">
                                         <ListBox.ItemTemplate>
@@ -95,6 +108,19 @@
                                             </DataTemplate>
                                         </ListBox.ItemTemplate>
                                     </ListBox>
+
+                                    <Border IsVisible="{Binding IsMasterFolderTreeOpen}" BorderBrush="Gray" BorderThickness="1" CornerRadius="4" Height="260" ClipToBounds="True">
+                                        <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" Padding="6">
+                                            <TreeView ItemsSource="{Binding MasterFolderTree}">
+                                                <TreeView.ItemTemplate>
+                                                    <TreeDataTemplate ItemsSource="{Binding Children}">
+                                                        <TextBlock Text="{Binding Name}"
+                                                                   DoubleTapped="MasterFolderTreeNode_DoubleTapped" />
+                                                    </TreeDataTemplate>
+                                                </TreeView.ItemTemplate>
+                                            </TreeView>
+                                        </ScrollViewer>
+                                    </Border>
                                     <StackPanel Orientation="Horizontal" Spacing="8">
                                         <TextBox Text="{Binding NewProjectFolderName}" PlaceholderText="new folder name" Width="150" />
                                         <Button Content="Create" Command="{Binding CreateProjectFolderCommand}" />
@@ -108,7 +134,11 @@
                             <Border Classes="Card">
                                 <StackPanel Spacing="8">
                                     <Grid ColumnDefinitions="*,Auto">
-                                        <TextBlock Text="Dependencies" Classes="SectionHeader" />
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <TextBlock Text="②" FontWeight="Bold" />
+                                            <TextBlock Text="Dependencies" Classes="SectionHeader" />
+                                            <TextBlock Text="✓ done" Foreground="MediumSeaGreen" FontSize="11" VerticalAlignment="Center" IsVisible="{Binding SetupStep2Done}" />
+                                        </StackPanel>
                                         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
                                             <Button Content="Refresh" Command="{Binding RefreshAllCommand}" />
                                             <Button Content="Install Missing" Command="{Binding InstallMissingDependenciesCommand}" />
@@ -133,17 +163,22 @@
                             <Border Classes="Card">
                                 <StackPanel Spacing="8">
                                     <Grid ColumnDefinitions="*,Auto">
-                                        <TextBlock Text="Companion tooling" Classes="SectionHeader" />
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <TextBlock Text="③" FontWeight="Bold" />
+                                            <TextBlock Text="Companion tooling" Classes="SectionHeader" />
+                                            <TextBlock Text="✓ done" Foreground="MediumSeaGreen" FontSize="11" VerticalAlignment="Center" IsVisible="{Binding SetupStep3Done}" />
+                                        </StackPanel>
                                         <Button Grid.Column="1" Content="Install Companion Tooling" Command="{Binding InstallCompanionToolingCommand}" />
                                     </Grid>
-                                    <TextBlock Text="graphify, claude-mem, headroom, rtk, context7, context-mode, caveman, claude-md-management, impeccable, task-observer, LM Studio support."
+                                    <TextBlock Text="graphify, claude-mem, headroom, rtk, context7, context-mode, caveman, claude-md-management, impeccable, task-observer, LM Studio support, and the Codex/Antigravity/Cursor fallback-chain CLIs."
                                                TextWrapping="Wrap" Opacity="0.7" FontSize="11" />
                                     <ProgressBar Value="{Binding CompanionToolingProgress}" Minimum="0" Maximum="1"
                                                  IsVisible="{Binding IsCompanionToolingInstalling}" Height="6" />
                                 </StackPanel>
                             </Border>
                         </StackPanel>
-                    </Grid>
+                        </Grid>
+                    </StackPanel>
                 </ScrollViewer>
             </TabItem>
 
@@ -163,7 +198,12 @@
                                     </StackPanel>
                                     <StackPanel Spacing="4" Width="220">
                                         <TextBlock Text="Model override (optional)" />
-                                        <TextBox Text="{Binding ModelOverride}" PlaceholderText="e.g. sonnet, opus, qwen/qwen3-coder-30b" />
+                                        <ComboBox ItemsSource="{Binding ModelOverrideOptions}"
+                                                  Text="{Binding ModelOverride}"
+                                                  IsEditable="True"
+                                                  PlaceholderText="e.g. sonnet, opus, qwen/qwen3-coder-30b"
+                                                  HorizontalAlignment="Stretch"
+                                                  ToolTip.Tip="Options change with the selected Provider - pick one, or type any model name/id." />
                                     </StackPanel>
                                     <StackPanel Spacing="4" Width="130">
                                         <TextBlock Text="Resume mode" />
@@ -202,6 +242,38 @@
 
                         <Border Classes="Card">
                             <StackPanel Spacing="8">
+                                <Grid ColumnDefinitions="*,Auto">
+                                    <StackPanel Spacing="2">
+                                        <TextBlock Text="Custom fallback chain" Classes="SectionHeader" />
+                                        <TextBlock Text="Drag to reorder, uncheck to exclude. Select &quot;Custom (fallback chain)&quot; as the Provider above to use this order." Opacity="0.6" FontSize="11" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <Button Grid.Column="1" Content="Save Order" Command="{Binding SaveCustomFallbackOrderCommand}" VerticalAlignment="Top" />
+                                </Grid>
+                                <ListBox x:Name="CustomChainListBox" ItemsSource="{Binding CustomChainOrder}" Height="180">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto"
+                                                  PointerPressed="CustomChainItem_PointerPressed"
+                                                  PointerReleased="CustomChainItem_PointerReleased"
+                                                  Background="Transparent">
+                                                <TextBlock Grid.Column="0" Text="::" FontWeight="Bold" Opacity="0.5" Width="20" Cursor="SizeAll" />
+                                                <CheckBox Grid.Column="1" Content="{Binding ProviderName}" IsChecked="{Binding IsIncluded}" />
+                                                <TextBlock Grid.Column="2" Text="{Binding SortIndex}" Opacity="0.4" FontSize="10" Width="20" VerticalAlignment="Center" />
+                                                <Button Grid.Column="3" Content="↑"
+                                                        Command="{Binding $parent[ListBox].((vm:MainViewModel)DataContext).MoveCustomChainItemUpCommand}"
+                                                        CommandParameter="{Binding}" Padding="6,2" />
+                                                <Button Grid.Column="4" Content="↓"
+                                                        Command="{Binding $parent[ListBox].((vm:MainViewModel)DataContext).MoveCustomChainItemDownCommand}"
+                                                        CommandParameter="{Binding}" Padding="6,2" />
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Classes="Card">
+                            <StackPanel Spacing="8">
                                 <TextBlock Text="Fallback credentials" Classes="SectionHeader" />
                                 <StackPanel Orientation="Horizontal" Spacing="8">
                                     <TextBox Text="{Binding CodexApiKeyInput}" PlaceholderText="OPENAI_API_KEY for Codex" Width="220" PasswordChar="*" />
@@ -211,10 +283,85 @@
                                     <TextBox Text="{Binding GroqApiKeyInput}" PlaceholderText="GROQ_API_KEY for Groq" Width="220" PasswordChar="*" />
                                     <Button Content="Save Groq Key" Command="{Binding SetGroqCredentialCommand}" />
                                 </StackPanel>
-                                <StackPanel Orientation="Horizontal" Spacing="8">
-                                    <Button Content="Opt in: Antigravity" Command="{Binding OptInAntigravityCommand}" />
-                                    <Button Content="Opt in: Cursor" Command="{Binding OptInCursorCommand}" />
+                                <TextBlock Text="⚠ Known issue: Groq currently fails to launch - Claude Code speaks the Anthropic Messages API protocol even when pointed at a different URL, and Groq only exposes an OpenAI-protocol endpoint, so every request is rejected. A protocol bridge is planned for a future release; the key can still be saved now."
+                                           Foreground="Orange" FontSize="11" TextWrapping="Wrap" />
+
+                                <Border BorderBrush="Gray" BorderThickness="1" CornerRadius="4" Padding="10">
+                                    <StackPanel Spacing="4">
+                                        <TextBlock Text="Login: Antigravity" FontWeight="SemiBold" />
+                                        <TextBlock Text="Opens the Antigravity CLI in a new window - sign in there (OAuth), then it's available in the fallback chain." Opacity="0.6" FontSize="11" TextWrapping="Wrap" />
+                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                            <Button Content="Login: Antigravity" Command="{Binding LoginAntigravityCommand}" />
+                                            <Button Content="Check" Command="{Binding CheckAntigravityLoginCommand}" />
+                                        </StackPanel>
+                                        <TextBlock Text="{Binding AntigravityLoginStatusText}" FontSize="11" Opacity="0.8" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                </Border>
+
+                                <Border BorderBrush="Gray" BorderThickness="1" CornerRadius="4" Padding="10">
+                                    <StackPanel Spacing="4">
+                                        <TextBlock Text="Login: Cursor" FontWeight="SemiBold" />
+                                        <TextBlock Text="Opens 'cursor-agent login' in a new window - sign in there, then it's available in the fallback chain." Opacity="0.6" FontSize="11" TextWrapping="Wrap" />
+                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                            <Button Content="Login: Cursor" Command="{Binding LoginCursorCommand}" />
+                                            <Button Content="Check" Command="{Binding CheckCursorLoginCommand}" />
+                                        </StackPanel>
+                                        <TextBlock Text="{Binding CursorLoginStatusText}" FontSize="11" Opacity="0.8" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ==================== DASHBOARD TAB ==================== -->
+            <TabItem Header="Dashboard">
+                <ScrollViewer>
+                    <StackPanel Spacing="12" Margin="8">
+                        <Border Classes="Card">
+                            <StackPanel Spacing="10">
+                                <Grid ColumnDefinitions="*,Auto">
+                                    <TextBlock Text="Active session" Classes="SectionHeader" />
+                                    <Button Grid.Column="1" Content="Refresh" Command="{Binding RefreshDashboardCommand}" />
+                                </Grid>
+                                <StackPanel Spacing="4" Width="260">
+                                    <TextBlock Text="Provider (switch on the fly)" />
+                                    <ComboBox ItemsSource="{Binding ProviderNames}"
+                                              SelectedItem="{Binding SelectedProviderName}"
+                                              HorizontalAlignment="Stretch" />
                                 </StackPanel>
+                                <TextBlock Text="{Binding ActiveProviderLabel}" FontWeight="SemiBold" />
+                                <ProgressBar IsIndeterminate="True" Height="4" IsVisible="{Binding IsDashboardRefreshing}" />
+                                <TextBlock Text="Switching providers applies to the NEXT session launch - Claude Code can't hot-swap the backend of an already-running session. Switching to/from Custom fallback chain also needs a fresh launch."
+                                           TextWrapping="Wrap" Opacity="0.65" FontSize="11" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Classes="Card">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="Skills in use (Claude Code terminal)" Classes="SectionHeader" />
+                                <TextBlock Text="Every provider routes through this one terminal, so these are always active regardless of the backend model selected above." Opacity="0.6" FontSize="11" TextWrapping="Wrap" />
+                                <ItemsControl ItemsSource="{Binding ActiveSkills}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding}" FontSize="12" />
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Classes="Card">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="Plugins in use (Claude Code terminal)" Classes="SectionHeader" />
+                                <ItemsControl ItemsSource="{Binding ActivePlugins}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding}" FontSize="12" />
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
                             </StackPanel>
                         </Border>
                     </StackPanel>
@@ -262,11 +409,23 @@
 
                         <Border Classes="Card">
                             <StackPanel Spacing="8">
+                                <Grid ColumnDefinitions="*,Auto">
+                                    <TextBlock Text="Live run log" Classes="SectionHeader" />
+                                    <TextBlock Grid.Column="1" Text="{Binding LiveTokenStats}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                </Grid>
+                                <ListBox ItemsSource="{Binding BenchmarkLogLines}" Height="180" FontFamily="Consolas,monospace" FontSize="11" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Classes="Card">
+                            <StackPanel Spacing="8">
                                 <TextBlock Text="Leaderboard" Classes="SectionHeader" />
+                                <TextBlock Text="Double-click a row to set it as the Model override and switch Provider to LM Studio." Opacity="0.6" FontSize="11" />
                                 <ItemsControl ItemsSource="{Binding Leaderboard}">
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
-                                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <StackPanel Orientation="Horizontal" Spacing="6" Background="Transparent"
+                                                        DoubleTapped="LeaderboardRow_DoubleTapped">
                                                 <TextBlock Text="{Binding Model}" Width="240" FontSize="11" />
                                                 <TextBlock Text="{Binding CompositeScore}" Width="70" FontSize="11" Opacity="0.8" />
                                                 <TextBlock Text="{Binding AvgTokensPerSecond}" FontSize="11" Opacity="0.6" />

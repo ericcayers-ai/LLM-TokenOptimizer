@@ -58,6 +58,35 @@ public sealed class MasterFolderService
         return candidates;
     }
 
+    /// <summary>
+    /// Recursive subdirectory tree of the master folder, for browsing (rather
+    /// than just the flat "projects" list ListCandidatesAsync produces) -
+    /// depth-capped and skipping hidden/reparse-point directories so a huge
+    /// or symlink-looped tree can't hang the UI.
+    /// </summary>
+    public static Task<FolderTreeNode> BuildSubdirectoryTreeAsync(string masterFolder, int maxDepth = 4) =>
+        Task.Run(() => BuildNode(masterFolder, Path.GetFileName(masterFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)), maxDepth));
+
+    private static FolderTreeNode BuildNode(string path, string name, int depthRemaining)
+    {
+        if (depthRemaining <= 0) return new FolderTreeNode(name, path, Array.Empty<FolderTreeNode>());
+
+        var children = new List<FolderTreeNode>();
+        try
+        {
+            foreach (var dir in Directory.EnumerateDirectories(path).OrderBy(d => d, StringComparer.OrdinalIgnoreCase))
+            {
+                var info = new DirectoryInfo(dir);
+                if (info.Attributes.HasFlag(FileAttributes.Hidden) || info.Attributes.HasFlag(FileAttributes.ReparsePoint)) continue;
+                children.Add(BuildNode(dir, info.Name, depthRemaining - 1));
+            }
+        }
+        catch (UnauthorizedAccessException) { }
+        catch (IOException) { }
+
+        return new FolderTreeNode(name, path, children);
+    }
+
     /// <summary>Creates a new empty subfolder directly inside the master folder, ready to be opened as a project.</summary>
     public static string? CreateProjectFolder(string masterFolder, string name)
     {

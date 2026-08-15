@@ -452,11 +452,22 @@ public sealed class CompanionToolingInstaller
     // IMPECCABLE SKILL (https://github.com/pbakaus/impeccable)
     // ------------------------------------------------------------------
 
+    /// <summary>
+    /// Impeccable ships as a Claude Code plugin whose marketplace.json lives
+    /// inside its own repo (github.com/pbakaus/impeccable), not on a hosted
+    /// marketplace slug - so "install" means clone it locally, then register
+    /// that local clone's directory itself as a marketplace (via the same
+    /// InstallMarketplacePluginAsync every other companion plugin uses) and
+    /// install from it. The previous implementation only cloned the repo and
+    /// checked for a SKILL.md file on disk - it never actually ran `claude
+    /// plugin marketplace add`/`plugin install`, so the plugin was never
+    /// registered with Claude Code at all. That's the fix here.
+    /// </summary>
     public async Task<bool> InstallImpeccableSkillAsync()
     {
         var config = await _configStore.LoadAsync();
         var skillDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "skills", "impeccable");
-        if (config.ImpeccableSkillInstalled && File.Exists(Path.Combine(skillDir, "SKILL.md"))) return true;
+        if (config.ImpeccableSkillInstalled) return true;
 
         if (!_availability.IsOnPath("git", useCache: true)) return false;
 
@@ -479,7 +490,9 @@ public sealed class CompanionToolingInstaller
             if (!clone.Success && !Directory.Exists(skillDir)) return false;
         }
 
-        var installed = File.Exists(Path.Combine(skillDir, "SKILL.md"));
+        if (!File.Exists(Path.Combine(skillDir, ".claude-plugin", "marketplace.json"))) return false;
+
+        var installed = await InstallMarketplacePluginAsync(skillDir, "impeccable", "impeccable");
         if (installed)
         {
             config.ImpeccableSkillInstalled = true;

@@ -1,7 +1,9 @@
 using System.Collections.ObjectModel;
+using System.Text.RegularExpressions;
 using Avalonia.Input.Platform;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using TokenOptimizer.App.Services;
 using TokenOptimizer.Core.Benchmarking;
 using TokenOptimizer.Core.Concurrency;
 using TokenOptimizer.Core.Config;
@@ -19,6 +21,7 @@ namespace TokenOptimizer.App.ViewModels;
 public partial class MainViewModel : ViewModelBase
 {
     private const string AutoFallbackProviderName = "Auto (fallback chain)";
+    private const string CustomFallbackProviderName = "Custom (fallback chain)";
 
     private readonly ConfigStore _configStore = new();
     private readonly CommandAvailability _availability = new();
@@ -42,6 +45,7 @@ public partial class MainViewModel : ViewModelBase
     private readonly BenchmarkRunner _benchmarkRunner;
     private readonly ProjectClaudeMdService _claudeMdService = new();
     private readonly CompanionUninstaller _uninstaller;
+    private readonly ProviderCliInstaller _providerCliInstaller = new();
     private readonly IReadOnlyList<IProviderAdapter> _providers;
 
     public MainViewModel()
@@ -71,7 +75,7 @@ public partial class MainViewModel : ViewModelBase
             _claudeAdapter, _lmStudioAdapter, _antigravityAdapter, _codexAdapter, _cursorAdapter, _groqAdapter,
         };
         ProviderNames = new ObservableCollection<string>(
-            new[] { AutoFallbackProviderName }.Concat(_providers.Select(p => p.Name)));
+            new[] { AutoFallbackProviderName, CustomFallbackProviderName }.Concat(_providers.Select(p => p.Name)));
         SelectedProviderName = ProviderNames.FirstOrDefault() ?? string.Empty;
 
         QualityTierNames = new ObservableCollection<string>(Enum.GetNames<BenchmarkQualityTier>());
@@ -79,23 +83,113 @@ public partial class MainViewModel : ViewModelBase
 
         _ = RefreshAllAsync();
         _ = LoadBenchmarkCatalogAsync();
+        _ = RefreshDashboardAsync();
+        _ = CheckAntigravityLoginAsync();
+        _ = CheckCursorLoginAsync();
     }
 
     public ObservableCollection<ProjectInfo> ProjectHistoryList { get; } = new();
     public ObservableCollection<DependencyStatus> Dependencies { get; } = new();
     public ObservableCollection<string> ProviderNames { get; }
     public ObservableCollection<FallbackChainStep> FallbackChain { get; } = new();
+    public ObservableCollection<FallbackChainOrderItemViewModel> CustomChainOrder { get; } = new();
     public ObservableCollection<string> LogLines { get; } = new();
     public ObservableCollection<ProjectCandidateViewModel> MasterFolderCandidates { get; } = new();
+    public ObservableCollection<FolderTreeNode> MasterFolderTree { get; } = new();
+
+    [ObservableProperty]
+    public partial bool IsMasterFolderTreeOpen { get; set; }
+
+    partial void OnIsMasterFolderTreeOpenChanged(bool value) =>
+        MasterFolderTreeToggleLabel = value ? "Hide subfolders" : "Browse subfolders";
+
+    [ObservableProperty]
+    public partial string MasterFolderTreeToggleLabel { get; set; } = "Browse subfolders";
     public ObservableCollection<string> CatalogModels { get; } = new();
     public ObservableCollection<string> QualityTierNames { get; }
+    public ObservableCollection<string> ModelOverrideOptions { get; } = new();
+
+    /// <summary>
+    /// Curated best-effort model lists per provider - only LM Studio has a
+    /// real enumeration API (ListInstalledModelsAsync); every other provider
+    /// has no model-catalog endpoint, so these are static and the
+    /// ModelOverride ComboBox stays IsEditable so any string still works.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, string[]> StaticModelCatalog = new Dictionary<string, string[]>
+    {
+        // Index 0 of each array is that provider's default/auto model (see DefaultModelFor) - kept first
+        // deliberately, the rest of the array is re-sorted alphabetically wherever it's shown in full.
+        ["Claude Code"] = new[] { "claude-sonnet-5", "claude-fable-5", "claude-haiku-4-5-20251001", "claude-opus-5" },
+        ["Groq"] = new[] { "llama-3.3-70b-versatile", "deepseek-r1-distill-llama-70b", "llama-3.1-8b-instant", "moonshotai/kimi-k2-instruct", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3-32b" },
+        ["Codex"] = new[] { "gpt-5-codex", "gpt-5.1-codex", "gpt-5.1-codex-mini" },
+        ["Antigravity"] = new[] { "gemini-3-pro", "gemini-3-pro-high" },
+        ["Cursor"] = new[] { "auto", "composer-1" },
+    };
+
+    /// <summary>Single default/auto model per provider - what Auto/Custom fallback chain shows, so the dropdown isn't every provider's full curated list mashed together (see RefreshModelOverrideOptionsAsync).</summary>
+    private static string DefaultModelFor(string providerName) =>
+        StaticModelCatalog.TryGetValue(providerName, out var curated) ? curated[0] : providerName;
     public ObservableCollection<BenchmarkRow> Leaderboard { get; } = new();
+    public ObservableCollection<string> BenchmarkLogLines { get; } = new();
+    public ObservableCollection<string> ActiveSkills { get; } = new();
+    public ObservableCollection<string> ActivePlugins { get; } = new();
+
+    [ObservableProperty]
+    public partial string ActiveProviderLabel { get; set; } = "Not resolved yet.";
+
+    [ObservableProperty]
+    public partial bool IsDashboardRefreshing { get; set; }
+
+    private static readonly Regex TokensPerSecondPattern = new(@"(\d+(?:\.\d+)?)\s*tok(?:ens)?/s", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    [ObservableProperty]
+    public partial string LiveTokenStats { get; set; } = "No benchmark running.";
 
     [ObservableProperty]
     public partial ProjectInfo? SelectedProject { get; set; }
 
     [ObservableProperty]
     public partial string SelectedProviderName { get; set; } = string.Empty;
+
+    partial void OnSelectedProviderNameChanged(string value)
+    {
+        _ = RefreshModelOverrideOptionsAsync(value);
+        _ = RefreshDashboardAsync();
+    }
+
+    /// <summary>Selecting the provider IS the category (Avalonia has no built-in grouped-combo control worth the complexity here) - Auto/Custom show the union of everything since the resolved provider decides which entry actually applies.</summary>
+    private async Task RefreshModelOverrideOptionsAsync(string providerName)
+    {
+        IEnumerable<string> options;
+        if (providerName == "LM Studio")
+        {
+            var installed = await _lmStudioAdapter.ListInstalledModelsAsync();
+            options = installed.Select(m => m.ModelKey).Concat(CatalogModels).Distinct(StringComparer.OrdinalIgnoreCase);
+        }
+        else if (providerName is AutoFallbackProviderName or CustomFallbackProviderName)
+        {
+            // Auto/Custom can resolve to any provider, but showing every provider's
+            // full curated list at once was an unreadable, uncategorized wall of
+            // entries - one default model per provider keeps it scannable and each
+            // entry still comes straight from that provider's own model set.
+            var config = await _configStore.LoadAsync();
+            options = StaticModelCatalog.Keys.Select(DefaultModelFor)
+                .Concat(config.BestLocalModelId is { } lmStudioDefault ? new[] { lmStudioDefault } : Array.Empty<string>())
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+        }
+        else if (StaticModelCatalog.TryGetValue(providerName, out var curated))
+        {
+            options = curated;
+        }
+        else
+        {
+            options = Array.Empty<string>();
+        }
+
+        var sorted = options.OrderBy(o => o, StringComparer.OrdinalIgnoreCase).ToList();
+        ModelOverrideOptions.Clear();
+        foreach (var option in sorted) ModelOverrideOptions.Add(option);
+    }
 
     [ObservableProperty]
     public partial string NewProjectPath { get; set; } = string.Empty;
@@ -144,6 +238,37 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty]
     public partial string BenchmarkStatusText { get; set; } = "Idle.";
 
+    [ObservableProperty]
+    public partial string AntigravityLoginStatusText { get; set; } = "Status unknown - click Check.";
+
+    [ObservableProperty]
+    public partial string CursorLoginStatusText { get; set; } = "Status unknown - click Check.";
+
+    [ObservableProperty]
+    public partial bool SetupStep1Done { get; set; }
+
+    [ObservableProperty]
+    public partial bool SetupStep2Done { get; set; }
+
+    [ObservableProperty]
+    public partial bool SetupStep3Done { get; set; }
+
+    [ObservableProperty]
+    public partial string SetupStepsSummary { get; set; } = "Get started below.";
+
+    /// <summary>Recomputes the Setup tab's numbered-step completion state - called after anything that could change it (project/master-folder added, dependency install, companion tooling install), so the tab reads as a guided flow without being a separate modal wizard.</summary>
+    private void RecomputeSetupSteps()
+    {
+        SetupStep1Done = ProjectHistoryList.Count > 0 || !string.IsNullOrWhiteSpace(MasterFolderPath);
+        SetupStep2Done = Dependencies.Count > 0 && Dependencies.All(d => d.IsAvailable);
+        SetupStep3Done = CompanionToolingProgress >= 1;
+
+        var doneCount = new[] { SetupStep1Done, SetupStep2Done, SetupStep3Done }.Count(d => d);
+        SetupStepsSummary = doneCount == 3
+            ? "All setup steps done - ready in the Session tab."
+            : $"{doneCount} of 3 setup steps done.";
+    }
+
     [RelayCommand]
     private async Task RefreshAllAsync()
     {
@@ -178,6 +303,11 @@ public partial class MainViewModel : ViewModelBase
             FallbackChain.Clear();
             foreach (var step in chain) FallbackChain.Add(step);
 
+            if (CustomChainOrder.Count == 0)
+            {
+                await SeedCustomChainOrderAsync();
+            }
+
             await RefreshBestLocalModelAsync();
 
             if (string.IsNullOrWhiteSpace(MasterFolderPath))
@@ -198,8 +328,61 @@ public partial class MainViewModel : ViewModelBase
         finally
         {
             IsBusy = false;
+            RecomputeSetupSteps();
         }
     }
+
+    /// <summary>First run: seed the custom chain from AppConfig.CustomFallbackOrder if saved, otherwise every known provider in its default order, all included.</summary>
+    private async Task SeedCustomChainOrderAsync()
+    {
+        var config = await _configStore.LoadAsync();
+        var excluded = new HashSet<string>(config.CustomFallbackExcluded ?? new List<string>(), StringComparer.Ordinal);
+        var savedOrder = config.CustomFallbackOrder;
+        var names = savedOrder is { Count: > 0 }
+            ? savedOrder.Where(n => _providers.Any(p => p.Name == n)).Concat(_providers.Select(p => p.Name).Except(savedOrder)).ToList()
+            : _providers.Select(p => p.Name).ToList();
+
+        CustomChainOrder.Clear();
+        var index = 0;
+        foreach (var name in names)
+        {
+            CustomChainOrder.Add(new FallbackChainOrderItemViewModel(name, !excluded.Contains(name), index++));
+        }
+    }
+
+    [RelayCommand]
+    private async Task SaveCustomFallbackOrderAsync()
+    {
+        var order = CustomChainOrder.OrderBy(i => i.SortIndex).Select(i => i.ProviderName).ToList();
+        var excluded = CustomChainOrder.Where(i => !i.IsIncluded).Select(i => i.ProviderName).ToList();
+        await _configStore.UpdateAsync(config =>
+        {
+            config.CustomFallbackOrder = order;
+            config.CustomFallbackExcluded = excluded;
+        });
+        Log("Custom fallback chain saved.");
+    }
+
+    /// <summary>Drag-reorder support: swaps two rows' SortIndex, called by the drag/drop behavior in MainWindow.axaml.cs.</summary>
+    public void ReorderCustomChain(int fromIndex, int toIndex)
+    {
+        var ordered = CustomChainOrder.OrderBy(i => i.SortIndex).ToList();
+        if (fromIndex < 0 || fromIndex >= ordered.Count || toIndex < 0 || toIndex >= ordered.Count || fromIndex == toIndex) return;
+
+        var item = ordered[fromIndex];
+        ordered.RemoveAt(fromIndex);
+        ordered.Insert(toIndex, item);
+        for (var i = 0; i < ordered.Count; i++) ordered[i].SortIndex = i;
+    }
+
+    [RelayCommand]
+    private void MoveCustomChainItemUp(FallbackChainOrderItemViewModel item) => ReorderCustomChain(item.SortIndex, item.SortIndex - 1);
+
+    [RelayCommand]
+    private void MoveCustomChainItemDown(FallbackChainOrderItemViewModel item) => ReorderCustomChain(item.SortIndex, item.SortIndex + 1);
+
+    private Task<IProviderAdapter?> ResolveCustomChainProviderAsync() =>
+        _fallbackResolver.ResolveCustomAsync(CustomChainOrder.Where(i => i.IsIncluded).OrderBy(i => i.SortIndex).Select(i => i.ProviderName).ToList());
 
     [RelayCommand]
     private async Task SetMasterFolderAsync()
@@ -227,6 +410,78 @@ public partial class MainViewModel : ViewModelBase
         var candidates = await _masterFolderService.ListCandidatesAsync(MasterFolderPath);
         MasterFolderCandidates.Clear();
         foreach (var candidate in candidates) MasterFolderCandidates.Add(new ProjectCandidateViewModel(candidate));
+    }
+
+    /// <summary>Toggles and (re)builds the recursive subdirectory tree shown when the master-folder label is clicked - separate from the flat MasterFolderCandidates list, which only shows immediate subfolders.</summary>
+    [RelayCommand]
+    private async Task ShowMasterFolderTreeAsync()
+    {
+        if (IsMasterFolderTreeOpen)
+        {
+            IsMasterFolderTreeOpen = false;
+            return;
+        }
+
+        if (!MasterFolderService.IsValidMasterFolder(MasterFolderPath, out var error))
+        {
+            Log($"Master folder unavailable: {error}");
+            return;
+        }
+
+        var root = await MasterFolderService.BuildSubdirectoryTreeAsync(MasterFolderPath);
+        MasterFolderTree.Clear();
+        foreach (var child in root.Children) MasterFolderTree.Add(child);
+        IsMasterFolderTreeOpen = true;
+    }
+
+    /// <summary>Double-click on a subdirectory tree node: launches a session directly against that path, under AutoLaunchProviderName if configured, otherwise whatever's currently selected in the Provider dropdown.</summary>
+    [RelayCommand]
+    private async Task LaunchAtPathAsync(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path)) return;
+
+        var config = await _configStore.LoadAsync();
+        var launchProviderName = string.IsNullOrWhiteSpace(config.AutoLaunchProviderName)
+            ? SelectedProviderName
+            : config.AutoLaunchProviderName;
+
+        IProviderAdapter? provider = launchProviderName switch
+        {
+            AutoFallbackProviderName => await _fallbackResolver.ResolveAsync(),
+            CustomFallbackProviderName => await ResolveCustomChainProviderAsync(),
+            _ => _providers.FirstOrDefault(p => p.Name == launchProviderName),
+        };
+
+        if (provider is null)
+        {
+            Log($"No provider available to launch {path}.");
+            return;
+        }
+
+        try
+        {
+            if (provider == _claudeAdapter || provider == _lmStudioAdapter || provider == _groqAdapter)
+            {
+                await _companionTooling.EnsureSharedClaudeEnvironmentAsync(path);
+                await PrepareProjectDirectiveAsync(path);
+            }
+
+            var options = new SessionLaunchOptions(
+                path,
+                await ResolveEffectiveModelAsync(provider),
+                IsolateClaudeConfig,
+                Enum.Parse<SessionResumeMode>(SelectedResumeModeName));
+            var handle = await provider.LaunchSessionAsync(options);
+            await _projectHistory.AddAsync(path);
+            TrackRateLimitOutcome(handle);
+            Log($"Launched {handle.ProviderName} for {path} (pid {handle.ProcessId?.ToString() ?? "n/a"}).");
+            IsMasterFolderTreeOpen = false;
+            await RefreshAllAsync();
+        }
+        catch (Exception ex)
+        {
+            Log($"Launch failed for {path}: {ex.Message}");
+        }
     }
 
     [RelayCommand]
@@ -270,9 +525,12 @@ public partial class MainViewModel : ViewModelBase
             return;
         }
 
-        var provider = SelectedProviderName == AutoFallbackProviderName
-            ? await _fallbackResolver.ResolveAsync()
-            : _providers.FirstOrDefault(p => p.Name == SelectedProviderName);
+        IProviderAdapter? provider = SelectedProviderName switch
+        {
+            AutoFallbackProviderName => await _fallbackResolver.ResolveAsync(),
+            CustomFallbackProviderName => await ResolveCustomChainProviderAsync(),
+            _ => _providers.FirstOrDefault(p => p.Name == SelectedProviderName),
+        };
 
         if (provider is null)
         {
@@ -284,7 +542,7 @@ public partial class MainViewModel : ViewModelBase
         {
             try
             {
-                if (provider == _claudeAdapter || provider == _lmStudioAdapter)
+                if (provider == _claudeAdapter || provider == _lmStudioAdapter || provider == _groqAdapter)
                 {
                     await _companionTooling.EnsureSharedClaudeEnvironmentAsync(candidate.FullPath);
                     await PrepareProjectDirectiveAsync(candidate.FullPath);
@@ -336,6 +594,9 @@ public partial class MainViewModel : ViewModelBase
         ("impeccable", _companionTooling.InstallImpeccableSkillAsync),
         ("task-observer", _companionTooling.InstallTaskObserverSkillAsync),
         ("LM Studio support", _companionTooling.InstallLMStudioSupportAsync),
+        ("Codex CLI", _providerCliInstaller.InstallCodexCliAsync),
+        ("Antigravity CLI", _providerCliInstaller.InstallAntigravityCliAsync),
+        ("Cursor CLI", _providerCliInstaller.InstallCursorCliAsync),
     };
 
     [RelayCommand]
@@ -378,6 +639,7 @@ public partial class MainViewModel : ViewModelBase
         {
             IsBusy = false;
             IsCompanionToolingInstalling = false;
+            RecomputeSetupSteps();
         }
     }
 
@@ -496,6 +758,57 @@ public partial class MainViewModel : ViewModelBase
         foreach (var row in ranked) Leaderboard.Add(row);
     }
 
+    /// <summary>
+    /// Resolves and displays which provider is actually in effect right now
+    /// (live-resolved for Auto/Custom, verbatim otherwise) plus what's
+    /// installed in the Claude Code terminal every provider ultimately routes
+    /// through (see Phase 1: Antigravity/Cursor are CLI-only, Groq/Codex/LM
+    /// Studio point Claude Code at a different backend - the skills/plugins
+    /// active are always Claude Code's, regardless of which model is behind it).
+    /// </summary>
+    [RelayCommand]
+    private async Task RefreshDashboardAsync()
+    {
+        IsDashboardRefreshing = true;
+        try
+        {
+            IProviderAdapter? resolved = SelectedProviderName switch
+            {
+                AutoFallbackProviderName => await _fallbackResolver.ResolveAsync(),
+                CustomFallbackProviderName => await ResolveCustomChainProviderAsync(),
+                _ => _providers.FirstOrDefault(p => p.Name == SelectedProviderName),
+            };
+
+            ActiveProviderLabel = SelectedProviderName switch
+            {
+                AutoFallbackProviderName or CustomFallbackProviderName =>
+                    resolved is not null ? $"{SelectedProviderName} -> currently resolves to {resolved.Name}" : $"{SelectedProviderName} -> nothing available right now",
+                _ => SelectedProviderName,
+            };
+
+            var skills = await _claudeAdapter.ListInstalledSkillsAsync();
+            ActiveSkills.Clear();
+            foreach (var skill in skills) ActiveSkills.Add(skill);
+
+            var plugins = await _claudeAdapter.ListInstalledPluginsAsync();
+            ActivePlugins.Clear();
+            foreach (var plugin in plugins) ActivePlugins.Add(plugin);
+        }
+        finally
+        {
+            IsDashboardRefreshing = false;
+        }
+    }
+
+    /// <summary>Click-to-select from the leaderboard: fills Model override and switches the provider to LM Studio, the only provider leaderboard rows apply to.</summary>
+    [RelayCommand]
+    private void SelectLeaderboardModel(BenchmarkRow row)
+    {
+        ModelOverride = row.Model;
+        SelectedProviderName = "LM Studio";
+        Log($"Model override set from leaderboard: {row.Model}");
+    }
+
     [RelayCommand]
     private async Task LoadBenchmarkCatalogAsync()
     {
@@ -537,11 +850,28 @@ public partial class MainViewModel : ViewModelBase
         var models = selectedModel is not null ? new[] { selectedModel } : null;
         var modelsLabel = selectedModel ?? "all models";
         BenchmarkStatusText = $"Running ({tier}, {modelsLabel})...";
+        LiveTokenStats = "Waiting for first output...";
+        BenchmarkLogLines.Clear();
         Log($"Benchmark run started: tier={tier}, models={modelsLabel}");
+
+        void OnLine(string line)
+        {
+            _ = Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                BenchmarkLogLines.Add(line);
+                if (BenchmarkLogLines.Count > 2000) BenchmarkLogLines.RemoveAt(0);
+
+                var match = TokensPerSecondPattern.Match(line);
+                if (match.Success)
+                {
+                    LiveTokenStats = $"{match.Groups[1].Value} tok/s (last seen: {DateTime.Now:HH:mm:ss})";
+                }
+            });
+        }
 
         _ = Task.Run(async () =>
         {
-            var result = await _benchmarkRunner.RunAsync(repoRoot, models, tier);
+            var result = await _benchmarkRunner.RunAsync(repoRoot, models, tier, OnLine);
             await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(async () =>
             {
                 BenchmarkStatusText = result.Success ? "Run complete." : $"Run failed: {Truncate(result.Output, 200)}";
@@ -683,20 +1013,100 @@ public partial class MainViewModel : ViewModelBase
         _ = RefreshAllAsync();
     }
 
+    /// <summary>Actually opens the Antigravity CLI (no separate "login" subcommand - it prompts sign-in on first interactive run) rather than only flipping an internal opt-in flag with nothing visible happening. Does NOT mark the provider available itself - CheckAntigravityLoginAsync verifies that for real.</summary>
     [RelayCommand]
-    private void OptInAntigravity()
+    private void LoginAntigravity()
     {
-        _credentials.SetCredential(FallbackProvider.Antigravity, "opted-in");
-        Log("Antigravity opted into the fallback chain (sign-in happens inside the app).");
-        _ = RefreshAllAsync();
+        var exe = ExecutableLocators.FindAntigravity();
+        if (exe is null)
+        {
+            Log("Antigravity CLI not found - install it from the Setup tab first.");
+            return;
+        }
+
+        try
+        {
+            ProcessLaunchHelper.Start(exe, string.Empty, null);
+            Log("Antigravity CLI opened in a new window - complete sign-in there, then click Check.");
+            AntigravityLoginStatusText = "Sign-in window opened - complete it, then click Check.";
+        }
+        catch (Exception ex)
+        {
+            Log($"Could not launch Antigravity CLI: {ex.Message}");
+        }
     }
 
     [RelayCommand]
-    private void OptInCursor()
+    private void LoginCursor()
     {
-        _credentials.SetCredential(FallbackProvider.Cursor, "opted-in");
-        Log("Cursor opted into the fallback chain (sign-in happens inside the app).");
-        _ = RefreshAllAsync();
+        var exe = ExecutableLocators.FindCursor();
+        if (exe is null)
+        {
+            Log("Cursor CLI not found - install it from the Setup tab first.");
+            return;
+        }
+
+        try
+        {
+            ProcessLaunchHelper.Start(exe, "login", null);
+            Log("Cursor login opened in a new window - complete sign-in there, then click Check.");
+            CursorLoginStatusText = "Sign-in window opened - complete it, then click Check.";
+        }
+        catch (Exception ex)
+        {
+            Log($"Could not launch Cursor login: {ex.Message}");
+        }
+    }
+
+    /// <summary>Real verification, not a stored click-once flag - see ProviderCliInstaller.IsAntigravityLoggedInAsync. Only sets/clears the fallback-chain credential based on what's ACTUALLY true right now.</summary>
+    [RelayCommand]
+    private async Task CheckAntigravityLoginAsync()
+    {
+        var loggedIn = await _providerCliInstaller.IsAntigravityLoggedInAsync();
+        if (loggedIn)
+        {
+            _credentials.SetCredential(FallbackProvider.Antigravity, "verified-login");
+            AntigravityLoginStatusText = "✓ Logged in - available in the fallback chain.";
+            Log("Antigravity: verified logged in.");
+        }
+        else
+        {
+            _credentials.RemoveCredential(FallbackProvider.Antigravity);
+            AntigravityLoginStatusText = "Not logged in yet - click Login, sign in, then Check again.";
+        }
+        await RefreshAllAsync();
+    }
+
+    [RelayCommand]
+    private async Task CheckCursorLoginAsync()
+    {
+        var loggedIn = await _providerCliInstaller.IsCursorLoggedInAsync();
+        if (loggedIn)
+        {
+            _credentials.SetCredential(FallbackProvider.Cursor, "verified-login");
+            CursorLoginStatusText = "✓ Logged in - available in the fallback chain.";
+            Log("Cursor: verified logged in.");
+        }
+        else
+        {
+            _credentials.RemoveCredential(FallbackProvider.Cursor);
+            CursorLoginStatusText = "Not logged in yet - click Login, sign in, then Check again.";
+        }
+        await RefreshAllAsync();
+    }
+
+    [RelayCommand]
+    private async Task BrowseProjectFolderAsync()
+    {
+        var picked = await FolderPickerService.PickFolderAsync("Select a project folder");
+        if (picked is not null) NewProjectPath = picked;
+    }
+
+    [RelayCommand]
+    private async Task BrowseMasterFolderAsync()
+    {
+        var picked = await FolderPickerService.PickFolderAsync("Select a master folder");
+        if (picked is not null) MasterFolderPath = picked;
     }
 
     [RelayCommand]
@@ -770,6 +1180,17 @@ public partial class MainViewModel : ViewModelBase
                 }
                 Log($"Fallback chain resolved to: {provider.Name}");
             }
+            else if (SelectedProviderName == CustomFallbackProviderName)
+            {
+                provider = await ResolveCustomChainProviderAsync();
+                if (provider is null)
+                {
+                    Log("No backend in the custom fallback chain is currently available.");
+                    StatusText = "Ready.";
+                    return;
+                }
+                Log($"Custom fallback chain resolved to: {provider.Name}");
+            }
             else
             {
                 provider = _providers.FirstOrDefault(p => p.Name == SelectedProviderName);
@@ -787,7 +1208,17 @@ public partial class MainViewModel : ViewModelBase
                 }
             }
 
-            if (provider == _claudeAdapter || provider == _lmStudioAdapter)
+            if (provider == _groqAdapter)
+            {
+                // Known-broken: Claude Code sends Anthropic Messages API
+                // requests even when ANTHROPIC_BASE_URL points elsewhere, and
+                // Groq only exposes an OpenAI-protocol endpoint - every
+                // request currently fails. Confirmed live; fix planned for a
+                // future release. Warn rather than silently attempt-and-fail.
+                Log("Warning: Groq is known-broken right now (Anthropic/OpenAI protocol mismatch) - this launch will likely fail.");
+            }
+
+            if (provider == _claudeAdapter || provider == _lmStudioAdapter || provider == _groqAdapter)
             {
                 // Same ~/.claude environment either way (Claude Code direct or
                 // Claude Code pointed at a local LM Studio model) - keep it in
