@@ -11,6 +11,13 @@ public partial class App : Application
     public override void Initialize()
     {
         AvaloniaXamlLoader.Load(this);
+
+#if DEBUG
+        // Modern AvaloniaUI Developer Tools bridge (F12). The old
+        // AppBuilder.WithDeveloperTools() API was removed in Avalonia 12;
+        // AvaloniaUI.DiagnosticsSupport now attaches from the Application.
+        this.AttachDeveloperTools();
+#endif
     }
 
     public override void OnFrameworkInitializationCompleted()

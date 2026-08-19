@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using TokenOptimizer.Core.Benchmarking;
 using TokenOptimizer.Core.Concurrency;
 using TokenOptimizer.Core.Config;
 using TokenOptimizer.Core.Diagnostics;
@@ -10,7 +9,7 @@ using TokenOptimizer.Core.Security;
 using TokenOptimizer.Providers;
 using TokenOptimizer.Providers.Claude;
 using TokenOptimizer.Providers.Fallback;
-using TokenOptimizer.Providers.LmStudio;
+using TokenOptimizer.Providers.Rag;
 
 namespace TokenOptimizer.App.Cli;
 
@@ -43,12 +42,30 @@ public static class CliHost
         {
             return Fail("No command given. Try: status, providers, launch, install-dependencies, "
                 + "install-companion-tooling, reset-config, uninstall, master-folder-set, master-folder-list, "
-                + "create-project, history, add-project, benchmark, leaderboard, best-local-model, "
-                + "set-credential, opt-in, export-handoff.");
+                + "create-project, history, add-project, "
+                + "set-credential, opt-in, export-handoff, mcp-rag-server.");
         }
 
         var command = args[0];
         var opts = ParseOptions(args[1..]);
+
+        if (command == "mcp-rag-server")
+        {
+            // Long-running MCP stdio server, not a one-shot JSON command - spawned
+            // directly by Claude Code (via RagMcpRegistrar's `claude mcp add`), so
+            // stdout is a raw JSON-RPC stream, not this file's {ok, data} envelope.
+            if (!opts.TryGetValue("project", out var ragProject) || string.IsNullOrWhiteSpace(ragProject))
+            {
+                await Console.Error.WriteLineAsync("--project <path> is required.");
+                return 1;
+            }
+            if (!opts.TryGetValue("embeddings-url", out var ragUrl) || !Uri.TryCreate(ragUrl, UriKind.Absolute, out var ragUri))
+            {
+                await Console.Error.WriteLineAsync("--embeddings-url <url> is required and must be an absolute URL.");
+                return 1;
+            }
+            return await RagMcpStdioServer.RunAsync(ragProject, ragUri);
+        }
 
         var configStore = new ConfigStore();
         var availability = new CommandAvailability();
@@ -56,27 +73,26 @@ public static class CliHost
         var dependencyChecker = new DependencyChecker(availability, pythonLocator);
         var claudeLocator = new ClaudeExecutableLocator(configStore, availability);
         var claudeAdapter = new ClaudeCodeAdapter(claudeLocator, availability);
-        var lmStudioAdapter = new LmStudioAdapter(claudeLocator);
+        var llamaCppAdapter = new TokenOptimizer.Providers.LlamaCpp.LlamaCppAdapter();
         var credentials = new ProxyCredentialStore();
         var antigravityAdapter = new AntigravityAdapter(credentials);
         var codexAdapter = new CodexAdapter(credentials);
         var cursorAdapter = new CursorAdapter(credentials);
         var groqAdapter = new GroqAdapter(credentials, claudeLocator);
+        var deepSeekHarnessAdapter = new DeepSeekHarnessAdapter();
         var rateLimits = new RateLimitTracker(configStore);
         var fallbackResolver = new FallbackChainResolver(
-            claudeAdapter, antigravityAdapter, codexAdapter, cursorAdapter, groqAdapter, lmStudioAdapter, rateLimits);
-        var benchmarkReader = new BenchmarkSummaryReader(configStore);
+            claudeAdapter, antigravityAdapter, codexAdapter, cursorAdapter, groqAdapter, deepSeekHarnessAdapter, llamaCppAdapter, rateLimits);
         var companionTooling = new CompanionToolingInstaller(configStore, claudeLocator, availability, pythonLocator);
         var projectHistory = new ProjectHistoryService(configStore);
         var masterFolderService = new MasterFolderService(configStore, projectHistory);
-        var benchmarkRunner = new BenchmarkRunner(availability, pythonLocator);
         var claudeMdService = new ProjectClaudeMdService();
         var uninstaller = new CompanionUninstaller(availability, configStore);
         var providerCliInstaller = new ProviderCliInstaller();
 
         var providers = new IProviderAdapter[]
         {
-            claudeAdapter, lmStudioAdapter, antigravityAdapter, codexAdapter, cursorAdapter, groqAdapter,
+            claudeAdapter, llamaCppAdapter, antigravityAdapter, codexAdapter, cursorAdapter, groqAdapter, deepSeekHarnessAdapter,
         };
 
         try
@@ -88,7 +104,6 @@ public static class CliHost
                     {
                         dependencies = await dependencyChecker.CheckAllAsync(),
                         fallbackChain = await fallbackResolver.DescribeChainAsync(),
-                        bestLocalModel = (await configStore.LoadAsync()).BestLocalModelId,
                         projectHistory = await projectHistory.GetHistoryAsync(),
                         masterFolder = await masterFolderService.GetMasterFolderAsync(),
                     });
@@ -128,7 +143,7 @@ public static class CliHost
                         if (!await provider.IsAvailableAsync()) return Fail($"{provider.Name} is not available on this machine.");
                     }
 
-                    if (provider == claudeAdapter || provider == lmStudioAdapter || provider == groqAdapter)
+                    if (provider == claudeAdapter || provider == groqAdapter)
                     {
                         // Same ~/.claude environment either way - keep it in sync
                         // before every launch, exactly like MainViewModel does,
@@ -136,14 +151,14 @@ public static class CliHost
                         // (VS Code) is zero-friction: same skills, plugins, MCP
                         // tools, and claude-mem memory, every time.
                         await companionTooling.EnsureSharedClaudeEnvironmentAsync(project);
-                        await ProjectSessionPrep.PrepareProjectDirectiveAsync(project, claudeMdService, availability);
+
+                        Uri? ragEmbeddingsUrl = opts.TryGetValue("rag-embeddings-url", out var ragUrlOpt) && Uri.TryCreate(ragUrlOpt, UriKind.Absolute, out var parsedRagUri)
+                            ? parsedRagUri
+                            : null;
+                        await ProjectSessionPrep.PrepareProjectDirectiveAsync(project, claudeMdService, availability, provider: provider, ragEmbeddingsBaseUrl: ragEmbeddingsUrl);
                     }
 
                     opts.TryGetValue("model", out var model);
-                    if (string.IsNullOrWhiteSpace(model) && provider == lmStudioAdapter)
-                    {
-                        model = (await configStore.LoadAsync()).BestLocalModelId;
-                    }
 
                     var resumeMode = opts.TryGetValue("resume", out var resumeStr) && Enum.TryParse<SessionResumeMode>(resumeStr, true, out var parsed)
                         ? parsed : SessionResumeMode.Continue;
@@ -183,14 +198,16 @@ public static class CliHost
                         ("context7", companionTooling.RegisterContext7McpAsync),
                         ("context-mode", companionTooling.InstallContextModeMcpAsync),
                         ("caveman", companionTooling.InstallCavemanPluginAsync),
+                        ("ponytail", companionTooling.InstallPonytailPluginAsync),
                         ("claude-md-management", companionTooling.InstallClaudeMdManagementPluginAsync),
                         ("impeccable", companionTooling.InstallImpeccableSkillAsync),
                         ("task-observer", companionTooling.InstallTaskObserverSkillAsync),
-                        ("LM Studio support", companionTooling.InstallLMStudioSupportAsync),
                         ("Codex CLI", providerCliInstaller.InstallCodexCliAsync),
                         ("Antigravity CLI", providerCliInstaller.InstallAntigravityCliAsync),
                         ("Cursor CLI", providerCliInstaller.InstallCursorCliAsync),
                         ("Antigravity plugin parity", async () => { await providerCliInstaller.SyncClaudePluginsIntoAntigravityAsync(); return true; }),
+                        ("DeepSeek Harness (dsh)", providerCliInstaller.InstallDeepSeekHarnessCliAsync),
+                        ("DeepSeek Harness plugin parity", async () => { await providerCliInstaller.SyncClaudePluginsIntoDeepSeekHarnessAsync(); return true; }),
                         ("ccusage (token/cost tracking)", providerCliInstaller.InstallCcusageAsync),
                     };
 
@@ -280,52 +297,6 @@ public static class CliHost
                     return await Ok(new { added = path });
                 }
 
-                case "benchmark":
-                {
-                    var repoRoot = BenchmarkRunner.FindRepoRoot();
-                    if (repoRoot is null) return Fail("run_benchmarks.py not found near the app.");
-
-                    if (opts.ContainsKey("rescore"))
-                    {
-                        var rescoreResult = await benchmarkRunner.RunAsync(repoRoot, null, BenchmarkQualityTier.MaxQuality);
-                        return await Ok(new { success = rescoreResult.Success, output = rescoreResult.Output });
-                    }
-
-                    var tier = opts.TryGetValue("tier", out var tierStr) && Enum.TryParse<BenchmarkQualityTier>(tierStr, true, out var parsedTier)
-                        ? parsedTier : BenchmarkQualityTier.MaxQuality;
-                    var models = opts.TryGetValue("models", out var modelsStr) && !string.IsNullOrWhiteSpace(modelsStr)
-                        ? modelsStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                        : null;
-
-                    if (opts.ContainsKey("catalog"))
-                    {
-                        return await Ok(new { catalog = BenchmarkRunner.ListCatalogModels(repoRoot) });
-                    }
-
-                    var result = await benchmarkRunner.RunAsync(repoRoot, models, tier);
-                    return await Ok(new { success = result.Success, output = result.Output });
-                }
-
-                case "leaderboard":
-                {
-                    var summaryPath = FindBenchmarkSummaryPath();
-                    if (summaryPath is null) return await Ok(new { rows = Array.Empty<object>(), message = "No benchmark_summary.json found." });
-                    var rows = BenchmarkSummaryReader.ReadRows(summaryPath)
-                        .Where(r => r.Stage == "benchmark" && (r.Status == "ok" || r.Status == "partial"))
-                        .OrderByDescending(r => r.CompositeScore ?? 0)
-                        .ThenByDescending(r => r.AvgTokensPerSecond ?? 0)
-                        .ToList();
-                    return await Ok(new { rows });
-                }
-
-                case "best-local-model":
-                {
-                    var summaryPath = FindBenchmarkSummaryPath();
-                    if (summaryPath is null) return Fail("No benchmark_summary.json found near the repo.");
-                    var best = await benchmarkReader.RefreshBestLocalModelAsync(summaryPath);
-                    return await Ok(new { best });
-                }
-
                 case "set-credential":
                 {
                     if (!opts.TryGetValue("provider", out var providerStr) || !Enum.TryParse<FallbackProvider>(providerStr, true, out var fbProvider))
@@ -370,17 +341,6 @@ public static class CliHost
         {
             return Fail(ex.Message);
         }
-    }
-
-    private static string? FindBenchmarkSummaryPath()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        for (var i = 0; i < 8 && dir is not null; i++, dir = dir.Parent)
-        {
-            var candidate = Path.Combine(dir.FullName, "benchmark_summary.json");
-            if (File.Exists(candidate)) return candidate;
-        }
-        return null;
     }
 
     private static Dictionary<string, string> ParseOptions(string[] rest)

@@ -20,6 +20,7 @@ public sealed class FallbackChainResolver
     private readonly CodexAdapter _codex;
     private readonly CursorAdapter _cursor;
     private readonly GroqAdapter _groq;
+    private readonly DeepSeekHarnessAdapter _deepSeekHarness;
     private readonly IProviderAdapter _localModel;
     private readonly RateLimitTracker _rateLimits;
 
@@ -29,6 +30,7 @@ public sealed class FallbackChainResolver
         CodexAdapter codex,
         CursorAdapter cursor,
         GroqAdapter groq,
+        DeepSeekHarnessAdapter deepSeekHarness,
         IProviderAdapter localModel,
         RateLimitTracker rateLimits)
     {
@@ -37,6 +39,7 @@ public sealed class FallbackChainResolver
         _codex = codex;
         _cursor = cursor;
         _groq = groq;
+        _deepSeekHarness = deepSeekHarness;
         _localModel = localModel;
         _rateLimits = rateLimits;
     }
@@ -49,6 +52,7 @@ public sealed class FallbackChainResolver
         [_codex.Name] = (_codex, FallbackProvider.Codex),
         [_cursor.Name] = (_cursor, FallbackProvider.Cursor),
         [_groq.Name] = (_groq, FallbackProvider.Groq),
+        [_deepSeekHarness.Name] = (_deepSeekHarness, FallbackProvider.DeepSeekHarness),
         [_localModel.Name] = (_localModel, null),
     };
 
@@ -93,6 +97,7 @@ public sealed class FallbackChainResolver
             await DescribeManualOnlyAsync(_codex, FallbackProvider.Codex),
             await DescribeManualOnlyAsync(_cursor, FallbackProvider.Cursor),
             await DescribeManualOnlyAsync(_groq, FallbackProvider.Groq),
+            await DescribeManualOnlyAsync(_deepSeekHarness, FallbackProvider.DeepSeekHarness),
         };
 
         return steps;

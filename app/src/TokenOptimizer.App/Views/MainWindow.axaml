@@ -6,7 +6,7 @@
         mc:Ignorable="d" d:DesignWidth="1100" d:DesignHeight="760"
         x:Class="TokenOptimizer.App.Views.MainWindow"
         x:DataType="vm:MainViewModel"
-        Icon="/Assets/avalonia-logo.ico"
+        Icon="/Assets/app-icon.ico"
         Title="TokenOptimizer" Width="1100" Height="760" MinWidth="880" MinHeight="600">
 
     <Design.DataContext>
@@ -170,7 +170,7 @@
                                         </StackPanel>
                                         <Button Grid.Column="1" Content="Install Companion Tooling" Command="{Binding InstallCompanionToolingCommand}" />
                                     </Grid>
-                                    <TextBlock Text="graphify, claude-mem, headroom, rtk, context7, context-mode, caveman, claude-md-management, impeccable, task-observer, LM Studio support, and the Codex/Antigravity/Cursor fallback-chain CLIs."
+                                    <TextBlock Text="graphify, claude-mem, headroom, rtk, context7, context-mode, caveman, claude-md-management, impeccable, task-observer, and the Codex/Antigravity/Cursor fallback-chain CLIs."
                                                TextWrapping="Wrap" Opacity="0.7" FontSize="11" />
                                     <ProgressBar Value="{Binding CompanionToolingProgress}" Minimum="0" Maximum="1"
                                                  IsVisible="{Binding IsCompanionToolingInstalling}" Height="6" />
@@ -219,22 +219,10 @@
                                     </StackPanel>
                                 </StackPanel>
                                 <CheckBox Content="Isolate Claude config for this project (separate CLAUDE_CONFIG_DIR)" IsChecked="{Binding IsolateClaudeConfig}" />
-                                <TextBlock Text="{Binding BestLocalModelText}" Opacity="0.7" FontSize="11" />
-
-                                <StackPanel Orientation="Horizontal" Spacing="12">
-                                    <StackPanel Spacing="4" Width="160">
-                                        <TextBlock Text="LM Studio context preset" />
-                                        <ComboBox ItemsSource="{Binding LmStudioPresetNames}"
-                                                  SelectedItem="{Binding SelectedLmStudioPresetName}"
-                                                  HorizontalAlignment="Stretch"
-                                                  ToolTip.Tip="Fast: smallest context, quickest load. Balanced: half the model's max context. Max: the model's full native context, scaled down automatically if this PC's VRAM/RAM looks tight, retried smaller on any real load failure." />
-                                    </StackPanel>
-                                    <StackPanel Spacing="4" VerticalAlignment="Bottom">
-                                        <Button Content="Restart Local Model" Command="{Binding RestartLocalModelCommand}"
-                                                ToolTip.Tip="Unloads whatever LM Studio has loaded and reloads it under the preset above." />
-                                    </StackPanel>
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <CheckBox Content="Auto-wire RAG retrieval (embeddings endpoint):" IsChecked="{Binding RagEnabled}" />
+                                    <TextBox Text="{Binding RagEmbeddingsUrl}" PlaceholderText="http://localhost:1234/v1" Width="220" IsEnabled="{Binding RagEnabled}" />
                                 </StackPanel>
-                                <TextBlock Text="{Binding LmStudioRestartStatusText}" Opacity="0.7" FontSize="11" TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>
 
@@ -419,77 +407,6 @@
                                         </ItemsControl>
                                     </ScrollViewer>
                                 </Border>
-                            </StackPanel>
-                        </Border>
-                    </StackPanel>
-                </ScrollViewer>
-            </TabItem>
-
-            <!-- ==================== BENCHMARK TAB ==================== -->
-            <TabItem Header="Benchmark">
-                <ScrollViewer>
-                    <StackPanel Spacing="12" Margin="8">
-                        <Border Classes="Card">
-                            <StackPanel Spacing="10">
-                                <TextBlock Text="Benchmark" Classes="SectionHeader" />
-                                <StackPanel Orientation="Horizontal" Spacing="12">
-                                    <StackPanel Spacing="4" Width="260">
-                                        <TextBlock Text="Model (blank = all in catalog)" />
-                                        <ComboBox ItemsSource="{Binding CatalogModels}"
-                                                  SelectedItem="{Binding SelectedCatalogModel}"
-                                                  HorizontalAlignment="Stretch" />
-                                    </StackPanel>
-                                    <StackPanel Spacing="4" Width="160">
-                                        <TextBlock Text="Quality tier" />
-                                        <ComboBox ItemsSource="{Binding QualityTierNames}"
-                                                  SelectedItem="{Binding SelectedQualityTierName}"
-                                                  HorizontalAlignment="Stretch" />
-                                    </StackPanel>
-                                    <StackPanel Spacing="4" VerticalAlignment="Bottom">
-                                        <Button Content="Run Benchmark" Command="{Binding RunBenchmarkCommand}" />
-                                    </StackPanel>
-                                    <StackPanel Spacing="4" VerticalAlignment="Bottom">
-                                        <Button Content="Refresh Leaderboard" Command="{Binding RefreshBestLocalModelCommand}" />
-                                    </StackPanel>
-                                </StackPanel>
-                                <StackPanel Orientation="Horizontal" Spacing="12">
-                                    <Button Content="Export for AI Review"
-                                            Command="{Binding ExportBenchmarksForAiReviewCommand}"
-                                            ToolTip.Tip="Zips every benchmark result plus a ready-to-paste quality-review prompt, reveals the zip in Explorer, and copies the prompt to the clipboard." />
-                                    <Button Content="Generate Report"
-                                            Command="{Binding GenerateBenchmarkReportCommand}"
-                                            ToolTip.Tip="Writes BENCHMARK_REPORT.md - scoring matrix and per-model averages only (no quality-review text, that's the AI-review zip's job) - and opens it." />
-                                </StackPanel>
-                                <TextBlock Text="{Binding BenchmarkStatusText}" Opacity="0.7" FontSize="11" />
-                            </StackPanel>
-                        </Border>
-
-                        <Border Classes="Card">
-                            <StackPanel Spacing="8">
-                                <Grid ColumnDefinitions="*,Auto">
-                                    <TextBlock Text="Live run log" Classes="SectionHeader" />
-                                    <TextBlock Grid.Column="1" Text="{Binding LiveTokenStats}" FontWeight="SemiBold" VerticalAlignment="Center" />
-                                </Grid>
-                                <ListBox ItemsSource="{Binding BenchmarkLogLines}" Height="180" FontFamily="Consolas,monospace" FontSize="11" />
-                            </StackPanel>
-                        </Border>
-
-                        <Border Classes="Card">
-                            <StackPanel Spacing="8">
-                                <TextBlock Text="Leaderboard" Classes="SectionHeader" />
-                                <TextBlock Text="Double-click a row to set it as the Model override and switch Provider to LM Studio." Opacity="0.6" FontSize="11" />
-                                <ItemsControl ItemsSource="{Binding Leaderboard}">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <StackPanel Orientation="Horizontal" Spacing="6" Background="Transparent"
-                                                        DoubleTapped="LeaderboardRow_DoubleTapped">
-                                                <TextBlock Text="{Binding Model}" Width="240" FontSize="11" />
-                                                <TextBlock Text="{Binding CompositeScore}" Width="70" FontSize="11" Opacity="0.8" />
-                                                <TextBlock Text="{Binding AvgTokensPerSecond}" FontSize="11" Opacity="0.6" />
-                                            </StackPanel>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
                             </StackPanel>
                         </Border>
                     </StackPanel>

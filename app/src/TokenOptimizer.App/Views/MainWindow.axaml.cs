@@ -3,7 +3,6 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.VisualTree;
 using TokenOptimizer.App.ViewModels;
-using TokenOptimizer.Core.Benchmarking;
 using TokenOptimizer.Core.Projects;
 
 namespace TokenOptimizer.App.Views;
@@ -70,13 +69,5 @@ public partial class MainWindow : Window
         if (DataContext is not MainViewModel viewModel) return;
 
         viewModel.LaunchAtPathCommand.Execute(node.FullPath);
-    }
-
-    private void LeaderboardRow_DoubleTapped(object? sender, TappedEventArgs e)
-    {
-        if (sender is not Control { DataContext: BenchmarkRow row }) return;
-        if (DataContext is not MainViewModel viewModel) return;
-
-        viewModel.SelectLeaderboardModelCommand.Execute(row);
     }
 }

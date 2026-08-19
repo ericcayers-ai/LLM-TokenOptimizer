@@ -40,4 +40,16 @@ public static class ExecutableLocators
 
         return new CommandAvailability().ResolveOnPath("cursor-agent");
     }
+
+    /// <summary>deepseek-ai/deepseek-harness ("dsh") - published as @deepseek-ai/dsh on npm, dev preview.</summary>
+    public static string? FindDeepSeekHarness()
+    {
+        var roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        foreach (var candidate in new[] { Path.Combine(roaming, "npm", "dsh.cmd"), Path.Combine(roaming, "npm", "dsh") })
+        {
+            if (File.Exists(candidate)) return candidate;
+        }
+
+        return new CommandAvailability().ResolveOnPath("dsh");
+    }
 }

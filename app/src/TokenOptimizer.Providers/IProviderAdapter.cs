@@ -15,12 +15,11 @@ public sealed record SessionLaunchOptions(
     string ProjectPath,
     string? Model = null,
     bool IsolateConfig = false,
-    SessionResumeMode ResumeMode = SessionResumeMode.Continue,
-    LmStudioContextPreset? ContextPreset = null);
+    SessionResumeMode ResumeMode = SessionResumeMode.Continue);
 
 /// <summary>
 /// The translation-layer contract: every coding-agent provider (Claude Code,
-/// LM Studio-local today; Antigravity/Codex/Cursor as their own future
+/// llama.cpp-local today; Antigravity/Codex/Cursor as their own future
 /// adapters) implements this the same way, so skills/plugins/tools installed
 /// once against the neutral manifest types above can be synced out to
 /// whichever providers are actually present on the machine.

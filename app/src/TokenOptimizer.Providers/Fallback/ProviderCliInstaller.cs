@@ -37,6 +37,14 @@ public sealed class ProviderCliInstaller
         return new CommandAvailability().ResolveOnPath("ccusage") is not null;
     }
 
+    /// <summary>@deepseek-ai/dsh is dev preview - install is best-effort; a failure here just means "still manual only", not a crash.</summary>
+    public async Task<bool> InstallDeepSeekHarnessCliAsync()
+    {
+        if (ExecutableLocators.FindDeepSeekHarness() is not null) return true;
+        await ExternalCommandRunner.RunAsync("npm", "install -g @deepseek-ai/dsh", timeoutSeconds: 180);
+        return ExecutableLocators.FindDeepSeekHarness() is not null;
+    }
+
     public async Task<bool> InstallCursorCliAsync()
     {
         if (ExecutableLocators.FindCursor() is not null) return true;
@@ -123,6 +131,38 @@ public sealed class ProviderCliInstaller
         if (File.Exists(Path.Combine(impeccableDir, ".claude-plugin", "plugin.json")))
         {
             var result = await ExternalCommandRunner.RunAsync(agyExe, $"plugin install \"{impeccableDir}\"", timeoutSeconds: 30);
+            if (result.Success) installed++;
+        }
+
+        return installed;
+    }
+
+    /// <summary>
+    /// deepseek-harness ("Everything is a Plugin") is itself plugin-based,
+    /// same one-directional Claude-&gt;target mirroring as Antigravity above.
+    /// Dev preview - `dsh plugin install &lt;path&gt;` is this session's best
+    /// understanding of its CLI surface, not a documented stable contract;
+    /// each install call fails soft (ExternalCommandRunner never throws, it
+    /// reports Success=false) so a breaking CLI change degrades to "0
+    /// synced" rather than crashing the app.
+    /// </summary>
+    public async Task<int> SyncClaudePluginsIntoDeepSeekHarnessAsync()
+    {
+        var dshExe = ExecutableLocators.FindDeepSeekHarness();
+        if (dshExe is null) return 0;
+
+        var cacheDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "plugins", "cache");
+        if (!Directory.Exists(cacheDir)) return 0;
+
+        var installed = 0;
+        foreach (var manifestPath in Directory.EnumerateFiles(cacheDir, "plugin.json", SearchOption.AllDirectories))
+        {
+            if (Path.GetFileName(Path.GetDirectoryName(manifestPath)) != ".claude-plugin") continue;
+            var pluginRoot = Path.GetDirectoryName(Path.GetDirectoryName(manifestPath));
+            if (pluginRoot is null) continue;
+
+            var result = await ExternalCommandRunner.RunAsync(dshExe, $"plugin install \"{pluginRoot}\"", timeoutSeconds: 30);
             if (result.Success) installed++;
         }
 

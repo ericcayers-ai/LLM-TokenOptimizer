@@ -4,7 +4,6 @@ using Avalonia.Input.Platform;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using TokenOptimizer.App.Services;
-using TokenOptimizer.Core.Benchmarking;
 using TokenOptimizer.Core.Concurrency;
 using TokenOptimizer.Core.Config;
 using TokenOptimizer.Core.Diagnostics;
@@ -14,7 +13,6 @@ using TokenOptimizer.Core.Security;
 using TokenOptimizer.Providers;
 using TokenOptimizer.Providers.Claude;
 using TokenOptimizer.Providers.Fallback;
-using TokenOptimizer.Providers.LmStudio;
 
 namespace TokenOptimizer.App.ViewModels;
 
@@ -29,20 +27,19 @@ public partial class MainViewModel : ViewModelBase
     private readonly DependencyChecker _dependencyChecker;
     private readonly ClaudeExecutableLocator _claudeLocator;
     private readonly ClaudeCodeAdapter _claudeAdapter;
-    private readonly LmStudioAdapter _lmStudioAdapter;
+    private readonly TokenOptimizer.Providers.LlamaCpp.LlamaCppAdapter _llamaCppAdapter;
     private readonly ProxyCredentialStore _credentials = new();
     private readonly AntigravityAdapter _antigravityAdapter;
     private readonly CodexAdapter _codexAdapter;
     private readonly CursorAdapter _cursorAdapter;
     private readonly GroqAdapter _groqAdapter;
+    private readonly DeepSeekHarnessAdapter _deepSeekHarnessAdapter;
     private readonly RateLimitTracker _rateLimits;
     private readonly FallbackChainResolver _fallbackResolver;
-    private readonly BenchmarkSummaryReader _benchmarkReader;
     private readonly PythonLocator _pythonLocator;
     private readonly WingetInstaller _wingetInstaller;
     private readonly CompanionToolingInstaller _companionTooling;
     private readonly MasterFolderService _masterFolderService;
-    private readonly BenchmarkRunner _benchmarkRunner;
     private readonly ProjectClaudeMdService _claudeMdService = new();
     private readonly CompanionUninstaller _uninstaller;
     private readonly ProviderCliInstaller _providerCliInstaller = new();
@@ -55,34 +52,29 @@ public partial class MainViewModel : ViewModelBase
         _dependencyChecker = new DependencyChecker(_availability, _pythonLocator);
         _claudeLocator = new ClaudeExecutableLocator(_configStore, _availability);
         _claudeAdapter = new ClaudeCodeAdapter(_claudeLocator, _availability);
-        _lmStudioAdapter = new LmStudioAdapter(_claudeLocator);
+        _llamaCppAdapter = new TokenOptimizer.Providers.LlamaCpp.LlamaCppAdapter();
         _antigravityAdapter = new AntigravityAdapter(_credentials);
         _codexAdapter = new CodexAdapter(_credentials);
         _cursorAdapter = new CursorAdapter(_credentials);
         _groqAdapter = new GroqAdapter(_credentials, _claudeLocator);
+        _deepSeekHarnessAdapter = new DeepSeekHarnessAdapter();
         _rateLimits = new RateLimitTracker(_configStore);
         _fallbackResolver = new FallbackChainResolver(
-            _claudeAdapter, _antigravityAdapter, _codexAdapter, _cursorAdapter, _groqAdapter, _lmStudioAdapter, _rateLimits);
-        _benchmarkReader = new BenchmarkSummaryReader(_configStore);
+            _claudeAdapter, _antigravityAdapter, _codexAdapter, _cursorAdapter, _groqAdapter, _deepSeekHarnessAdapter, _llamaCppAdapter, _rateLimits);
         _wingetInstaller = new WingetInstaller(_availability);
         _companionTooling = new CompanionToolingInstaller(_configStore, _claudeLocator, _availability, _pythonLocator);
         _masterFolderService = new MasterFolderService(_configStore, _projectHistory);
-        _benchmarkRunner = new BenchmarkRunner(_availability, _pythonLocator);
         _uninstaller = new CompanionUninstaller(_availability, _configStore);
 
         _providers = new IProviderAdapter[]
         {
-            _claudeAdapter, _lmStudioAdapter, _antigravityAdapter, _codexAdapter, _cursorAdapter, _groqAdapter,
+            _claudeAdapter, _llamaCppAdapter, _antigravityAdapter, _codexAdapter, _cursorAdapter, _groqAdapter, _deepSeekHarnessAdapter,
         };
         ProviderNames = new ObservableCollection<string>(
             new[] { AutoFallbackProviderName, CustomFallbackProviderName }.Concat(_providers.Select(p => p.Name)));
         SelectedProviderName = ProviderNames.FirstOrDefault() ?? string.Empty;
 
-        QualityTierNames = new ObservableCollection<string>(Enum.GetNames<BenchmarkQualityTier>());
-        SelectedQualityTierName = QualityTierNames.FirstOrDefault() ?? string.Empty;
-
         _ = RefreshAllAsync();
-        _ = LoadBenchmarkCatalogAsync();
         _ = RefreshDashboardAsync();
         _ = CheckAntigravityLoginAsync();
         _ = CheckCursorLoginAsync();
@@ -105,14 +97,11 @@ public partial class MainViewModel : ViewModelBase
 
     [ObservableProperty]
     public partial string MasterFolderTreeToggleLabel { get; set; } = "Browse subfolders";
-    public ObservableCollection<string> CatalogModels { get; } = new();
-    public ObservableCollection<string> QualityTierNames { get; }
     public ObservableCollection<string> ModelOverrideOptions { get; } = new();
 
     /// <summary>
-    /// Curated best-effort model lists per provider - only LM Studio has a
-    /// real enumeration API (ListInstalledModelsAsync); every other provider
-    /// has no model-catalog endpoint, so these are static and the
+    /// Curated best-effort model lists per provider - no provider exposes a
+    /// real model-catalog enumeration API, so these are static and the
     /// ModelOverride ComboBox stays IsEditable so any string still works.
     /// </summary>
     private static readonly IReadOnlyDictionary<string, string[]> StaticModelCatalog = new Dictionary<string, string[]>
@@ -129,8 +118,6 @@ public partial class MainViewModel : ViewModelBase
     /// <summary>Single default/auto model per provider - what Auto/Custom fallback chain shows, so the dropdown isn't every provider's full curated list mashed together (see RefreshModelOverrideOptionsAsync).</summary>
     private static string DefaultModelFor(string providerName) =>
         StaticModelCatalog.TryGetValue(providerName, out var curated) ? curated[0] : providerName;
-    public ObservableCollection<BenchmarkRow> Leaderboard { get; } = new();
-    public ObservableCollection<string> BenchmarkLogLines { get; } = new();
     public ObservableCollection<string> ActiveSkills { get; } = new();
     public ObservableCollection<string> ActivePlugins { get; } = new();
     public ObservableCollection<SkillGuideEntry> SkillGuide { get; } = new();
@@ -145,11 +132,6 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty]
     public partial bool IsDashboardRefreshing { get; set; }
 
-    private static readonly Regex TokensPerSecondPattern = new(@"(\d+(?:\.\d+)?)\s*tok(?:ens)?/s", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
-    [ObservableProperty]
-    public partial string LiveTokenStats { get; set; } = "No benchmark running.";
-
     [ObservableProperty]
     public partial ProjectInfo? SelectedProject { get; set; }
 
@@ -163,23 +145,16 @@ public partial class MainViewModel : ViewModelBase
     }
 
     /// <summary>Selecting the provider IS the category (Avalonia has no built-in grouped-combo control worth the complexity here) - Auto/Custom show the union of everything since the resolved provider decides which entry actually applies.</summary>
-    private async Task RefreshModelOverrideOptionsAsync(string providerName)
+    private Task RefreshModelOverrideOptionsAsync(string providerName)
     {
         IEnumerable<string> options;
-        if (providerName == "LM Studio")
-        {
-            var installed = await _lmStudioAdapter.ListInstalledModelsAsync();
-            options = installed.Select(m => m.ModelKey).Concat(CatalogModels).Distinct(StringComparer.OrdinalIgnoreCase);
-        }
-        else if (providerName is AutoFallbackProviderName or CustomFallbackProviderName)
+        if (providerName is AutoFallbackProviderName or CustomFallbackProviderName)
         {
             // Auto/Custom can resolve to any provider, but showing every provider's
             // full curated list at once was an unreadable, uncategorized wall of
             // entries - one default model per provider keeps it scannable and each
             // entry still comes straight from that provider's own model set.
-            var config = await _configStore.LoadAsync();
             options = StaticModelCatalog.Keys.Select(DefaultModelFor)
-                .Concat(config.BestLocalModelId is { } lmStudioDefault ? new[] { lmStudioDefault } : Array.Empty<string>())
                 .Distinct(StringComparer.OrdinalIgnoreCase);
         }
         else if (StaticModelCatalog.TryGetValue(providerName, out var curated))
@@ -194,6 +169,7 @@ public partial class MainViewModel : ViewModelBase
         var sorted = options.OrderBy(o => o, StringComparer.OrdinalIgnoreCase).ToList();
         ModelOverrideOptions.Clear();
         foreach (var option in sorted) ModelOverrideOptions.Add(option);
+        return Task.CompletedTask;
     }
 
     [ObservableProperty]
@@ -205,17 +181,13 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty]
     public partial bool IsolateClaudeConfig { get; set; }
 
+    [ObservableProperty]
+    public partial bool RagEnabled { get; set; }
+
+    [ObservableProperty]
+    public partial string RagEmbeddingsUrl { get; set; } = string.Empty;
+
     public ObservableCollection<string> ResumeModeNames { get; } = new(Enum.GetNames<SessionResumeMode>());
-    public ObservableCollection<string> LmStudioPresetNames { get; } = new(Enum.GetNames<LmStudioContextPreset>());
-
-    [ObservableProperty]
-    public partial string SelectedLmStudioPresetName { get; set; } = nameof(LmStudioContextPreset.Balanced);
-
-    partial void OnSelectedLmStudioPresetNameChanged(string value) =>
-        _ = _configStore.UpdateAsync(config => config.LmStudioContextPresetName = value);
-
-    [ObservableProperty]
-    public partial string LmStudioRestartStatusText { get; set; } = string.Empty;
 
     [ObservableProperty]
     public partial string SelectedResumeModeName { get; set; } = nameof(SessionResumeMode.Continue);
@@ -230,9 +202,6 @@ public partial class MainViewModel : ViewModelBase
     public partial string StatusText { get; set; } = "Ready.";
 
     [ObservableProperty]
-    public partial string BestLocalModelText { get; set; } = "No benchmark results yet.";
-
-    [ObservableProperty]
     public partial string CodexApiKeyInput { get; set; } = string.Empty;
 
     [ObservableProperty]
@@ -243,15 +212,6 @@ public partial class MainViewModel : ViewModelBase
 
     [ObservableProperty]
     public partial string NewProjectFolderName { get; set; } = string.Empty;
-
-    [ObservableProperty]
-    public partial string? SelectedCatalogModel { get; set; }
-
-    [ObservableProperty]
-    public partial string SelectedQualityTierName { get; set; } = string.Empty;
-
-    [ObservableProperty]
-    public partial string BenchmarkStatusText { get; set; } = "Idle.";
 
     [ObservableProperty]
     public partial string AntigravityLoginStatusText { get; set; } = "Status unknown - click Check.";
@@ -321,14 +281,6 @@ public partial class MainViewModel : ViewModelBase
             if (CustomChainOrder.Count == 0)
             {
                 await SeedCustomChainOrderAsync();
-            }
-
-            await RefreshBestLocalModelAsync();
-
-            var config = await _configStore.LoadAsync();
-            if (Enum.TryParse<LmStudioContextPreset>(config.LmStudioContextPresetName, out var parsedPreset))
-            {
-                SelectedLmStudioPresetName = parsedPreset.ToString();
             }
 
             if (string.IsNullOrWhiteSpace(MasterFolderPath))
@@ -481,18 +433,17 @@ public partial class MainViewModel : ViewModelBase
 
         try
         {
-            if (provider == _claudeAdapter || provider == _lmStudioAdapter || provider == _groqAdapter)
+            if (provider == _claudeAdapter || provider == _groqAdapter)
             {
                 await _companionTooling.EnsureSharedClaudeEnvironmentAsync(path);
-                await PrepareProjectDirectiveAsync(path);
+                await PrepareProjectDirectiveAsync(path, provider);
             }
 
             var options = new SessionLaunchOptions(
                 path,
-                await ResolveEffectiveModelAsync(provider),
+                ResolveEffectiveModel(),
                 IsolateClaudeConfig,
-                Enum.Parse<SessionResumeMode>(SelectedResumeModeName),
-                CurrentLmStudioPreset());
+                Enum.Parse<SessionResumeMode>(SelectedResumeModeName));
             var handle = await provider.LaunchSessionAsync(options);
             await _projectHistory.AddAsync(path);
             TrackRateLimitOutcome(handle);
@@ -564,18 +515,17 @@ public partial class MainViewModel : ViewModelBase
         {
             try
             {
-                if (provider == _claudeAdapter || provider == _lmStudioAdapter || provider == _groqAdapter)
+                if (provider == _claudeAdapter || provider == _groqAdapter)
                 {
                     await _companionTooling.EnsureSharedClaudeEnvironmentAsync(candidate.FullPath);
-                    await PrepareProjectDirectiveAsync(candidate.FullPath);
+                    await PrepareProjectDirectiveAsync(candidate.FullPath, provider);
                 }
 
                 var options = new SessionLaunchOptions(
                     candidate.FullPath,
-                    await ResolveEffectiveModelAsync(provider),
+                    ResolveEffectiveModel(),
                     IsolateClaudeConfig,
-                    Enum.Parse<SessionResumeMode>(SelectedResumeModeName),
-                    CurrentLmStudioPreset());
+                    Enum.Parse<SessionResumeMode>(SelectedResumeModeName));
                 var handle = await provider.LaunchSessionAsync(options);
                 await _projectHistory.AddAsync(candidate.FullPath);
                 TrackRateLimitOutcome(handle);
@@ -613,14 +563,16 @@ public partial class MainViewModel : ViewModelBase
         ("context7", _companionTooling.RegisterContext7McpAsync),
         ("context-mode", _companionTooling.InstallContextModeMcpAsync),
         ("caveman", _companionTooling.InstallCavemanPluginAsync),
+        ("ponytail", _companionTooling.InstallPonytailPluginAsync),
         ("claude-md-management", _companionTooling.InstallClaudeMdManagementPluginAsync),
         ("impeccable", _companionTooling.InstallImpeccableSkillAsync),
         ("task-observer", _companionTooling.InstallTaskObserverSkillAsync),
-        ("LM Studio support", _companionTooling.InstallLMStudioSupportAsync),
         ("Codex CLI", _providerCliInstaller.InstallCodexCliAsync),
         ("Antigravity CLI", _providerCliInstaller.InstallAntigravityCliAsync),
         ("Cursor CLI", _providerCliInstaller.InstallCursorCliAsync),
         ("Antigravity plugin parity", async () => { await _providerCliInstaller.SyncClaudePluginsIntoAntigravityAsync(); return true; }),
+        ("DeepSeek Harness (dsh)", _providerCliInstaller.InstallDeepSeekHarnessCliAsync),
+        ("DeepSeek Harness plugin parity", async () => { await _providerCliInstaller.SyncClaudePluginsIntoDeepSeekHarnessAsync(); return true; }),
         ("ccusage (token/cost tracking)", _providerCliInstaller.InstallCcusageAsync),
     };
 
@@ -732,102 +684,20 @@ public partial class MainViewModel : ViewModelBase
         }
     }
 
-    /// <summary>Unloads whatever LM Studio has loaded and reloads the current best/override model under the currently-selected Fast/Balanced/Max preset - lets a user apply a new preset (or recover from an unhealthy load) without leaving the app.</summary>
-    [RelayCommand]
-    private async Task RestartLocalModelAsync()
-    {
-        var config = await _configStore.LoadAsync();
-        var modelId = !string.IsNullOrWhiteSpace(ModelOverride) ? ModelOverride : config.BestLocalModelId;
-        if (string.IsNullOrWhiteSpace(modelId))
-        {
-            LmStudioRestartStatusText = "No model to load - set Model override or run a benchmark first.";
-            return;
-        }
-
-        if (!Enum.TryParse<LmStudioContextPreset>(SelectedLmStudioPresetName, out var preset))
-        {
-            preset = LmStudioContextPreset.Balanced;
-        }
-
-        LmStudioRestartStatusText = $"Restarting '{modelId}' ({preset})...";
-        Log(LmStudioRestartStatusText);
-        try
-        {
-            if (!await _lmStudioAdapter.EnsureServerRunningAsync())
-            {
-                LmStudioRestartStatusText = "Could not bring up the LM Studio local server.";
-                Log(LmStudioRestartStatusText);
-                return;
-            }
-
-            var result = await _lmStudioAdapter.RestartModelAsync(modelId, preset);
-            LmStudioRestartStatusText = result.Message;
-            Log($"LM Studio restart: {result.Message}");
-        }
-        catch (Exception ex)
-        {
-            LmStudioRestartStatusText = $"Restart failed: {ex.Message}";
-            Log(LmStudioRestartStatusText);
-        }
-    }
-
-    [RelayCommand]
-    private async Task RefreshBestLocalModelAsync()
-    {
-        var summaryPath = FindBenchmarkSummaryPath();
-        if (summaryPath is null)
-        {
-            BestLocalModelText = "No benchmark_summary.json found near the repo.";
-            return;
-        }
-
-        var best = await _benchmarkReader.RefreshBestLocalModelAsync(summaryPath);
-        var config = await _configStore.LoadAsync();
-        var overrideNote = config.BestLocalModelIsManualOverride
-            ? $" (manual pick in effect: {config.BestLocalModelId} - composite_score auto-pick shown below is informational only)"
-            : "";
-        BestLocalModelText = best is null
-            ? "benchmark_summary.json has no successful benchmark rows."
-            : $"Best local model: {best.Model} ({best.AvgTokensPerSecond:F1} tok/s" +
-              (best.CompositeScore is { } cs ? $", composite={cs:F3}" : "") + ")" + overrideNote;
-
-        RefreshLeaderboard(summaryPath);
-    }
-
     /// <summary>
-    /// Any explicit ModelOverride text wins. Otherwise, for the local LM
-    /// Studio adapter, fall back to the configured local-model pick
-    /// (manual override or the auto composite_score winner) so selecting
-    /// "LM Studio (local)" in the provider dropdown actually loads a model
-    /// instead of silently starting the server with nothing loaded.
+    /// Any explicit ModelOverride text wins - otherwise null, and the
+    /// provider adapter picks its own default (e.g. LlamaCppAdapter falls
+    /// back to its first supported model family).
     /// </summary>
-    private async Task<string?> ResolveEffectiveModelAsync(IProviderAdapter provider)
-    {
-        if (!string.IsNullOrWhiteSpace(ModelOverride)) return ModelOverride;
-        if (provider != _lmStudioAdapter) return null;
-
-        var config = await _configStore.LoadAsync();
-        return config.BestLocalModelId;
-    }
-
-    private void RefreshLeaderboard(string? summaryPath)
-    {
-        Leaderboard.Clear();
-        if (summaryPath is null) return;
-
-        var ranked = BenchmarkSummaryReader.ReadRows(summaryPath)
-            .Where(r => r.Stage == "benchmark" && (r.Status == "ok" || r.Status == "partial"))
-            .OrderByDescending(r => r.CompositeScore ?? 0)
-            .ThenByDescending(r => r.AvgTokensPerSecond ?? 0);
-        foreach (var row in ranked) Leaderboard.Add(row);
-    }
+    private string? ResolveEffectiveModel() =>
+        string.IsNullOrWhiteSpace(ModelOverride) ? null : ModelOverride;
 
     /// <summary>
     /// Resolves and displays which provider is actually in effect right now
     /// (live-resolved for Auto/Custom, verbatim otherwise) plus what's
     /// installed in the Claude Code terminal every provider ultimately routes
-    /// through (see Phase 1: Antigravity/Cursor are CLI-only, Groq/Codex/LM
-    /// Studio point Claude Code at a different backend - the skills/plugins
+    /// through (see Phase 1: Antigravity/Cursor are CLI-only, Groq/Codex/
+    /// llama.cpp point Claude Code at a different backend - the skills/plugins
     /// active are always Claude Code's, regardless of which model is behind it).
     /// </summary>
     [RelayCommand]
@@ -875,192 +745,6 @@ public partial class MainViewModel : ViewModelBase
             IsDashboardRefreshing = false;
         }
     }
-
-    /// <summary>Click-to-select from the leaderboard: fills Model override and switches the provider to LM Studio, the only provider leaderboard rows apply to.</summary>
-    [RelayCommand]
-    private void SelectLeaderboardModel(BenchmarkRow row)
-    {
-        ModelOverride = row.Model;
-        SelectedProviderName = "LM Studio";
-        Log($"Model override set from leaderboard: {row.Model}");
-    }
-
-    [RelayCommand]
-    private async Task LoadBenchmarkCatalogAsync()
-    {
-        var repoRoot = BenchmarkRunner.FindRepoRoot();
-        if (repoRoot is null)
-        {
-            BenchmarkStatusText = "run_benchmarks.py not found near the app - benchmark mode unavailable.";
-            return;
-        }
-
-        var models = await Task.Run(() => BenchmarkRunner.ListCatalogModels(repoRoot));
-        CatalogModels.Clear();
-        foreach (var model in models) CatalogModels.Add(model);
-        BenchmarkStatusText = $"{models.Count} models in catalog. Idle.";
-    }
-
-    /// <summary>
-    /// Fires the run in the background rather than blocking IsBusy - a real
-    /// benchmark sweep (downloads + generation) can run for hours, and the
-    /// rest of the app (launching sessions, managing projects) should stay
-    /// usable the whole time.
-    /// </summary>
-    [RelayCommand]
-    private void RunBenchmark()
-    {
-        var repoRoot = BenchmarkRunner.FindRepoRoot();
-        if (repoRoot is null)
-        {
-            Log("run_benchmarks.py not found near the app.");
-            return;
-        }
-
-        if (!Enum.TryParse<BenchmarkQualityTier>(SelectedQualityTierName, out var tier))
-        {
-            tier = BenchmarkQualityTier.MaxQuality;
-        }
-
-        var selectedModel = SelectedCatalogModel;
-        var models = selectedModel is not null ? new[] { selectedModel } : null;
-        var modelsLabel = selectedModel ?? "all models";
-        BenchmarkStatusText = $"Running ({tier}, {modelsLabel})...";
-        LiveTokenStats = "Waiting for first output...";
-        BenchmarkLogLines.Clear();
-        Log($"Benchmark run started: tier={tier}, models={modelsLabel}");
-
-        void OnLine(string line)
-        {
-            _ = Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() =>
-            {
-                BenchmarkLogLines.Add(line);
-                if (BenchmarkLogLines.Count > 2000) BenchmarkLogLines.RemoveAt(0);
-
-                var match = TokensPerSecondPattern.Match(line);
-                if (match.Success)
-                {
-                    LiveTokenStats = $"{match.Groups[1].Value} tok/s (last seen: {DateTime.Now:HH:mm:ss})";
-                }
-            });
-        }
-
-        _ = Task.Run(async () =>
-        {
-            var result = await _benchmarkRunner.RunAsync(repoRoot, models, tier, OnLine);
-            await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(async () =>
-            {
-                BenchmarkStatusText = result.Success ? "Run complete." : $"Run failed: {Truncate(result.Output, 200)}";
-                Log(result.Success ? "Benchmark run complete." : $"Benchmark run failed: {Truncate(result.Output, 200)}");
-                await RefreshBestLocalModelAsync();
-            });
-        });
-    }
-
-    /// <summary>
-    /// One-click "give this to an AI" export: zips every benchmark_&lt;model&gt;.json
-    /// plus a ready-to-paste review prompt (see BenchmarkExporter), reveals the
-    /// zip in Explorer so it's immediately at hand to attach/upload, and copies
-    /// the prompt text to the clipboard so the only remaining step is pasting it
-    /// alongside the zip into whatever AI the user wants to run the review.
-    /// </summary>
-    [RelayCommand]
-    private async Task ExportBenchmarksForAiReviewAsync()
-    {
-        var repoRoot = BenchmarkRunner.FindRepoRoot();
-        if (repoRoot is null)
-        {
-            BenchmarkStatusText = "run_benchmarks.py not found near the app - nothing to export.";
-            return;
-        }
-
-        var zipPath = Path.Combine(repoRoot, $"benchmark_results_{DateTime.Now:yyyyMMdd_HHmmss}.zip");
-        var count = await Task.Run(() => BenchmarkExporter.Export(repoRoot, zipPath));
-        if (count == 0)
-        {
-            BenchmarkStatusText = "No benchmark_<model>.json files found - run benchmarks first.";
-            return;
-        }
-
-        var clipboard = GetTopLevelClipboard();
-        if (clipboard is not null)
-        {
-            await clipboard.SetTextAsync(BenchmarkExporter.BuildPrompt(count));
-        }
-
-        try
-        {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = "explorer.exe",
-                Arguments = $"/select,\"{zipPath}\"",
-                UseShellExecute = true,
-            });
-        }
-        catch (Exception ex)
-        {
-            Log($"Could not open Explorer to reveal the export: {ex.Message}");
-        }
-
-        BenchmarkStatusText = $"Exported {count} model result(s) to {Path.GetFileName(zipPath)}" +
-                               (clipboard is not null ? " - review prompt copied to clipboard." : " - clipboard unavailable, prompt is inside the zip as " + BenchmarkExporter.PromptFileName + ".");
-        Log(BenchmarkStatusText);
-    }
-
-    /// <summary>
-    /// Generates the mechanical scoring-matrix/averages report (BenchmarkReportGenerator)
-    /// and opens it - deliberately separate from ExportBenchmarksForAiReviewAsync, which
-    /// handles the human/AI-written quality-review half of the picture via the zip+prompt.
-    /// </summary>
-    [RelayCommand]
-    private async Task GenerateBenchmarkReportAsync()
-    {
-        var repoRoot = BenchmarkRunner.FindRepoRoot();
-        if (repoRoot is null)
-        {
-            BenchmarkStatusText = "run_benchmarks.py not found near the app - nothing to report.";
-            return;
-        }
-
-        var reportPath = Path.Combine(repoRoot, "BENCHMARK_REPORT.md");
-        var count = await Task.Run(() => BenchmarkReportGenerator.Generate(repoRoot, reportPath));
-        if (count == 0)
-        {
-            BenchmarkStatusText = "No benchmark_<model>.json files found - run benchmarks first.";
-            return;
-        }
-
-        BenchmarkStatusText = $"Wrote BENCHMARK_REPORT.md ({count} model(s)).";
-        Log(BenchmarkStatusText);
-
-        try
-        {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = reportPath,
-                UseShellExecute = true,
-            });
-        }
-        catch (Exception ex)
-        {
-            Log($"Could not open the report: {ex.Message}");
-        }
-    }
-
-    private static IClipboard? GetTopLevelClipboard()
-    {
-        if (Avalonia.Application.Current?.ApplicationLifetime is Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime desktop
-            && desktop.MainWindow is { } window)
-        {
-            return Avalonia.Controls.TopLevel.GetTopLevel(window)?.Clipboard;
-        }
-        return null;
-    }
-
-    private static string Truncate(string text, int maxLength) => text.Length <= maxLength ? text : text[..maxLength] + "...";
-
-    private LmStudioContextPreset CurrentLmStudioPreset() =>
-        Enum.TryParse<LmStudioContextPreset>(SelectedLmStudioPresetName, out var preset) ? preset : LmStudioContextPreset.Balanced;
 
     [RelayCommand]
     private void SetCodexCredential()
@@ -1287,33 +971,23 @@ public partial class MainViewModel : ViewModelBase
                 }
             }
 
-            if (provider == _groqAdapter)
+            if (provider == _claudeAdapter || provider == _llamaCppAdapter || provider == _groqAdapter)
             {
-                // Known-broken: Claude Code sends Anthropic Messages API
-                // requests even when ANTHROPIC_BASE_URL points elsewhere, and
-                // Groq only exposes an OpenAI-protocol endpoint - every
-                // request currently fails. Confirmed live; fix planned for a
-                // future release. Warn rather than silently attempt-and-fail.
-                Log("Warning: Groq is known-broken right now (Anthropic/OpenAI protocol mismatch) - this launch will likely fail.");
-            }
-
-            if (provider == _claudeAdapter || provider == _lmStudioAdapter || provider == _groqAdapter)
-            {
-                // Same ~/.claude environment either way (Claude Code direct or
-                // Claude Code pointed at a local LM Studio model) - keep it in
-                // sync before every launch so switching between them is
-                // zero-friction: same skills, plugins, MCP tools, and
-                // claude-mem memory, automatically, every time.
+                // Same ~/.claude environment either way (Claude Code direct,
+                // or Claude Code pointed at a local llama.cpp model, or at
+                // Groq through the local proxy shim) - keep it in sync before
+                // every launch so switching between them is zero-friction:
+                // same skills, plugins, MCP tools, and claude-mem memory,
+                // automatically, every time.
                 await _companionTooling.EnsureSharedClaudeEnvironmentAsync(SelectedProject.FullPath);
-                await PrepareProjectDirectiveAsync(SelectedProject.FullPath);
+                await PrepareProjectDirectiveAsync(SelectedProject.FullPath, provider);
             }
 
             var options = new SessionLaunchOptions(
                 SelectedProject.FullPath,
-                await ResolveEffectiveModelAsync(provider),
+                ResolveEffectiveModel(),
                 IsolateClaudeConfig,
-                Enum.Parse<SessionResumeMode>(SelectedResumeModeName),
-                CurrentLmStudioPreset());
+                Enum.Parse<SessionResumeMode>(SelectedResumeModeName));
 
             var handle = await provider.LaunchSessionAsync(options);
             await _projectHistory.AddAsync(SelectedProject.FullPath);
@@ -1332,20 +1006,14 @@ public partial class MainViewModel : ViewModelBase
         }
     }
 
-    private static string? FindBenchmarkSummaryPath()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        for (var i = 0; i < 8 && dir is not null; i++, dir = dir.Parent)
-        {
-            var candidate = Path.Combine(dir.FullName, "benchmark_summary.json");
-            if (File.Exists(candidate)) return candidate;
-        }
-        return null;
-    }
-
     /// <summary>Delegates to the shared ProjectSessionPrep so the CLI host (used by the VS Code extension) runs the exact same pre-launch checks as this UI.</summary>
-    private Task PrepareProjectDirectiveAsync(string projectDirectory) =>
-        ProjectSessionPrep.PrepareProjectDirectiveAsync(projectDirectory, _claudeMdService, _availability, Log);
+    private Task PrepareProjectDirectiveAsync(string projectDirectory, IProviderAdapter? provider = null)
+    {
+        Uri? ragEmbeddingsUrl = RagEnabled && Uri.TryCreate(RagEmbeddingsUrl, UriKind.Absolute, out var parsedRagUri)
+            ? parsedRagUri
+            : null;
+        return ProjectSessionPrep.PrepareProjectDirectiveAsync(projectDirectory, _claudeMdService, _availability, Log, provider, ragEmbeddingsUrl);
+    }
 
     private void Log(string message) => LogLines.Add($"[{DateTime.Now:HH:mm:ss}] {message}");
 

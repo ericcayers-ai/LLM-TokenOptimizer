@@ -1,4 +1,5 @@
 using TokenOptimizer.Core.Diagnostics;
+using TokenOptimizer.Providers.Rag;
 
 namespace TokenOptimizer.Providers.Claude;
 
@@ -17,8 +18,15 @@ public static class ProjectSessionPrep
         string projectDirectory,
         ProjectClaudeMdService claudeMdService,
         CommandAvailability availability,
-        Action<string>? log = null)
+        Action<string>? log = null,
+        IProviderAdapter? provider = null,
+        Uri? ragEmbeddingsBaseUrl = null)
     {
+        if (provider is not null && ragEmbeddingsBaseUrl is not null)
+        {
+            await RagMcpRegistrar.EnsureRegisteredAsync(provider, projectDirectory, ragEmbeddingsBaseUrl, log);
+        }
+
         if (ProjectClaudeMdService.CheckClaudeMdBloat(projectDirectory) is { } bloatWarning)
         {
             log?.Invoke(bloatWarning);

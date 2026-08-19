@@ -12,4 +12,5 @@ public enum FallbackProvider
     Codex,
     Cursor,
     Groq,
+    DeepSeekHarness,
 }

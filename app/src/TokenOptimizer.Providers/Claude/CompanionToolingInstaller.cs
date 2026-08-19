@@ -362,6 +362,21 @@ public sealed class CompanionToolingInstaller
         return installed;
     }
 
+    public async Task<bool> InstallPonytailPluginAsync()
+    {
+        var config = await _configStore.LoadAsync();
+        if (config.PonytailPluginInstalled) return true;
+        if (!_availability.IsOnPath("claude", useCache: true)) return false;
+
+        var installed = await InstallMarketplacePluginAsync("DietrichGebert/ponytail", "ponytail", "ponytail");
+        if (installed)
+        {
+            config.PonytailPluginInstalled = true;
+            await _configStore.SaveAsync(config);
+        }
+        return installed;
+    }
+
     public async Task<bool> InstallClaudeMdManagementPluginAsync()
     {
         var config = await _configStore.LoadAsync();
@@ -606,26 +621,6 @@ public sealed class CompanionToolingInstaller
         }
 
         config.Context7McpInstalled = true;
-        await _configStore.SaveAsync(config);
-        return true;
-    }
-
-    // ------------------------------------------------------------------
-    // LM STUDIO SUPPORT (detection only - install path unknown/unreliable)
-    // ------------------------------------------------------------------
-
-    public async Task<bool> InstallLMStudioSupportAsync()
-    {
-        var config = await _configStore.LoadAsync();
-        if (config.LMStudioSupportInstalled) return true;
-
-        var lmsPath = LmStudio.LmsCliLocator.Find() ?? (_availability.IsOnPath("lms", useCache: true) ? "lms" : null);
-        if (lmsPath is null) return false;
-
-        var result = await ExternalCommandRunner.RunAsync(lmsPath, "--version", timeoutSeconds: 15);
-        if (!result.Success) return false;
-
-        config.LMStudioSupportInstalled = true;
         await _configStore.SaveAsync(config);
         return true;
     }
