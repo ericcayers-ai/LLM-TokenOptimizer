@@ -30,9 +30,6 @@ public sealed class AppConfig
     public string? GroqRateLimitedUntilUtc { get; set; }
     public string? OpenCodeRateLimitedUntilUtc { get; set; }
 
-    /// <summary>Base URL of the self-hosted OpenCode Go API server (OpenAI-compatible chat-completions endpoint), e.g. http://localhost:4096/v1. Null = OpenCode not configured, skipped in the fallback chain.</summary>
-    public string? OpenCodeBaseUrl { get; set; }
-
     /// <summary>Provider names in user-chosen priority order for the "Custom (fallback chain)" option, drag-reordered in the Session tab.</summary>
     public List<string>? CustomFallbackOrder { get; set; }
 

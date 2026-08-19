@@ -1,4 +1,5 @@
 using TokenOptimizer.Core.Diagnostics;
+using TokenOptimizer.Providers.LlamaCpp;
 
 namespace TokenOptimizer.Providers.Fallback;
 
@@ -43,6 +44,22 @@ public sealed class ProviderCliInstaller
         if (ExecutableLocators.FindDeepSeekHarness() is not null) return true;
         await ExternalCommandRunner.RunAsync("npm", "install -g @deepseek-ai/dsh", timeoutSeconds: 180);
         return ExecutableLocators.FindDeepSeekHarness() is not null;
+    }
+
+    /// <summary>Unsloth ships as a pip package, not npm - `unsloth start` is what powers the always-available local-model fallback (see LlamaCppAdapter), so this is offered as a first-class install step, not an afterthought.</summary>
+    public async Task<bool> InstallUnslothCliAsync()
+    {
+        if (LlamaCppLocator.Find() is not null) return true;
+        await ExternalCommandRunner.RunAsync("pip", "install --upgrade unsloth", timeoutSeconds: 600);
+        return LlamaCppLocator.Find() is not null;
+    }
+
+    /// <summary>OpenCode's own standalone TUI/agent CLI (opencode-ai on npm) - not required by OpenCodeAdapter (which talks to the OpenCode Go gateway directly through Claude Code), but installable here so users who also want the native OpenCode agent don't have to leave the app.</summary>
+    public async Task<bool> InstallOpenCodeCliAsync()
+    {
+        if (ExecutableLocators.FindOpenCode() is not null) return true;
+        await ExternalCommandRunner.RunAsync("npm", "install -g opencode-ai", timeoutSeconds: 180);
+        return ExecutableLocators.FindOpenCode() is not null;
     }
 
     public async Task<bool> InstallCursorCliAsync()

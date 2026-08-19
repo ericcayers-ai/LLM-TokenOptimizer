@@ -52,4 +52,16 @@ public static class ExecutableLocators
 
         return new CommandAvailability().ResolveOnPath("dsh");
     }
+
+    /// <summary>OpenCode's own standalone TUI/agent CLI - published as opencode-ai on npm. Not required by OpenCodeAdapter (which points Claude Code at the OpenCode Go gateway directly), but installable here for users who also want the native OpenCode agent.</summary>
+    public static string? FindOpenCode()
+    {
+        var roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        foreach (var candidate in new[] { Path.Combine(roaming, "npm", "opencode.cmd"), Path.Combine(roaming, "npm", "opencode") })
+        {
+            if (File.Exists(candidate)) return candidate;
+        }
+
+        return new CommandAvailability().ResolveOnPath("opencode");
+    }
 }

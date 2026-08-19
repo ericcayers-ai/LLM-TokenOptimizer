@@ -59,7 +59,7 @@ public partial class MainViewModel : ViewModelBase
         _cursorAdapter = new CursorAdapter(_credentials);
         _groqAdapter = new GroqAdapter(_credentials, _claudeLocator);
         _deepSeekHarnessAdapter = new DeepSeekHarnessAdapter();
-        _openCodeAdapter = new OpenCodeAdapter(_credentials, _claudeLocator, _configStore);
+        _openCodeAdapter = new OpenCodeAdapter(_credentials, _claudeLocator);
         _rateLimits = new RateLimitTracker(_configStore);
         _fallbackResolver = new FallbackChainResolver(
             _claudeAdapter, _antigravityAdapter, _codexAdapter, _cursorAdapter, _groqAdapter, _deepSeekHarnessAdapter, _openCodeAdapter, _llamaCppAdapter, _rateLimits);
@@ -145,7 +145,33 @@ public partial class MainViewModel : ViewModelBase
     {
         _ = RefreshModelOverrideOptionsAsync(value);
         _ = RefreshDashboardAsync();
+        SelectedProviderDescription = ProviderDescriptions.TryGetValue(value, out var description) ? description : string.Empty;
     }
+
+    [ObservableProperty]
+    public partial string SelectedProviderDescription { get; set; } = string.Empty;
+
+    /// <summary>
+    /// One-line "what is this and how does it work" per dropdown entry, shown
+    /// live under the Provider picker - the raw names (esp. "DeepSeek Harness")
+    /// don't self-explain to a first-time user. Two families: providers that
+    /// launch Claude Code itself pointed at an alternate model/backend (same
+    /// terminal, same skills/plugins/memory), and providers that launch a
+    /// completely separate CLI/tool with its own session.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, string> ProviderDescriptions = new Dictionary<string, string>
+    {
+        [AutoFallbackProviderName] = "Tries Claude Code, then Antigravity, then OpenCode, then the local model - first one available wins. Nothing to configure beyond credentials below.",
+        [CustomFallbackProviderName] = "Same idea as Auto, but in the order you drag-reorder in the list above, and only across providers you've checked on.",
+        ["Claude Code"] = "Anthropic's own CLI, direct - no bridging, no fallback. The default.",
+        ["Antigravity"] = "Launches Claude Code itself, pointed at Antigravity through a local proxy. Same terminal, skills, plugins, and memory as Claude Code direct. Needs CLI login below.",
+        ["OpenCode"] = "Launches Claude Code itself, pointed at the OpenCode Go model gateway through a local proxy. Same terminal, skills, plugins, and memory as Claude Code direct. Needs an API key below (sign in at opencode.ai/zen).",
+        ["Unsloth (local model)"] = "Launches Claude Code itself, pointed at a model running locally on this machine (no internet, no API key). Always ready once Unsloth and a model are installed - use Install Companion Tooling below if it isn't found. Same terminal, skills, plugins, and memory as Claude Code direct.",
+        ["Groq"] = "Launches Claude Code itself, pointed at Groq through a local proxy. Same terminal, skills, plugins, and memory as Claude Code direct. Needs an API key below. Manual-only - not part of Auto.",
+        ["Codex"] = "A separate tool: OpenAI's own Codex CLI, its own session and terminal. Needs an API key below. Manual-only - not part of Auto.",
+        ["Cursor"] = "A separate tool: the Cursor CLI, its own session and terminal. Needs CLI login below. Manual-only - not part of Auto.",
+        ["DeepSeek Harness"] = "A separate tool: deepseek-ai's own agent runtime (dev preview) - opens its own local web UI in your browser, not a terminal session. Manual-only - not part of Auto.",
+    };
 
     /// <summary>Selecting the provider IS the category (Avalonia has no built-in grouped-combo control worth the complexity here) - Auto/Custom show the union of everything since the resolved provider decides which entry actually applies.</summary>
     private Task RefreshModelOverrideOptionsAsync(string providerName)
@@ -212,9 +238,6 @@ public partial class MainViewModel : ViewModelBase
 
     [ObservableProperty]
     public partial string OpenCodeApiKeyInput { get; set; } = string.Empty;
-
-    [ObservableProperty]
-    public partial string OpenCodeBaseUrlInput { get; set; } = string.Empty;
 
     [ObservableProperty]
     public partial string MasterFolderPath { get; set; } = string.Empty;
@@ -576,6 +599,8 @@ public partial class MainViewModel : ViewModelBase
         ("claude-md-management", _companionTooling.InstallClaudeMdManagementPluginAsync),
         ("impeccable", _companionTooling.InstallImpeccableSkillAsync),
         ("task-observer", _companionTooling.InstallTaskObserverSkillAsync),
+        ("Unsloth CLI (local model)", _providerCliInstaller.InstallUnslothCliAsync),
+        ("OpenCode CLI", _providerCliInstaller.InstallOpenCodeCliAsync),
         ("Codex CLI", _providerCliInstaller.InstallCodexCliAsync),
         ("Antigravity CLI", _providerCliInstaller.InstallAntigravityCliAsync),
         ("Cursor CLI", _providerCliInstaller.InstallCursorCliAsync),
@@ -785,35 +810,18 @@ public partial class MainViewModel : ViewModelBase
         _ = RefreshAllAsync();
     }
 
-    /// <summary>OpenCode's API key is optional (most self-hosted deployments run without auth) - only the base URL is required. Stores whichever fields are non-empty; either can be updated independently.</summary>
     [RelayCommand]
-    private async Task SetOpenCodeCredentialAsync()
+    private void SetOpenCodeCredential()
     {
-        if (string.IsNullOrWhiteSpace(OpenCodeBaseUrlInput) && string.IsNullOrWhiteSpace(OpenCodeApiKeyInput))
+        if (string.IsNullOrWhiteSpace(OpenCodeApiKeyInput))
         {
-            Log("Enter an OpenCode base URL (and optionally an API key) first.");
+            Log("Enter an OpenCode Go API key first (sign in at https://opencode.ai/zen to get one).");
             return;
         }
 
-        if (!string.IsNullOrWhiteSpace(OpenCodeBaseUrlInput))
-        {
-            if (!Uri.TryCreate(OpenCodeBaseUrlInput, UriKind.Absolute, out _))
-            {
-                Log("OpenCode base URL doesn't look like a valid absolute URL (e.g. http://localhost:4096/v1).");
-                return;
-            }
-
-            await _configStore.UpdateAsync(config => config.OpenCodeBaseUrl = OpenCodeBaseUrlInput);
-            OpenCodeBaseUrlInput = string.Empty;
-        }
-
-        if (!string.IsNullOrWhiteSpace(OpenCodeApiKeyInput))
-        {
-            _credentials.SetCredential(FallbackProvider.OpenCode, OpenCodeApiKeyInput);
-            OpenCodeApiKeyInput = string.Empty;
-        }
-
-        Log("OpenCode configuration stored (API key, if any, is DPAPI-encrypted, this account only).");
+        _credentials.SetCredential(FallbackProvider.OpenCode, OpenCodeApiKeyInput);
+        OpenCodeApiKeyInput = string.Empty;
+        Log("OpenCode Go credential stored (DPAPI-encrypted, this account only).");
         _ = RefreshAllAsync();
     }
 

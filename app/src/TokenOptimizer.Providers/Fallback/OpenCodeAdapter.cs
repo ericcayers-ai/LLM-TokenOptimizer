@@ -1,27 +1,22 @@
 using System.Diagnostics;
 using System.Runtime.Versioning;
-using TokenOptimizer.Core.Config;
 using TokenOptimizer.Core.Diagnostics;
 using TokenOptimizer.Core.Models;
 using TokenOptimizer.Core.Security;
 using TokenOptimizer.Providers.Claude;
-using TokenOptimizer.Providers.Compat;
 using TokenOptimizer.Providers.Manifests;
 
 namespace TokenOptimizer.Providers.Fallback;
 
 /// <summary>
-/// OpenCode's self-hosted Go API server - like GroqAdapter, "using OpenCode"
-/// means launching Claude Code itself pointed at a local proxy, so a model
-/// served behind the OpenCode server becomes a drop-in swap for whichever
-/// model Claude Code would otherwise talk to.
-///
-/// Unlike Groq (fixed cloud endpoint), OpenCode is self-hosted: the base
-/// URL is whatever the user's Go server is bound to (AppConfig.OpenCodeBaseUrl),
-/// stored plaintext since it's not a secret, same as a hostname. The API
-/// key is optional - most local OpenCode deployments run without auth -
-/// but is sent as a Bearer token when present for operators who front
-/// their server with one.
+/// OpenCode Go - the OpenCode team's low-cost subscription gateway to
+/// popular open coding models (opencode.ai/docs/providers#opencode-go).
+/// Sign in once at https://opencode.ai/zen to get an API key; that's the
+/// only setup this adapter needs - no base URL to configure, no local
+/// proxy to run. Unlike Groq (OpenAI chat-completions schema, needs
+/// AnthropicCompatProxy to translate), the Go gateway already speaks the
+/// Anthropic Messages API, so Claude Code can point ANTHROPIC_BASE_URL at
+/// it directly, same shape as pointing at Anthropic's own api.anthropic.com.
 ///
 /// Part of the automatic fallback chain (unlike Codex/Cursor/Groq), slotted
 /// right before the local llama.cpp model: see FallbackChainResolver.
@@ -29,27 +24,21 @@ namespace TokenOptimizer.Providers.Fallback;
 [SupportedOSPlatform("windows")] // ProxyCredentialStore is DPAPI-backed (Windows-only), not an OpenCode API constraint.
 public sealed class OpenCodeAdapter : IProviderAdapter
 {
+    private static readonly Uri ApiBaseUrl = new("https://opencode.ai/zen/go");
+
     private readonly ProxyCredentialStore _credentials;
     private readonly ClaudeExecutableLocator _claudeLocator;
-    private readonly ConfigStore _configStore;
 
-    public OpenCodeAdapter(ProxyCredentialStore credentials, ClaudeExecutableLocator claudeLocator, ConfigStore configStore)
+    public OpenCodeAdapter(ProxyCredentialStore credentials, ClaudeExecutableLocator claudeLocator)
     {
         _credentials = credentials;
         _claudeLocator = claudeLocator;
-        _configStore = configStore;
     }
 
     public string Name => "OpenCode";
 
-    public async Task<bool> IsAvailableAsync()
-    {
-        var config = await _configStore.LoadAsync();
-        if (string.IsNullOrWhiteSpace(config.OpenCodeBaseUrl) || !Uri.TryCreate(config.OpenCodeBaseUrl, UriKind.Absolute, out _))
-            return false;
-
-        return await _claudeLocator.FindAsync() is not null;
-    }
+    public async Task<bool> IsAvailableAsync() =>
+        _credentials.HasCredential(FallbackProvider.OpenCode) && await _claudeLocator.FindAsync() is not null;
 
     public Task<IReadOnlyList<string>> ListModelsAsync() => Task.FromResult(OpenCodeModelCatalog.ModelIds);
 
@@ -70,17 +59,12 @@ public sealed class OpenCodeAdapter : IProviderAdapter
 
     public async Task<ISessionHandle> LaunchSessionAsync(SessionLaunchOptions options)
     {
-        var config = await _configStore.LoadAsync();
-        if (string.IsNullOrWhiteSpace(config.OpenCodeBaseUrl) || !Uri.TryCreate(config.OpenCodeBaseUrl, UriKind.Absolute, out var baseUrl))
-            throw new InvalidOperationException("No OpenCode base URL configured - set it in Fallback credentials first (e.g. http://localhost:4096/v1).");
+        var apiKey = _credentials.GetCredentialPlainText(FallbackProvider.OpenCode)
+                     ?? throw new InvalidOperationException("No OpenCode Go credential stored - sign in at https://opencode.ai/zen and save the API key in Fallback credentials first.");
         var claudeExe = await _claudeLocator.FindAsync()
                          ?? throw new InvalidOperationException("Claude Code executable not found - install it first.");
 
         await ExternalCommandRunner.RunAsync(claudeExe, "plugin marketplace update", timeoutSeconds: 20);
-
-        var apiKey = _credentials.GetCredentialPlainText(FallbackProvider.OpenCode);
-        var proxy = new AnthropicCompatProxy(baseUrl, () => apiKey);
-        await proxy.StartAsync();
 
         var args = new List<string>();
         var resumeFlag = options.ResumeMode switch
@@ -100,8 +84,8 @@ public sealed class OpenCodeAdapter : IProviderAdapter
             WorkingDirectory = options.ProjectPath,
             UseShellExecute = false,
         };
-        psi.EnvironmentVariables["ANTHROPIC_BASE_URL"] = proxy.BaseUrl;
-        psi.EnvironmentVariables["ANTHROPIC_AUTH_TOKEN"] = "proxied-locally"; // the proxy injects the real OpenCode key (if any) upstream; the CLI never needs to see it.
+        psi.EnvironmentVariables["ANTHROPIC_BASE_URL"] = ApiBaseUrl.ToString();
+        psi.EnvironmentVariables["ANTHROPIC_AUTH_TOKEN"] = apiKey;
 
         if (options.IsolateConfig)
         {
@@ -110,8 +94,6 @@ public sealed class OpenCodeAdapter : IProviderAdapter
         }
 
         var process = Process.Start(psi);
-        var handle = new ProcessSessionHandle(Name, options.ProjectPath, process, watchForRateLimit: true);
-        _ = handle.RateLimitOutcome.ContinueWith(async _ => await proxy.DisposeAsync());
-        return handle;
+        return new ProcessSessionHandle(Name, options.ProjectPath, process, watchForRateLimit: true);
     }
 }

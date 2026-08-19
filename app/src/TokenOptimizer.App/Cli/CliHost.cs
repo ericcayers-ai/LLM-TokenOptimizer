@@ -80,7 +80,7 @@ public static class CliHost
         var cursorAdapter = new CursorAdapter(credentials);
         var groqAdapter = new GroqAdapter(credentials, claudeLocator);
         var deepSeekHarnessAdapter = new DeepSeekHarnessAdapter();
-        var openCodeAdapter = new OpenCodeAdapter(credentials, claudeLocator, configStore);
+        var openCodeAdapter = new OpenCodeAdapter(credentials, claudeLocator);
         var rateLimits = new RateLimitTracker(configStore);
         var fallbackResolver = new FallbackChainResolver(
             claudeAdapter, antigravityAdapter, codexAdapter, cursorAdapter, groqAdapter, deepSeekHarnessAdapter, openCodeAdapter, llamaCppAdapter, rateLimits);
