@@ -80,9 +80,10 @@ public static class CliHost
         var cursorAdapter = new CursorAdapter(credentials);
         var groqAdapter = new GroqAdapter(credentials, claudeLocator);
         var deepSeekHarnessAdapter = new DeepSeekHarnessAdapter();
+        var openCodeAdapter = new OpenCodeAdapter(credentials, claudeLocator, configStore);
         var rateLimits = new RateLimitTracker(configStore);
         var fallbackResolver = new FallbackChainResolver(
-            claudeAdapter, antigravityAdapter, codexAdapter, cursorAdapter, groqAdapter, deepSeekHarnessAdapter, llamaCppAdapter, rateLimits);
+            claudeAdapter, antigravityAdapter, codexAdapter, cursorAdapter, groqAdapter, deepSeekHarnessAdapter, openCodeAdapter, llamaCppAdapter, rateLimits);
         var companionTooling = new CompanionToolingInstaller(configStore, claudeLocator, availability, pythonLocator);
         var projectHistory = new ProjectHistoryService(configStore);
         var masterFolderService = new MasterFolderService(configStore, projectHistory);
@@ -92,7 +93,7 @@ public static class CliHost
 
         var providers = new IProviderAdapter[]
         {
-            claudeAdapter, llamaCppAdapter, antigravityAdapter, codexAdapter, cursorAdapter, groqAdapter, deepSeekHarnessAdapter,
+            claudeAdapter, antigravityAdapter, openCodeAdapter, llamaCppAdapter, codexAdapter, cursorAdapter, groqAdapter, deepSeekHarnessAdapter,
         };
 
         try

@@ -34,6 +34,7 @@ public partial class MainViewModel : ViewModelBase
     private readonly CursorAdapter _cursorAdapter;
     private readonly GroqAdapter _groqAdapter;
     private readonly DeepSeekHarnessAdapter _deepSeekHarnessAdapter;
+    private readonly OpenCodeAdapter _openCodeAdapter;
     private readonly RateLimitTracker _rateLimits;
     private readonly FallbackChainResolver _fallbackResolver;
     private readonly PythonLocator _pythonLocator;
@@ -58,9 +59,10 @@ public partial class MainViewModel : ViewModelBase
         _cursorAdapter = new CursorAdapter(_credentials);
         _groqAdapter = new GroqAdapter(_credentials, _claudeLocator);
         _deepSeekHarnessAdapter = new DeepSeekHarnessAdapter();
+        _openCodeAdapter = new OpenCodeAdapter(_credentials, _claudeLocator, _configStore);
         _rateLimits = new RateLimitTracker(_configStore);
         _fallbackResolver = new FallbackChainResolver(
-            _claudeAdapter, _antigravityAdapter, _codexAdapter, _cursorAdapter, _groqAdapter, _deepSeekHarnessAdapter, _llamaCppAdapter, _rateLimits);
+            _claudeAdapter, _antigravityAdapter, _codexAdapter, _cursorAdapter, _groqAdapter, _deepSeekHarnessAdapter, _openCodeAdapter, _llamaCppAdapter, _rateLimits);
         _wingetInstaller = new WingetInstaller(_availability);
         _companionTooling = new CompanionToolingInstaller(_configStore, _claudeLocator, _availability, _pythonLocator);
         _masterFolderService = new MasterFolderService(_configStore, _projectHistory);
@@ -68,7 +70,7 @@ public partial class MainViewModel : ViewModelBase
 
         _providers = new IProviderAdapter[]
         {
-            _claudeAdapter, _llamaCppAdapter, _antigravityAdapter, _codexAdapter, _cursorAdapter, _groqAdapter, _deepSeekHarnessAdapter,
+            _claudeAdapter, _antigravityAdapter, _openCodeAdapter, _llamaCppAdapter, _codexAdapter, _cursorAdapter, _groqAdapter, _deepSeekHarnessAdapter,
         };
         ProviderNames = new ObservableCollection<string>(
             new[] { AutoFallbackProviderName, CustomFallbackProviderName }.Concat(_providers.Select(p => p.Name)));
@@ -113,6 +115,7 @@ public partial class MainViewModel : ViewModelBase
         ["Codex"] = new[] { "gpt-5-codex", "gpt-5.1-codex", "gpt-5.1-codex-mini" },
         ["Antigravity"] = new[] { "gemini-3-pro", "gemini-3-pro-high" },
         ["Cursor"] = new[] { "auto", "composer-1" },
+        ["OpenCode"] = OpenCodeModelCatalog.ModelIds.ToArray(),
     };
 
     /// <summary>Single default/auto model per provider - what Auto/Custom fallback chain shows, so the dropdown isn't every provider's full curated list mashed together (see RefreshModelOverrideOptionsAsync).</summary>
@@ -206,6 +209,12 @@ public partial class MainViewModel : ViewModelBase
 
     [ObservableProperty]
     public partial string GroqApiKeyInput { get; set; } = string.Empty;
+
+    [ObservableProperty]
+    public partial string OpenCodeApiKeyInput { get; set; } = string.Empty;
+
+    [ObservableProperty]
+    public partial string OpenCodeBaseUrlInput { get; set; } = string.Empty;
 
     [ObservableProperty]
     public partial string MasterFolderPath { get; set; } = string.Empty;
@@ -776,6 +785,38 @@ public partial class MainViewModel : ViewModelBase
         _ = RefreshAllAsync();
     }
 
+    /// <summary>OpenCode's API key is optional (most self-hosted deployments run without auth) - only the base URL is required. Stores whichever fields are non-empty; either can be updated independently.</summary>
+    [RelayCommand]
+    private async Task SetOpenCodeCredentialAsync()
+    {
+        if (string.IsNullOrWhiteSpace(OpenCodeBaseUrlInput) && string.IsNullOrWhiteSpace(OpenCodeApiKeyInput))
+        {
+            Log("Enter an OpenCode base URL (and optionally an API key) first.");
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(OpenCodeBaseUrlInput))
+        {
+            if (!Uri.TryCreate(OpenCodeBaseUrlInput, UriKind.Absolute, out _))
+            {
+                Log("OpenCode base URL doesn't look like a valid absolute URL (e.g. http://localhost:4096/v1).");
+                return;
+            }
+
+            await _configStore.UpdateAsync(config => config.OpenCodeBaseUrl = OpenCodeBaseUrlInput);
+            OpenCodeBaseUrlInput = string.Empty;
+        }
+
+        if (!string.IsNullOrWhiteSpace(OpenCodeApiKeyInput))
+        {
+            _credentials.SetCredential(FallbackProvider.OpenCode, OpenCodeApiKeyInput);
+            OpenCodeApiKeyInput = string.Empty;
+        }
+
+        Log("OpenCode configuration stored (API key, if any, is DPAPI-encrypted, this account only).");
+        _ = RefreshAllAsync();
+    }
+
     /// <summary>Actually opens the Antigravity CLI (no separate "login" subcommand - it prompts sign-in on first interactive run) rather than only flipping an internal opt-in flag with nothing visible happening. Does NOT mark the provider available itself - CheckAntigravityLoginAsync verifies that for real.</summary>
     [RelayCommand]
     private void LoginAntigravity()
@@ -971,14 +1012,14 @@ public partial class MainViewModel : ViewModelBase
                 }
             }
 
-            if (provider == _claudeAdapter || provider == _llamaCppAdapter || provider == _groqAdapter)
+            if (provider == _claudeAdapter || provider == _llamaCppAdapter || provider == _groqAdapter || provider == _openCodeAdapter)
             {
                 // Same ~/.claude environment either way (Claude Code direct,
                 // or Claude Code pointed at a local llama.cpp model, or at
-                // Groq through the local proxy shim) - keep it in sync before
-                // every launch so switching between them is zero-friction:
-                // same skills, plugins, MCP tools, and claude-mem memory,
-                // automatically, every time.
+                // Groq/OpenCode through the local proxy shim) - keep it in
+                // sync before every launch so switching between them is
+                // zero-friction: same skills, plugins, MCP tools, and
+                // claude-mem memory, automatically, every time.
                 await _companionTooling.EnsureSharedClaudeEnvironmentAsync(SelectedProject.FullPath);
                 await PrepareProjectDirectiveAsync(SelectedProject.FullPath, provider);
             }
@@ -1033,6 +1074,7 @@ public partial class MainViewModel : ViewModelBase
             "Codex" => FallbackProvider.Codex,
             "Cursor" => FallbackProvider.Cursor,
             "Groq" => FallbackProvider.Groq,
+            "OpenCode" => FallbackProvider.OpenCode,
             _ => null,
         };
         if (provider is not { } trackedProvider || handle is not ProcessSessionHandle processHandle) return;

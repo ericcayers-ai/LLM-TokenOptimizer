@@ -8,10 +8,11 @@ public sealed record FallbackChainStep(string ProviderName, bool IsAvailable, st
 /// <summary>
 /// Resolves which backend a session should actually launch against when the
 /// user picks "Auto". Mirrors Resolve-SessionBackend: ONLY Claude Code -&gt;
-/// Antigravity -&gt; local model is automatic. Codex and Cursor are
-/// deliberately manual-only (v5.9 reverted auto-routing them, by explicit
-/// request) - reachable exclusively by picking them directly in the
-/// provider dropdown or via "Export Handoff", never auto-selected here.
+/// Antigravity -&gt; OpenCode -&gt; local model is automatic. Codex, Cursor,
+/// Groq, and DeepSeekHarness are deliberately manual-only (v5.9 reverted
+/// auto-routing Codex/Cursor, by explicit request) - reachable exclusively
+/// by picking them directly in the provider dropdown or via "Export
+/// Handoff", never auto-selected here.
 /// </summary>
 public sealed class FallbackChainResolver
 {
@@ -21,6 +22,7 @@ public sealed class FallbackChainResolver
     private readonly CursorAdapter _cursor;
     private readonly GroqAdapter _groq;
     private readonly DeepSeekHarnessAdapter _deepSeekHarness;
+    private readonly OpenCodeAdapter _openCode;
     private readonly IProviderAdapter _localModel;
     private readonly RateLimitTracker _rateLimits;
 
@@ -31,6 +33,7 @@ public sealed class FallbackChainResolver
         CursorAdapter cursor,
         GroqAdapter groq,
         DeepSeekHarnessAdapter deepSeekHarness,
+        OpenCodeAdapter openCode,
         IProviderAdapter localModel,
         RateLimitTracker rateLimits)
     {
@@ -40,6 +43,7 @@ public sealed class FallbackChainResolver
         _cursor = cursor;
         _groq = groq;
         _deepSeekHarness = deepSeekHarness;
+        _openCode = openCode;
         _localModel = localModel;
         _rateLimits = rateLimits;
     }
@@ -53,6 +57,7 @@ public sealed class FallbackChainResolver
         [_cursor.Name] = (_cursor, FallbackProvider.Cursor),
         [_groq.Name] = (_groq, FallbackProvider.Groq),
         [_deepSeekHarness.Name] = (_deepSeekHarness, FallbackProvider.DeepSeekHarness),
+        [_openCode.Name] = (_openCode, FallbackProvider.OpenCode),
         [_localModel.Name] = (_localModel, null),
     };
 
@@ -82,6 +87,11 @@ public sealed class FallbackChainResolver
             return _antigravity;
         }
 
+        if (!await _rateLimits.IsRateLimitedAsync(FallbackProvider.OpenCode) && await _openCode.IsAvailableAsync())
+        {
+            return _openCode;
+        }
+
         if (await _localModel.IsAvailableAsync()) return _localModel;
 
         return null;
@@ -93,6 +103,7 @@ public sealed class FallbackChainResolver
         {
             await DescribeAsync(_claudeAdapter, FallbackProvider.Claude),
             await DescribeAsync(_antigravity, FallbackProvider.Antigravity),
+            await DescribeAsync(_openCode, FallbackProvider.OpenCode),
             await DescribeAsync(_localModel, null),
             await DescribeManualOnlyAsync(_codex, FallbackProvider.Codex),
             await DescribeManualOnlyAsync(_cursor, FallbackProvider.Cursor),

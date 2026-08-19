@@ -37,6 +37,7 @@ public sealed class RateLimitTracker
         FallbackProvider.Codex => config.CodexRateLimitedUntilUtc,
         FallbackProvider.Cursor => config.CursorRateLimitedUntilUtc,
         FallbackProvider.Groq => config.GroqRateLimitedUntilUtc,
+        FallbackProvider.OpenCode => config.OpenCodeRateLimitedUntilUtc,
         _ => null,
     };
 
@@ -49,6 +50,7 @@ public sealed class RateLimitTracker
             case FallbackProvider.Codex: config.CodexRateLimitedUntilUtc = value; break;
             case FallbackProvider.Cursor: config.CursorRateLimitedUntilUtc = value; break;
             case FallbackProvider.Groq: config.GroqRateLimitedUntilUtc = value; break;
+            case FallbackProvider.OpenCode: config.OpenCodeRateLimitedUntilUtc = value; break;
         }
     }
 }

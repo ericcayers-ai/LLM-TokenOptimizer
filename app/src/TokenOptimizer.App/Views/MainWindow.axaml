@@ -288,6 +288,13 @@
                                 </StackPanel>
                                 <TextBlock Text="⚠ Known issue: Groq currently fails to launch - Claude Code speaks the Anthropic Messages API protocol even when pointed at a different URL, and Groq only exposes an OpenAI-protocol endpoint, so every request is rejected. A protocol bridge is planned for a future release; the key can still be saved now."
                                            Foreground="Orange" FontSize="11" TextWrapping="Wrap" />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <TextBox Text="{Binding OpenCodeBaseUrlInput}" PlaceholderText="OpenCode base URL, e.g. http://localhost:4096/v1" Width="260" />
+                                    <TextBox Text="{Binding OpenCodeApiKeyInput}" PlaceholderText="OpenCode API key (optional)" Width="180" PasswordChar="*" />
+                                    <Button Content="Save OpenCode" Command="{Binding SetOpenCodeCredentialCommand}" />
+                                </StackPanel>
+                                <TextBlock Text="OpenCode is part of the automatic fallback chain (Claude Code → Antigravity → OpenCode → local model). Point it at your self-hosted OpenCode Go API server; models: mimo2.5 (default, balanced), v4-flash (cheap), minimax2.7, kimik2.5, qwen3.8, glm-5.2 (optional, expensive) - or type any model id your server routes to."
+                                           Opacity="0.6" FontSize="11" TextWrapping="Wrap" />
 
                                 <Border BorderBrush="Gray" BorderThickness="1" CornerRadius="4" Padding="10">
                                     <StackPanel Spacing="4">
