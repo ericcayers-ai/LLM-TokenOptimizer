@@ -69,6 +69,21 @@ public sealed class GroqAdapter : IProviderAdapter
     public Task<ProviderResult> RegisterMcpToolAsync(McpToolManifest tool) =>
         Task.FromResult(ProviderResult.Fail("Groq does not register MCP tools - register against the Claude Code adapter."));
 
+    public ClaudeLaunchEnvironment BuildLaunchEnvironment(SessionLaunchOptions options, string proxyBaseUrl)
+    {
+        var builder = new ClaudeLaunchEnvironmentBuilder()
+            .WithResumeMode(options.ResumeMode)
+            .WithModel(options.Model)
+            .WithAnthropicBaseUrl(proxyBaseUrl)
+            .WithAnthropicAuthToken("proxied-locally")
+            .WithClaudeMemIsolation();
+        if (options.IsolateConfig)
+        {
+            builder.WithIsolatedConfig(options.ProjectPath);
+        }
+        return builder.Build();
+    }
+
     public async Task<ISessionHandle> LaunchSessionAsync(SessionLaunchOptions options)
     {
         var apiKey = _credentials.GetCredentialPlainText(FallbackProvider.Groq)
@@ -83,32 +98,17 @@ public sealed class GroqAdapter : IProviderAdapter
         var proxy = new AnthropicCompatProxy(ApiBaseUrl, () => apiKey);
         await proxy.StartAsync();
 
-        var args = new List<string>();
-        var resumeFlag = options.ResumeMode switch
-        {
-            SessionResumeMode.Continue => "--continue",
-            SessionResumeMode.Pick => "--resume",
-            _ => null,
-        };
-        if (resumeFlag is not null) args.Add(resumeFlag);
-        if (!string.IsNullOrWhiteSpace(options.Model)) args.Add($"--model {options.Model}");
-
+        var launchEnv = BuildLaunchEnvironment(options, proxy.BaseUrl);
         var psi = new ProcessStartInfo
         {
             FileName = claudeExe,
-            Arguments = string.Join(' ', args),
+            Arguments = launchEnv.Arguments,
             WorkingDirectory = options.ProjectPath,
             UseShellExecute = false,
         };
-        psi.EnvironmentVariables["ANTHROPIC_BASE_URL"] = proxy.BaseUrl;
-        psi.EnvironmentVariables["ANTHROPIC_AUTH_TOKEN"] = "proxied-locally"; // the proxy injects the real Groq key upstream; the CLI never needs to see it.
-        psi.EnvironmentVariables["CLAUDE_MEM_WORKER_PORT"] = CompanionToolingInstaller.IsolatedWorkerPort.ToString();
-        psi.EnvironmentVariables["CLAUDE_MEM_DATA_DIR"] = CompanionToolingInstaller.IsolatedDataDir;
-
-        if (options.IsolateConfig)
+        foreach (var kv in launchEnv.Env)
         {
-            var profileDir = IsolatedClaudeProfileService.GetOrCreateProfileDir(options.ProjectPath);
-            psi.EnvironmentVariables["CLAUDE_CONFIG_DIR"] = profileDir;
+            psi.EnvironmentVariables[kv.Key] = kv.Value;
         }
 
         var process = Process.Start(psi);

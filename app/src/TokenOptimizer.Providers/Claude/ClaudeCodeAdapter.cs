@@ -110,6 +110,19 @@ public sealed class ClaudeCodeAdapter : IProviderAdapter
             : ProviderResult.Fail($"MCP tool '{tool.Id}' registration failed: {result.Output}");
     }
 
+    public ClaudeLaunchEnvironment BuildLaunchEnvironment(SessionLaunchOptions options)
+    {
+        var builder = new ClaudeLaunchEnvironmentBuilder()
+            .WithModel(options.Model)
+            .WithResumeMode(options.ResumeMode)
+            .WithClaudeMemIsolation();
+        if (options.IsolateConfig)
+        {
+            builder.WithIsolatedConfig(options.ProjectPath);
+        }
+        return builder.Build();
+    }
+
     public async Task<ISessionHandle> LaunchSessionAsync(SessionLaunchOptions options)
     {
         var exe = await _locator.FindAsync()
@@ -117,32 +130,17 @@ public sealed class ClaudeCodeAdapter : IProviderAdapter
 
         await RefreshPluginMarketplacesAsync(exe);
 
-        var args = new List<string>();
-        if (!string.IsNullOrWhiteSpace(options.Model)) args.Add($"--model {options.Model}");
-        var resumeFlag = options.ResumeMode switch
-        {
-            SessionResumeMode.Continue => "--continue",
-            SessionResumeMode.Pick => "--resume",
-            _ => null,
-        };
-        if (resumeFlag is not null) args.Add(resumeFlag);
-
+        var launchEnv = BuildLaunchEnvironment(options);
         var psi = new ProcessStartInfo
         {
             FileName = exe,
-            Arguments = string.Join(' ', args),
+            Arguments = launchEnv.Arguments,
             WorkingDirectory = options.ProjectPath,
             UseShellExecute = false,
         };
-        // Keeps this app's sessions off claude-mem's default-port worker, which
-        // the standalone Claude Code Desktop app also uses - see IsolatedWorkerPort.
-        psi.EnvironmentVariables["CLAUDE_MEM_WORKER_PORT"] = CompanionToolingInstaller.IsolatedWorkerPort.ToString();
-        psi.EnvironmentVariables["CLAUDE_MEM_DATA_DIR"] = CompanionToolingInstaller.IsolatedDataDir;
-
-        if (options.IsolateConfig)
+        foreach (var kv in launchEnv.Env)
         {
-            var profileDir = IsolatedClaudeProfileService.GetOrCreateProfileDir(options.ProjectPath);
-            psi.EnvironmentVariables["CLAUDE_CONFIG_DIR"] = profileDir;
+            psi.EnvironmentVariables[kv.Key] = kv.Value;
         }
 
         var process = Process.Start(psi);

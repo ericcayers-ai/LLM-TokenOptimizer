@@ -57,6 +57,22 @@ public sealed class OpenCodeAdapter : IProviderAdapter
     public Task<ProviderResult> RegisterMcpToolAsync(McpToolManifest tool) =>
         Task.FromResult(ProviderResult.Fail("OpenCode does not register MCP tools - register against the Claude Code adapter."));
 
+    public ClaudeLaunchEnvironment BuildLaunchEnvironment(SessionLaunchOptions options, string apiKey)
+    {
+        var model = string.IsNullOrWhiteSpace(options.Model) ? OpenCodeModelCatalog.DefaultModel : options.Model;
+        var builder = new ClaudeLaunchEnvironmentBuilder()
+            .WithResumeMode(options.ResumeMode)
+            .WithModel(model)
+            .WithAnthropicBaseUrl(ApiBaseUrl.ToString())
+            .WithAnthropicAuthToken(apiKey)
+            .WithClaudeMemIsolation();
+        if (options.IsolateConfig)
+        {
+            builder.WithIsolatedConfig(options.ProjectPath);
+        }
+        return builder.Build();
+    }
+
     public async Task<ISessionHandle> LaunchSessionAsync(SessionLaunchOptions options)
     {
         var apiKey = _credentials.GetCredentialPlainText(FallbackProvider.OpenCode)
@@ -66,33 +82,17 @@ public sealed class OpenCodeAdapter : IProviderAdapter
 
         await ExternalCommandRunner.RunAsync(claudeExe, "plugin marketplace update", timeoutSeconds: 20);
 
-        var args = new List<string>();
-        var resumeFlag = options.ResumeMode switch
-        {
-            SessionResumeMode.Continue => "--continue",
-            SessionResumeMode.Pick => "--resume",
-            _ => null,
-        };
-        if (resumeFlag is not null) args.Add(resumeFlag);
-        var model = string.IsNullOrWhiteSpace(options.Model) ? OpenCodeModelCatalog.DefaultModel : options.Model;
-        args.Add($"--model {model}");
-
+        var launchEnv = BuildLaunchEnvironment(options, apiKey);
         var psi = new ProcessStartInfo
         {
             FileName = claudeExe,
-            Arguments = string.Join(' ', args),
+            Arguments = launchEnv.Arguments,
             WorkingDirectory = options.ProjectPath,
             UseShellExecute = false,
         };
-        psi.EnvironmentVariables["ANTHROPIC_BASE_URL"] = ApiBaseUrl.ToString();
-        psi.EnvironmentVariables["ANTHROPIC_AUTH_TOKEN"] = apiKey;
-        psi.EnvironmentVariables["CLAUDE_MEM_WORKER_PORT"] = CompanionToolingInstaller.IsolatedWorkerPort.ToString();
-        psi.EnvironmentVariables["CLAUDE_MEM_DATA_DIR"] = CompanionToolingInstaller.IsolatedDataDir;
-
-        if (options.IsolateConfig)
+        foreach (var kv in launchEnv.Env)
         {
-            var profileDir = IsolatedClaudeProfileService.GetOrCreateProfileDir(options.ProjectPath);
-            psi.EnvironmentVariables["CLAUDE_CONFIG_DIR"] = profileDir;
+            psi.EnvironmentVariables[kv.Key] = kv.Value;
         }
 
         var process = Process.Start(psi);
