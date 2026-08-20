@@ -29,7 +29,7 @@ namespace TokenOptimizer.Providers.Fallback;
 [SupportedOSPlatform("windows")] // ProxyCredentialStore is DPAPI-backed (Windows-only), not a Groq API constraint.
 public sealed class GroqAdapter : IProviderAdapter
 {
-    private static readonly Uri ApiBaseUrl = new("https://api.groq.com/openai/v1");
+    internal static readonly Uri ApiBaseUrl = new("https://api.groq.com/openai/v1");
 
     private readonly ProxyCredentialStore _credentials;
     private readonly ClaudeExecutableLocator _claudeLocator;
