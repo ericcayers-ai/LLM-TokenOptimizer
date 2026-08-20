@@ -49,7 +49,8 @@ public sealed class CodexAdapter : IProviderAdapter
         var apiKey = _credentials.GetCredentialPlainText(FallbackProvider.Codex)
                      ?? throw new InvalidOperationException("No Codex credential stored - set OPENAI_API_KEY via the proxy credential setup first.");
 
-        SessionHandoffExporter.Export(options.ProjectPath);
+        var claudeConfigDir = SessionHandoffExporter.GetEffectiveClaudeConfigDir(options.ProjectPath, options.IsolateConfig);
+        SessionHandoffExporter.Export(options.ProjectPath, claudeConfigDir);
 
         var arguments = BuildArguments(options.Model);
         var process = ProcessLaunchHelper.Start(exe, arguments, options.ProjectPath,

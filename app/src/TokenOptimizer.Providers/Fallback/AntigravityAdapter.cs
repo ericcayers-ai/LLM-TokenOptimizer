@@ -48,7 +48,8 @@ public sealed class AntigravityAdapter : IProviderAdapter
         var exe = ExecutableLocators.FindAntigravity()
                   ?? throw new InvalidOperationException("Antigravity CLI (agy) not found - the desktop IDE is no longer used as a fallback.");
 
-        SessionHandoffExporter.Export(options.ProjectPath);
+        var claudeConfigDir = SessionHandoffExporter.GetEffectiveClaudeConfigDir(options.ProjectPath, options.IsolateConfig);
+        SessionHandoffExporter.Export(options.ProjectPath, claudeConfigDir);
 
         var process = ProcessLaunchHelper.Start(exe, $"\"{options.ProjectPath}\"", options.ProjectPath);
 

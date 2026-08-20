@@ -1289,7 +1289,8 @@ public partial class MainViewModel : ViewModelBase
 
         try
         {
-            var handoffFile = SessionHandoffExporter.Export(SelectedProject.FullPath);
+            var claudeConfigDir = SessionHandoffExporter.GetEffectiveClaudeConfigDir(SelectedProject.FullPath, isolateConfig: false);
+            var handoffFile = SessionHandoffExporter.Export(SelectedProject.FullPath, claudeConfigDir);
             Log($"Session handoff exported: {handoffFile}");
         }
         catch (Exception ex)

@@ -332,7 +332,9 @@ public static class CliHost
                     {
                         return Fail($"Invalid project path: {error}");
                     }
-                    var handoffFile = SessionHandoffExporter.Export(project);
+                    var isolate = opts.ContainsKey("isolate");
+                    var claudeConfigDir = SessionHandoffExporter.GetEffectiveClaudeConfigDir(project, isolate);
+                    var handoffFile = SessionHandoffExporter.Export(project, claudeConfigDir);
                     return await Ok(new { handoffFile });
                 }
 

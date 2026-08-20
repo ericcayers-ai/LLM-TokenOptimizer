@@ -92,7 +92,8 @@ public sealed class DeepSeekHarnessAdapter : IProviderAdapter
         var exe = ExecutableLocators.FindDeepSeekHarness()
                   ?? throw new InvalidOperationException("deepseek-harness (dsh) not found - install with `npm i -g @deepseek-ai/dsh` first.");
 
-        SessionHandoffExporter.Export(options.ProjectPath);
+        var claudeConfigDir = SessionHandoffExporter.GetEffectiveClaudeConfigDir(options.ProjectPath, options.IsolateConfig);
+        SessionHandoffExporter.Export(options.ProjectPath, claudeConfigDir);
         await TryInstallSkillsAsNativePluginAsync(exe, options.ProjectPath);
 
         var process = ProcessLaunchHelper.Start(exe, $"web --port {DefaultPort}", options.ProjectPath);

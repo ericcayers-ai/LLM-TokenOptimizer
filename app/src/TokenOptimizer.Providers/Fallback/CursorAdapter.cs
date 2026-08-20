@@ -45,7 +45,8 @@ public sealed class CursorAdapter : IProviderAdapter
         var exe = ExecutableLocators.FindCursor()
                   ?? throw new InvalidOperationException("Cursor CLI (cursor-agent) not found - the desktop app is no longer used as a fallback.");
 
-        SessionHandoffExporter.Export(options.ProjectPath);
+        var claudeConfigDir = SessionHandoffExporter.GetEffectiveClaudeConfigDir(options.ProjectPath, options.IsolateConfig);
+        SessionHandoffExporter.Export(options.ProjectPath, claudeConfigDir);
 
         var process = ProcessLaunchHelper.Start(exe, $"\"{options.ProjectPath}\"", options.ProjectPath);
 

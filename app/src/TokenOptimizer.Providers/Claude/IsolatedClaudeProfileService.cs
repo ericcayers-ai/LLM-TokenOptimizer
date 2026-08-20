@@ -14,13 +14,19 @@ public sealed class IsolatedClaudeProfileService
 {
     private static readonly string[] SeedLeaves = ["settings.json", "CLAUDE.md", "commands", "agents", "skills"];
 
-    /// <summary>Creates (if needed) and returns the isolated CLAUDE_CONFIG_DIR path for a project.</summary>
-    public static string GetOrCreateProfileDir(string projectDirectory)
+    /// <summary>Returns the isolated CLAUDE_CONFIG_DIR path for a project without creating it.</summary>
+    public static string GetProfileDirPath(string projectDirectory)
     {
         var slug = PathSlug.For(projectDirectory);
         var profileRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TokenOptimizer", "claude-profiles");
-        var profileDir = Path.Combine(profileRoot, slug);
+        return Path.Combine(profileRoot, slug);
+    }
+
+    /// <summary>Creates (if needed) and returns the isolated CLAUDE_CONFIG_DIR path for a project.</summary>
+    public static string GetOrCreateProfileDir(string projectDirectory)
+    {
+        var profileDir = GetProfileDirPath(projectDirectory);
 
         if (!Directory.Exists(profileDir))
         {

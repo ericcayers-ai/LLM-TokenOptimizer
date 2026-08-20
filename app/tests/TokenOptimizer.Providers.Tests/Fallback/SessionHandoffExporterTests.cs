@@ -67,6 +67,48 @@ public class SessionHandoffExporterTests : IDisposable
         Assert.Equal(1, occurrences);
     }
 
+    [Fact]
+    public void GetEffectiveClaudeConfigDir_IsolateTrue_ReturnsProfileDir()
+    {
+        var dir = SessionHandoffExporter.GetEffectiveClaudeConfigDir(_tempDir, isolateConfig: true);
+        Assert.NotNull(dir);
+        Assert.Contains("claude-profiles", dir);
+    }
+
+    [Fact]
+    public void GetEffectiveClaudeConfigDir_ExistingProfile_ReturnsProfileDir()
+    {
+        var profileDir = SessionHandoffExporter.GetEffectiveClaudeConfigDir(_tempDir, isolateConfig: true);
+        Assert.NotNull(profileDir);
+        // Re-query without isolate should find the existing profile.
+        var found = SessionHandoffExporter.GetEffectiveClaudeConfigDir(_tempDir, isolateConfig: false);
+        Assert.Equal(profileDir, found);
+    }
+
+    [Fact]
+    public void GetEffectiveClaudeConfigDir_NoProfileNoIsolate_ReturnsNull()
+    {
+        var freshDir = Path.Combine(_tempDir, "fresh");
+        Directory.CreateDirectory(freshDir);
+        var found = SessionHandoffExporter.GetEffectiveClaudeConfigDir(freshDir, isolateConfig: false);
+        Assert.Null(found);
+    }
+
+    [Fact]
+    public void FindLatestTranscript_UsesProvidedClaudeConfigDir()
+    {
+        var claudeHome = Path.Combine(_tempDir, "custom-claude");
+        var slug = System.Text.RegularExpressions.Regex.Replace(
+            _tempDir.TrimEnd('\\', '/'), @"[:\\/]", "-");
+        var projectDir = Path.Combine(claudeHome, "projects", slug);
+        Directory.CreateDirectory(projectDir);
+        var transcript = Path.Combine(projectDir, "session.jsonl");
+        File.WriteAllText(transcript, "");
+
+        var found = SessionHandoffExporter.FindLatestTranscript(_tempDir, claudeHome);
+        Assert.Equal(transcript, found);
+    }
+
     public void Dispose()
     {
         try { Directory.Delete(_tempDir, recursive: true); } catch { }

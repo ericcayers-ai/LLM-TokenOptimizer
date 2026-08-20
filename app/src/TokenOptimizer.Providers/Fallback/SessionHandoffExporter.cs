@@ -1,4 +1,5 @@
 using System.Text.Json;
+using TokenOptimizer.Providers.Claude;
 
 namespace TokenOptimizer.Providers.Fallback;
 
@@ -116,6 +117,18 @@ public static class SessionHandoffExporter
         }
 
         return string.Join("\n\n---\n\n", chunks);
+    }
+
+    public static string? GetEffectiveClaudeConfigDir(string projectDirectory, bool isolateConfig)
+    {
+        if (isolateConfig)
+        {
+            return IsolatedClaudeProfileService.GetOrCreateProfileDir(projectDirectory);
+        }
+        var profileDir = IsolatedClaudeProfileService.GetProfileDirPath(projectDirectory);
+        return Directory.Exists(profileDir) && Directory.EnumerateFileSystemEntries(profileDir).Any()
+            ? profileDir
+            : null;
     }
 
     public static string Export(string projectDirectory, string? claudeConfigDir = null)
