@@ -7,5 +7,6 @@
   <Folder Name="/tests/">
     <Project Path="tests/TokenOptimizer.Core.Tests/TokenOptimizer.Core.Tests.csproj" />
     <Project Path="tests/TokenOptimizer.Providers.Tests/TokenOptimizer.Providers.Tests.csproj" />
+    <Project Path="tests/TokenOptimizer.App.Tests/TokenOptimizer.App.Tests.csproj" />
   </Folder>
 </Solution>
