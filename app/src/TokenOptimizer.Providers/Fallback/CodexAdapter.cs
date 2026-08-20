@@ -39,6 +39,9 @@ public sealed class CodexAdapter : IProviderAdapter
     public Task<ProviderResult> RegisterMcpToolAsync(McpToolManifest tool) =>
         Task.FromResult(ProviderResult.Fail("Codex MCP registration is not wired up here - use its own config.toml."));
 
+    internal static string BuildArguments(string? model) =>
+        string.IsNullOrWhiteSpace(model) ? string.Empty : $"-m {model}";
+
     public Task<ISessionHandle> LaunchSessionAsync(SessionLaunchOptions options)
     {
         var exe = ExecutableLocators.FindCodex()
@@ -48,7 +51,8 @@ public sealed class CodexAdapter : IProviderAdapter
 
         SessionHandoffExporter.Export(options.ProjectPath);
 
-        var process = ProcessLaunchHelper.Start(exe, string.Empty, options.ProjectPath,
+        var arguments = BuildArguments(options.Model);
+        var process = ProcessLaunchHelper.Start(exe, arguments, options.ProjectPath,
             new Dictionary<string, string> { ["OPENAI_API_KEY"] = apiKey });
         return Task.FromResult<ISessionHandle>(new ProcessSessionHandle(Name, options.ProjectPath, process, watchForRateLimit: true));
     }
