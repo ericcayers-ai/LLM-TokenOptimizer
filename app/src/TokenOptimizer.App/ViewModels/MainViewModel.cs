@@ -1452,6 +1452,8 @@ public partial class MainViewModel : ViewModelBase
                     var claudeExe = await _claudeLocator.FindAsync()
                                      ?? throw new InvalidOperationException("Claude Code executable not found - install it first.");
 
+                    await ClaudeCodeAdapter.RefreshPluginMarketplacesAsync(claudeExe);
+
                     var routes = new Dictionary<string, UnifiedModelRouter.ModelRoute>(StringComparer.Ordinal);
                     foreach (var m in claudeModels)
                         routes[m.ModelId] = new UnifiedModelRouter.ModelRoute(new Uri("https://api.anthropic.com"), RouteKind.AnthropicPassthrough);

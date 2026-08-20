@@ -191,6 +191,8 @@ public sealed class LlamaCppAdapter : IProviderAdapter
         var claudeExe = (_claudeLocator is not null ? await _claudeLocator.FindAsync() : null)
             ?? throw new InvalidOperationException("Claude Code executable not found - install it first.");
 
+        await ClaudeCodeAdapter.RefreshPluginMarketplacesAsync(claudeExe);
+
         var proxy = new RollingContextProxy(generated.BaseUrl, () => generated.ApiKey, launchOptions.ContextLength);
         await proxy.StartAsync();
 

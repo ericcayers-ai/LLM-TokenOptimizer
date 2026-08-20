@@ -156,11 +156,20 @@ public sealed class ClaudeCodeAdapter : IProviderAdapter
     /// /reload-plugins by hand - skills live inside plugin manifests, so
     /// refreshing marketplaces is also how a skill's own content gets picked
     /// up after it changes. Best-effort and silent on failure/timeout.
+    /// Skips the call when claudeExe is a node.exe wrapper because the wrapper
+    /// does not implement the plugin marketplace subcommand consistently.
     /// </summary>
-    private static async Task RefreshPluginMarketplacesAsync(string claudeExe)
+    public static async Task RefreshPluginMarketplacesAsync(string claudeExe)
+    {
+        await RefreshPluginMarketplacesAsync(claudeExe, ExternalCommandRunner.RunAsync);
+    }
+
+    internal static async Task RefreshPluginMarketplacesAsync(
+        string claudeExe,
+        Func<string, string, string?, int, IReadOnlyDictionary<string, string>?, CancellationToken, Task<CommandResult>> runner)
     {
         if (claudeExe.EndsWith("node.exe", StringComparison.OrdinalIgnoreCase)) return;
-        await ExternalCommandRunner.RunAsync(claudeExe, "plugin marketplace update", timeoutSeconds: 20);
+        await runner(claudeExe, "plugin marketplace update", null, 20, null, default);
     }
 
     internal static string ExtractMarketplaceName(string marketplaceLocator)
