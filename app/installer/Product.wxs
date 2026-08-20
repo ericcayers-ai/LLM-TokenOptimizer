@@ -74,6 +74,7 @@
       <ComponentRef Id="StartMenuShortcut" />
     </Feature>
 
+    <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
     <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
     <UIRef Id="WixUI_ErrorProgressText" />
 
