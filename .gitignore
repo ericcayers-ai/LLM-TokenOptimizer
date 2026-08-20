@@ -54,10 +54,12 @@ node_modules/
 !.env.example
 *.msi
 *.vsix
-# ...except the one committed copy Install.bat expects to find next to it
-# for the manual (non-MSI) extension install path - see vscode-extension/Install.bat.
-!vscode-extension/llm-token-optimizer-*.vsix
+# Keep the canonical published extension package.
+!app/publish/llm-token-optimizer.vsix
 *.egg-info/
+app/publish/**/*.pdb
+.vscode-test/
+!docs/benchmarks/**
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

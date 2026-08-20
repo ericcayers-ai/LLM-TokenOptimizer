@@ -1,0 +1,26 @@
+[
+  {
+    "model": "zai-org/glm-4.7-flash",
+    "stage": "download",
+    "status": "failed",
+    "detail": "STALLED - no download progress for 180s, killed"
+  },
+  {
+    "model": "allenai/olmo-3-32b-think",
+    "stage": "download",
+    "status": "failed",
+    "detail": "Error: Download failed: Timed-out. Please try to resume. - You can try to resume the download within LM Studio."
+  },
+  {
+    "model": "bytedance/seed-oss-36b",
+    "stage": "download",
+    "status": "failed",
+    "detail": "Error: Download failed: Timed-out. Please try to resume. - You can try to resume the download within LM Studio."
+  },
+  {
+    "model": "liquid/lfm2-24b-a2b",
+    "stage": "download",
+    "status": "failed",
+    "detail": "Skipping download - only 16.3 GB free, need ~19 GB (model + safety margin)"
+  }
+]

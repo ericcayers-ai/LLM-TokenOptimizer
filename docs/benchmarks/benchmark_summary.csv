@@ -1,0 +1,5 @@
+model,stage,status,tests_ok,tests_total,avg_tokens_per_second,resolve_rate,composite_score,detail
+zai-org/glm-4.7-flash,download,failed,,,,,,"STALLED - no download progress for 180s, killed"
+allenai/olmo-3-32b-think,download,failed,,,,,,Error: Download failed: Timed-out. Please try to resume. - You can try to resume the download within LM Studio.
+bytedance/seed-oss-36b,download,failed,,,,,,Error: Download failed: Timed-out. Please try to resume. - You can try to resume the download within LM Studio.
+liquid/lfm2-24b-a2b,download,failed,,,,,,"Skipping download - only 16.3 GB free, need ~19 GB (model + safety margin)"

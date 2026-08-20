@@ -5295,8 +5295,8 @@ function Start-CursorSession {
 }
 
 function Update-BestLocalModelFromBenchmarks {
-    # Reads benchmark_summary.json (written by run_benchmarks.py, see there)
-    # from this launcher script's own directory and records whichever model
+    # Reads docs/benchmarks/benchmark_summary.json (archived legacy benchmark
+    # summary written by run_benchmarks.py, see there) and records whichever model
     # scored highest on composite_score - a SWE-bench-style capability score
     # (does the generated code actually parse and cover the prompt's stated
     # requirements) weighted 70/30 against raw speed, NOT pure tokens/second.
@@ -5309,7 +5309,7 @@ function Update-BestLocalModelFromBenchmarks {
     # any model calls).
     [CmdletBinding()]
     param()
-    $summaryPath = Join-Path (Split-Path $script:SelfPath -Parent) "benchmark_summary.json"
+    $summaryPath = Join-Path (Split-Path $script:SelfPath -Parent) "docs\benchmarks\benchmark_summary.json"
     if (-not (Test-Path $summaryPath -PathType Leaf)) { return $false }
     try {
         $rows = Get-Content $summaryPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop

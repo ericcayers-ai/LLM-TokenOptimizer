@@ -1,0 +1,121 @@
+============================================================
+ LM STUDIO BENCHMARK PIPELINE - 11 model(s)
+============================================================
+[03:32:40] [INFO] Using lms CLI: C:\Users\ericc\.lmstudio\bin\lms.EXE
+[03:32:41] [INFO] LM Studio server already running: The server is running on port 1234.
+[03:32:41] [INFO] Already on disk (will skip download, benchmark directly): ['google/gemma-4-26b-a4b', 'kwaipilot/kat-dev', 'nvidia/nemotron-3-nano', 'qwen/qwen3-vl-8b', 'qwen/qwen3.6-27b']
+[03:32:41] [INFO] ### BATCH 1 (1-1/11): ['zai-org/glm-4.7-flash'] ###
+[03:32:41] [WARN] [zai-org/glm-4.7-flash] Skipping download - only 31.1 GB free, need ~33 GB (model + safety margin)
+[03:32:41] [WARN] [zai-org/glm-4.7-flash] Skipping (download did not succeed)
+[03:32:41] [INFO] ### BATCH 2 (2-2/11): ['qwen/qwen3-vl-8b'] ###
+[03:32:41] [INFO] [qwen/qwen3-vl-8b] Already on disk - skipping download.
+[03:32:44] [INFO] [qwen/qwen3-vl-8b] Loading into memory (context=8192)...
+[03:32:56] [INFO] [qwen/qwen3-vl-8b] Loaded.
+[03:32:56] [INFO] [qwen/qwen3-vl-8b] Running 4 architectural benchmarks...
+[03:32:56] [INFO] [qwen/qwen3-vl-8b]  -> 1. Stream & Memory-Mapped Chunking
+[03:36:46] [INFO] [qwen/qwen3-vl-8b]     TTFT: 3.597s | Speed: 11.54 tok/s | Tokens: 2610 (reasoning=0, answer=2610) | Capability: 0.86 (syntax_valid=True, rubric=6/7)
+[03:36:46] [INFO] [qwen/qwen3-vl-8b]  -> 2. Tauri-Python Subprocess & IPC Lifecycle
+[03:44:07] [INFO] [qwen/qwen3-vl-8b]     TTFT: 2.567s | Speed: 9.33 tok/s | Tokens: 4096 (reasoning=0, answer=4096) | Capability: 1.00 (syntax_valid=True, rubric=6/6)
+[03:44:07] [INFO] [qwen/qwen3-vl-8b]  -> 3. Dynamic Node Graph & Pipeline Orchestration
+[03:50:47] [INFO] [qwen/qwen3-vl-8b]     TTFT: 2.798s | Speed: 10.33 tok/s | Tokens: 4096 (reasoning=0, answer=4096) | Capability: 0.00 (syntax_valid=False, rubric=5/6)
+[03:50:47] [INFO] [qwen/qwen3-vl-8b]  -> 4. Hardware Graceful Degradation & VRAM Fallback
+[03:56:50] [INFO] [qwen/qwen3-vl-8b]     TTFT: 2.574s | Speed: 11.36 tok/s | Tokens: 4096 (reasoning=0, answer=4096) | Capability: 0.00 (syntax_valid=False, rubric=5/6)
+[03:56:50] [INFO] [qwen/qwen3-vl-8b] Saved -> benchmark_qwen_qwen3-vl-8b.json
+[03:56:53] [INFO] Leaving pre-existing model(s) on disk (not purging): ['qwen/qwen3-vl-8b']
+[03:56:53] [INFO] ### BATCH 3 (3-3/11): ['google/gemma-4-26b-a4b'] ###
+[03:56:53] [INFO] [google/gemma-4-26b-a4b] Already on disk - skipping download.
+[03:56:55] [INFO] [google/gemma-4-26b-a4b] Loading into memory (context=8192)...
+[03:57:16] [INFO] [google/gemma-4-26b-a4b] Loaded.
+[03:57:16] [INFO] [google/gemma-4-26b-a4b] Running 4 architectural benchmarks...
+[03:57:16] [INFO] [google/gemma-4-26b-a4b]  -> 1. Stream & Memory-Mapped Chunking
+[04:04:17] [INFO] [google/gemma-4-26b-a4b]     TTFT: 3.677s | Speed: 9.81 tok/s | Tokens: 4092 (reasoning=2302, answer=1790) | Capability: 0.00 (syntax_valid=False, rubric=5/7)
+[04:04:17] [INFO] [google/gemma-4-26b-a4b]  -> 2. Tauri-Python Subprocess & IPC Lifecycle
+[04:08:41] [INFO] [google/gemma-4-26b-a4b]     TTFT: 3.523s | Speed: 10.47 tok/s | Tokens: 2724 (reasoning=941, answer=1783) | Capability: 1.00 (syntax_valid=True, rubric=6/6)
+[04:08:41] [INFO] [google/gemma-4-26b-a4b]  -> 3. Dynamic Node Graph & Pipeline Orchestration
+[04:15:50] [INFO] [google/gemma-4-26b-a4b]     TTFT: 3.700s | Speed: 9.61 tok/s | Tokens: 4092 (reasoning=1763, answer=2329) | Capability: 1.00 (syntax_valid=True, rubric=6/6)
+[04:15:50] [INFO] [google/gemma-4-26b-a4b]  -> 4. Hardware Graceful Degradation & VRAM Fallback
+[04:23:00] [INFO] [google/gemma-4-26b-a4b]     TTFT: 3.744s | Speed: 9.32 tok/s | Tokens: 3971 (reasoning=1167, answer=2804) | Capability: 1.00 (syntax_valid=True, rubric=6/6)
+[04:23:00] [INFO] [google/gemma-4-26b-a4b] Saved -> benchmark_google_gemma-4-26b-a4b.json
+[04:23:04] [INFO] Leaving pre-existing model(s) on disk (not purging): ['google/gemma-4-26b-a4b']
+[04:23:04] [INFO] ### BATCH 4 (4-4/11): ['qwen/qwen3-vl-30b-a3b'] ###
+[04:23:04] [WARN] [qwen/qwen3-vl-30b-a3b] Skipping download - only 31.0 GB free, need ~33 GB (model + safety margin)
+[04:23:04] [WARN] [qwen/qwen3-vl-30b-a3b] Skipping (download did not succeed)
+[04:23:04] [INFO] ### BATCH 5 (5-5/11): ['qwen/qwen3.6-27b'] ###
+[04:23:04] [INFO] [qwen/qwen3.6-27b] Already on disk - skipping download.
+[04:23:07] [INFO] [qwen/qwen3.6-27b] Loading into memory (context=8192)...
+[04:23:30] [INFO] [qwen/qwen3.6-27b] Loaded.
+[04:23:30] [INFO] [qwen/qwen3.6-27b] Running 4 architectural benchmarks...
+[04:23:30] [INFO] [qwen/qwen3.6-27b]  -> 1. Stream & Memory-Mapped Chunking
+[04:42:13] [ERROR] [qwen/qwen3.6-27b]     FAILED: Engine protocol predict stream returned an error: {"code":500,"message":"Context size has been exceeded.","type":"server_error"}
+[04:42:13] [INFO] [qwen/qwen3.6-27b]  -> 2. Tauri-Python Subprocess & IPC Lifecycle
+[04:45:31] [ERROR] [qwen/qwen3.6-27b]     FAILED: Engine protocol predict stream returned an error: {"code":500,"message":"Context size has been exceeded.","type":"server_error"}
+[04:45:31] [INFO] [qwen/qwen3.6-27b]  -> 3. Dynamic Node Graph & Pipeline Orchestration
+[04:46:15] [ERROR] [qwen/qwen3.6-27b]     FAILED: Engine protocol predict stream returned an error: {"code":500,"message":"Context size has been exceeded.","type":"server_error"}
+[04:46:15] [INFO] [qwen/qwen3.6-27b]  -> 4. Hardware Graceful Degradation & VRAM Fallback
+[05:23:51] [INFO] [qwen/qwen3.6-27b]     TTFT: 27.666s | Speed: 1.84 tok/s | Tokens: 4096 (reasoning=4096, answer=0) | Capability: 0.00 (syntax_valid=False, rubric=6/6)
+[05:23:51] [INFO] [qwen/qwen3.6-27b] Saved -> benchmark_qwen_qwen3.6-27b.json
+[05:23:55] [INFO] Leaving pre-existing model(s) on disk (not purging): ['qwen/qwen3.6-27b']
+[05:23:55] [INFO] ### BATCH 6 (6-6/11): ['kwaipilot/kat-dev'] ###
+[05:23:55] [INFO] [kwaipilot/kat-dev] Already on disk - skipping download.
+[05:23:57] [INFO] [kwaipilot/kat-dev] Loading into memory (context=8192)...
+[05:24:16] [INFO] [kwaipilot/kat-dev] Loaded.
+[05:24:16] [INFO] [kwaipilot/kat-dev] Running 4 architectural benchmarks...
+[05:24:16] [INFO] [kwaipilot/kat-dev]  -> 1. Stream & Memory-Mapped Chunking
+[05:57:25] [INFO] [kwaipilot/kat-dev]     TTFT: 3.657s | Speed: 1.70 tok/s | Tokens: 3373 (reasoning=0, answer=3373) | Capability: 1.00 (syntax_valid=True, rubric=7/7)
+[05:57:25] [INFO] [kwaipilot/kat-dev]  -> 2. Tauri-Python Subprocess & IPC Lifecycle
+[06:33:45] [INFO] [kwaipilot/kat-dev]     TTFT: 3.741s | Speed: 1.66 tok/s | Tokens: 3619 (reasoning=0, answer=3619) | Capability: 0.83 (syntax_valid=True, rubric=5/6)
+[06:33:45] [INFO] [kwaipilot/kat-dev]  -> 3. Dynamic Node Graph & Pipeline Orchestration
+[07:09:40] [INFO] [kwaipilot/kat-dev]     TTFT: 4.098s | Speed: 1.68 tok/s | Tokens: 3604 (reasoning=0, answer=3604) | Capability: 0.00 (syntax_valid=False, rubric=6/6)
+[07:09:40] [INFO] [kwaipilot/kat-dev]  -> 4. Hardware Graceful Degradation & VRAM Fallback
+[07:51:36] [INFO] [kwaipilot/kat-dev]     TTFT: 4.019s | Speed: 1.63 tok/s | Tokens: 4096 (reasoning=0, answer=4096) | Capability: 1.00 (syntax_valid=True, rubric=6/6)
+[07:51:36] [INFO] [kwaipilot/kat-dev] Saved -> benchmark_kwaipilot_kat-dev.json
+[07:51:40] [INFO] Leaving pre-existing model(s) on disk (not purging): ['kwaipilot/kat-dev']
+[07:51:40] [INFO] ### BATCH 7 (7-7/11): ['kwaipilot/kat-coder-v2.5-dev'] ###
+[07:51:40] [WARN] [kwaipilot/kat-coder-v2.5-dev] Skipping download - only 22.2 GB free, need ~35 GB (model + safety margin)
+[07:51:40] [WARN] [kwaipilot/kat-coder-v2.5-dev] Skipping (download did not succeed)
+[07:51:40] [INFO] ### BATCH 8 (8-8/11): ['kwaipilot/kat-dev-72b-exp'] ###
+[07:51:40] [WARN] [kwaipilot/kat-dev-72b-exp] Skipping download - only 22.2 GB free, need ~60 GB (model + safety margin)
+[07:51:40] [WARN] [kwaipilot/kat-dev-72b-exp] Skipping (download did not succeed)
+[07:51:40] [INFO] ### BATCH 9 (9-9/11): ['nvidia/nemotron-3-nano'] ###
+[07:51:40] [INFO] [nvidia/nemotron-3-nano] Already on disk - skipping download.
+[07:51:43] [INFO] [nvidia/nemotron-3-nano] Loading into memory (context=8192)...
+[07:52:06] [INFO] [nvidia/nemotron-3-nano] Loaded.
+[07:52:06] [INFO] [nvidia/nemotron-3-nano] Running 4 architectural benchmarks...
+[07:52:06] [INFO] [nvidia/nemotron-3-nano]  -> 1. Stream & Memory-Mapped Chunking
+[07:58:06] [INFO] [nvidia/nemotron-3-nano]     TTFT: 4.957s | Speed: 11.53 tok/s | Tokens: 4094 (reasoning=1996, answer=2098) | Capability: 0.00 (syntax_valid=False, rubric=7/7)
+[07:58:06] [INFO] [nvidia/nemotron-3-nano]  -> 2. Tauri-Python Subprocess & IPC Lifecycle
+[08:04:06] [INFO] [nvidia/nemotron-3-nano]     TTFT: 4.400s | Speed: 11.32 tok/s | Tokens: 4025 (reasoning=457, answer=3568) | Capability: 1.00 (syntax_valid=True, rubric=6/6)
+[08:04:06] [INFO] [nvidia/nemotron-3-nano]  -> 3. Dynamic Node Graph & Pipeline Orchestration
+[08:10:09] [INFO] [nvidia/nemotron-3-nano]     TTFT: 5.136s | Speed: 11.36 tok/s | Tokens: 4066 (reasoning=445, answer=3621) | Capability: 1.00 (syntax_valid=True, rubric=6/6)
+[08:10:09] [INFO] [nvidia/nemotron-3-nano]  -> 4. Hardware Graceful Degradation & VRAM Fallback
+[08:16:35] [INFO] [nvidia/nemotron-3-nano]     TTFT: 4.658s | Speed: 10.65 tok/s | Tokens: 4062 (reasoning=354, answer=3708) | Capability: 1.00 (syntax_valid=True, rubric=6/6)
+[08:16:35] [INFO] [nvidia/nemotron-3-nano] Saved -> benchmark_nvidia_nemotron-3-nano.json
+[08:16:39] [INFO] Leaving pre-existing model(s) on disk (not purging): ['nvidia/nemotron-3-nano']
+[08:16:39] [INFO] ### BATCH 10 (10-10/11): ['nvidia/nemotron-3.5-lightning'] ###
+[08:16:39] [WARN] [nvidia/nemotron-3.5-lightning] Skipping download - only 30.3 GB free, need ~33 GB (model + safety margin)
+[08:16:39] [WARN] [nvidia/nemotron-3.5-lightning] Skipping (download did not succeed)
+[08:16:39] [INFO] ### BATCH 11 (11-11/11): ['nvidia/nemotron-3-super'] ###
+[08:16:39] [WARN] [nvidia/nemotron-3-super] Skipping download - only 30.3 GB free, need ~85 GB (model + safety margin)
+[08:16:39] [WARN] [nvidia/nemotron-3-super] Skipping (download did not succeed)
+
+============================================================
+ PIPELINE COMPLETE - SUMMARY (ranked by composite score: 70% capability, 30% speed)
+============================================================
+  nvidia/nemotron-3-nano                 composite=0.825  resolve_rate=0.75    11.21 tok/s  (4/4 tests ok)
+  google/gemma-4-26b-a4b                 composite=0.787  resolve_rate=0.75     9.80 tok/s  (4/4 tests ok)
+  qwen/qwen3-vl-8b                       composite=0.610  resolve_rate=0.46    10.64 tok/s  (4/4 tests ok)
+  kwaipilot/kat-dev                      composite=0.540  resolve_rate=0.71     1.67 tok/s  (4/4 tests ok)
+  qwen/qwen3.6-27b                       composite=0.049  resolve_rate=0.00     1.84 tok/s  (1/4 tests ok)
+
+  BEST CODING AGENT: nvidia/nemotron-3-nano (composite=0.825, resolve_rate=0.75, 11.21 tok/s)
+
+  6 model(s) failed - see run_benchmarks.log and benchmark_summary.json:
+    - zai-org/glm-4.7-flash (failed at download)
+    - qwen/qwen3-vl-30b-a3b (failed at download)
+    - kwaipilot/kat-coder-v2.5-dev (failed at download)
+    - kwaipilot/kat-dev-72b-exp (failed at download)
+    - nvidia/nemotron-3.5-lightning (failed at download)
+    - nvidia/nemotron-3-super (failed at download)
+
+Full report: benchmark_summary.json / benchmark_summary.csv
+Log: run_benchmarks.log
