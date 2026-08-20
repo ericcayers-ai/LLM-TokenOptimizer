@@ -8,6 +8,7 @@ using TokenOptimizer.Core.Projects;
 using TokenOptimizer.Core.Security;
 using TokenOptimizer.Providers;
 using TokenOptimizer.Providers.Claude;
+using TokenOptimizer.Providers.Diagnostics;
 using TokenOptimizer.Providers.Fallback;
 using TokenOptimizer.Providers.Rag;
 
@@ -36,7 +37,7 @@ public static class CliHost
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
 
-    public static async Task<int> RunAsync(string[] args)
+    public static async Task<int> RunAsync(string[] args, ModelProbeService? probeService = null)
     {
         if (args.Length == 0)
         {
@@ -90,6 +91,7 @@ public static class CliHost
         var claudeMdService = new ProjectClaudeMdService();
         var uninstaller = new CompanionUninstaller(availability, configStore);
         var providerCliInstaller = new ProviderCliInstaller();
+        var effectiveProbeService = probeService ?? new ModelProbeService(claudeLocator, credentials);
 
         var providers = new IProviderAdapter[]
         {
@@ -332,6 +334,44 @@ public static class CliHost
                     }
                     var handoffFile = SessionHandoffExporter.Export(project);
                     return await Ok(new { handoffFile });
+                }
+
+                case "test-model":
+                {
+                    if (!opts.TryGetValue("provider", out var providerName) || string.IsNullOrWhiteSpace(providerName))
+                    {
+                        return Fail("--provider <name> is required.");
+                    }
+                    if (!opts.TryGetValue("model", out var model) || string.IsNullOrWhiteSpace(model))
+                    {
+                        return Fail("--model <id> is required.");
+                    }
+                    opts.TryGetValue("project", out var project);
+                    var result = await effectiveProbeService.ProbeAsync(providerName, model, project, CancellationToken.None);
+                    if (result.Skipped)
+                    {
+                        return await Ok(new { result });
+                    }
+                    return result.Ok
+                        ? await Ok(new { result })
+                        : Fail(result.Error ?? "Probe failed.");
+                }
+
+                case "selftest":
+                {
+                    opts.TryGetValue("project", out var project);
+                    var results = await effectiveProbeService.ProbeAllAsync(SelftestMatrix.Entries, CancellationToken.None);
+                    var passed = results.Count(r => r.Ok);
+                    var skipped = results.Count(r => r.Skipped);
+                    var failed = results.Count(r => !r.Ok && !r.Skipped);
+                    var allPassed = failed == 0;
+                    var report = new
+                    {
+                        results,
+                        summary = new { total = results.Count, passed, skipped, failed },
+                    };
+                    Console.WriteLine(JsonSerializer.Serialize(new { ok = allPassed, data = report }, JsonOptions));
+                    return allPassed ? 0 : 1;
                 }
 
                 default:

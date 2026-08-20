@@ -5,6 +5,7 @@ using TokenOptimizer.App.Cli;
 
 namespace TokenOptimizer.App.Tests;
 
+[Collection("CliHost")]
 [SupportedOSPlatform("windows")]
 public sealed class CliHostArgParsingTests : IDisposable
 {
