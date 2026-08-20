@@ -3,11 +3,8 @@ using System.Runtime.InteropServices;
 namespace TokenOptimizer.Core.Diagnostics;
 
 /// <summary>
-/// Best-effort local hardware detection for sizing LM Studio's context-length
-/// presets to what this specific machine can actually support - mirrors
-/// run_benchmarks.py's own VRAM-via-nvidia-smi / system-RAM-fallback logic
-/// (see filter_models_by_resources) so the app and the benchmark script never
-/// disagree about what "fits this machine" means.
+/// Best-effort local hardware detection for sizing Unsloth context-length
+/// presets to what this specific machine can actually support.
 /// </summary>
 public static class HardwareInfo
 {

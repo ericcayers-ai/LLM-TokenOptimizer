@@ -270,7 +270,7 @@
                                 </StackPanel>
                                 <TextBlock Text="{Binding SelectedProviderDescription}" Opacity="0.65" FontSize="11" TextWrapping="Wrap" />
                                 <CheckBox Content="Isolate Claude config for this project (separate CLAUDE_CONFIG_DIR)" IsChecked="{Binding IsolateClaudeConfig}" />
-                                <TextBlock Text="RAG retrieval auto-wires itself when a local model server (LM Studio/Unsloth Studio, Ollama) is detected running - nothing to configure here." Opacity="0.55" FontSize="11" TextWrapping="Wrap" />
+                                <TextBlock Text="RAG retrieval auto-wires itself when a local model server (Unsloth Studio, Ollama) is detected running - nothing to configure here." Opacity="0.55" FontSize="11" TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>
 

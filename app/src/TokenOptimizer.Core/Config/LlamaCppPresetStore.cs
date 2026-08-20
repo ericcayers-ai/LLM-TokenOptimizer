@@ -6,7 +6,7 @@ namespace TokenOptimizer.Core.Config;
 /// <summary>
 /// Per-model+quant saved launch settings (plan §5d) - llama-server is
 /// flag-driven only with no persistent config store of its own, this is
-/// TokenOptimizer's equivalent of LM Studio's per-model presets. Same
+/// TokenOptimizer's per-model preset store for Unsloth-served local models. Same
 /// atomic-write shape as ConfigStore, kept as its own file rather than
 /// folded into AppConfig since preset count grows with how many
 /// model+quant combinations a user tries, unlike AppConfig's fixed fields.

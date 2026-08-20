@@ -13,11 +13,10 @@ public sealed record RagRetrievalResult(string SourcePath, string Text, double S
 /// /v1/embeddings endpoint as the sole primitive. LlamaCppAdapter no longer
 /// owns a known server URL directly (unsloth manages that internally), so
 /// the caller must supply one - e.g. Unsloth Studio's own local endpoint,
-/// if/when its address is exposed. Mirrors LM Studio's dual-mode behavior
-/// loosely: callers decide whether a short doc is small enough to inject
-/// whole (skip this service) or should go through chunk+embed+retrieve.
-/// In-memory only - no vector DB dependency for what's a handful of
-/// documents in a single coding session.
+/// if/when its address is exposed. Callers decide whether a short doc is
+/// small enough to inject whole (skip this service) or should go through
+/// chunk+embed+retrieve. In-memory only - no vector DB dependency for what's
+/// a handful of documents in a single coding session.
 /// </summary>
 public sealed class LlamaCppRagService
 {

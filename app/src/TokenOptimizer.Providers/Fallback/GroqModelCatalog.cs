@@ -11,8 +11,8 @@ public sealed record GroqModel(string Id, long? ContextWindow, string? OwnedBy);
 /// nothing with Anthropic's - free-text model entry means users have to
 /// know/guess a valid id. Queries Groq's own /models endpoint (OpenAI-
 /// compatible: GET {base}/models, bearer-auth) so the UI can offer a
-/// validated dropdown instead, mirroring LmStudioAdapter.ListInstalledModelsAsync's
-/// role for the local backend.
+/// validated dropdown instead, mirroring the local backend's model listing
+/// role.
 /// </summary>
 public static class GroqModelCatalog
 {

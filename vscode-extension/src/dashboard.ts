@@ -16,7 +16,7 @@ import { execFile } from 'child_process';
 //     ~/.claude/projects/<slugified-path>/<session-id>.jsonl (or
 //     $CLAUDE_CONFIG_DIR/projects/... under an isolated profile), watched
 //     for changes and tailed for new tool_use blocks. Same file format
-//     LLM-TokenOptimizer.ps1's Export-SessionHandoff already reads.
+// the legacy launcher's Export-SessionHandoff already reads.
 
 let panel: vscode.WebviewPanel | undefined;
 let pollTimer: NodeJS.Timeout | undefined;

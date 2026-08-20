@@ -469,7 +469,7 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty]
     public partial bool IsolateClaudeConfig { get; set; }
 
-    /// <summary>No manual checkbox any more - AutoDetectRagEndpointAsync probes known local endpoints (LM Studio/Unsloth Studio, Ollama) at startup and sets both of these automatically.</summary>
+    /// <summary>No manual checkbox any more - AutoDetectRagEndpointAsync probes known local endpoints (Unsloth Studio, Ollama) at startup and sets both of these automatically.</summary>
     [ObservableProperty]
     public partial bool RagEnabled { get; set; }
 

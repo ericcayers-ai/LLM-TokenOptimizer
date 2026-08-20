@@ -164,7 +164,7 @@
         "llmTokenOptimizer.model": {
           "type": "string",
           "default": "",
-          "description": "Session-only model override forwarded to `--cli launch --model`. Leave blank to use the provider's own default (or, for LM Studio, the app's configured local model)."
+          "description": "Session-only model override forwarded to `--cli launch --model`. Leave blank to use the provider's own default (or, for Unsloth, the app's configured local model)."
         },
         "llmTokenOptimizer.isolateClaudeConfig": {
           "type": "boolean",

@@ -12,27 +12,20 @@ namespace TokenOptimizer.Providers.LlamaCpp;
 
 /// <summary>
 /// Wraps `unsloth start` (unsloth.ai/docs/integrations/unsloth-start) so a
-/// local GGUF model becomes a drop-in swap for the Claude Code proxy model,
-/// replacing LmStudioAdapter. `unsloth start claude --model repo:quant`
-/// already runs an OpenAI-compatible server, resolves/loads the GGUF, and
-/// launches Claude Code pointed at it, "never touching your agent's config
-/// files" per its own docs.
+/// local GGUF model becomes a drop-in swap for the Claude Code proxy model.
+/// `unsloth start claude --model repo:quant` already runs an OpenAI-compatible
+/// server, resolves/loads the GGUF, and launches Claude Code pointed at it,
+/// "never touching your agent's config files" per its own docs.
 ///
-/// Feature-parity check against LM Studio (the backend this replaced), done
-/// against each product's actual server/API docs, not their marketing:
-/// auto-compaction/rolling-context-window is absent from BOTH backends'
-/// server/CLI at the API level (LM Studio's own bug tracker confirms no
-/// built-in conversation summarization, and its `rollingWindow` field is an
-/// undocumented internal one not reliably settable outside its own UI/SDK;
-/// Unsloth's docs have no equivalent flag or endpoint either). That's a real
-/// backend gap, not something faked here - but it's also not the end of the
-/// story: LaunchWithRollingContextAsync below adds a genuine client-side
-/// rolling window in front of Unsloth's server (same idea AnthropicCompatProxy
-/// already uses for Groq, just without a schema translation this time - see
-/// RollingContextProxy). Two gaps remain that a client-side wrapper genuinely
-/// cannot manufacture: (1) no documented model-swap/unload/TTL-eviction
-/// endpoints for juggling multiple loaded models mid-session; (2) no
-/// documented concurrent-request/parallel-slot control.
+/// Known Unsloth backend gaps: auto-compaction/rolling-context-window is absent
+/// from the server/CLI at the API level. That's a real backend gap, not
+/// something faked here - but LaunchWithRollingContextAsync below adds a genuine
+/// client-side rolling window in front of Unsloth's server (same idea
+/// AnthropicCompatProxy already uses for Groq, just without a schema
+/// translation this time - see RollingContextProxy). Two gaps remain that a
+/// client-side wrapper genuinely cannot manufacture: (1) no documented
+/// model-swap/unload/TTL-eviction endpoints for juggling multiple loaded models
+/// mid-session; (2) no documented concurrent-request/parallel-slot control.
 /// </summary>
 public sealed class LlamaCppAdapter : IProviderAdapter
 {

@@ -425,7 +425,7 @@ public sealed class CompanionToolingInstaller
     //   clones the Superpowers framework, and cleans up legacy placeholder
     //   skill stubs. Idempotent and cheap after the first run - re-checked
     //   on every launch so the shared ~/.claude environment (read by every
-    //   Claude-binary-based provider: Claude Code direct AND LM Studio-local,
+    //   Claude-binary-based provider: Claude Code direct AND Unsloth-local,
     //   since both launch the identical `claude` executable against the
     //   identical config dir) never drifts out of sync between them.
     // ------------------------------------------------------------------
@@ -500,7 +500,7 @@ public sealed class CompanionToolingInstaller
     /// Everything that needs to be true of the shared ~/.claude environment
     /// before ANY Claude-binary-based session launches, regardless of which
     /// model backend that session talks to - this is what makes switching
-    /// between Claude Code (Anthropic) and Claude Code (local LM Studio
+    /// between Claude Code (Anthropic) and Claude Code (local Unsloth
     /// model) carry the exact same skills/plugins/MCP tools/memory with zero
     /// manual sync step. Every call here is cheap once installed (sticky
     /// flags/existence checks short-circuit), so it's safe to run before

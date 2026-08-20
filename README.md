@@ -69,9 +69,7 @@ WiX is pinned to **5.0.2** on purpose - v6+ requires a paid-tier EULA for some u
 | Piece | What it is | Where |
 |---|---|---|
 | **TokenOptimizer.App** | The product itself - an Avalonia desktop app with provider adapters for Claude Code, Antigravity, Groq, OpenCode Go, Codex/Cursor handoff, and locally-run Unsloth models, all behind one fallback-chain resolver. | `app/src/TokenOptimizer.App` |
-| **VS Code extension** | Sidebar/chat-participant that launches `TokenOptimizer.App.exe` (falls back to the legacy `.ps1` if the app isn't built/found). | `vscode-extension/` |
-| **`run_benchmarks.py`** | Scores local coding models so the app's Unsloth provider can recommend one. Dev/maintenance tooling, not something a typical user runs directly. | repo root |
-| **`LLM-TokenOptimizer.ps1`** | The original v5.x PowerShell launcher, superseded by the C# app in v6.0. Kept for reference, see [Legacy launcher](#legacy-the-powershell-launcher) below. | repo root |
+| **VS Code extension** | Sidebar/chat-participant that launches `TokenOptimizer.App.exe`. | `vscode-extension/` |
 
 ## Fallback chain
 
