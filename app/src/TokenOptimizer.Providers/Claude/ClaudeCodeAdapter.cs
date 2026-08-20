@@ -132,13 +132,16 @@ public sealed class ClaudeCodeAdapter : IProviderAdapter
             FileName = exe,
             Arguments = string.Join(' ', args),
             WorkingDirectory = options.ProjectPath,
-            UseShellExecute = true,
+            UseShellExecute = false,
         };
+        // Keeps this app's sessions off claude-mem's default-port worker, which
+        // the standalone Claude Code Desktop app also uses - see IsolatedWorkerPort.
+        psi.EnvironmentVariables["CLAUDE_MEM_WORKER_PORT"] = CompanionToolingInstaller.IsolatedWorkerPort.ToString();
+        psi.EnvironmentVariables["CLAUDE_MEM_DATA_DIR"] = CompanionToolingInstaller.IsolatedDataDir;
 
         if (options.IsolateConfig)
         {
             var profileDir = IsolatedClaudeProfileService.GetOrCreateProfileDir(options.ProjectPath);
-            psi.UseShellExecute = false;
             psi.EnvironmentVariables["CLAUDE_CONFIG_DIR"] = profileDir;
         }
 

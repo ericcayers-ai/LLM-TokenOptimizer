@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Net.Http;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using TokenOptimizer.Core.Config;
@@ -17,6 +19,31 @@ namespace TokenOptimizer.Providers.Claude;
 /// </summary>
 public sealed class CompanionToolingInstaller
 {
+    /// <summary>
+    /// claude-mem's worker is ONE process shared by every Claude Code session
+    /// pointed at the default data dir/port - including the standalone Claude
+    /// Code Desktop app, which this C# app has no connection to and no way to
+    /// coordinate with. Confirmed live: opening a session from this app while
+    /// the Desktop app has one open causes the Desktop app's next prompt to
+    /// get "hook blocked your prompt". Port alone isn't enough to fix this -
+    /// checked worker-service.cjs: its single-instance spawn.lock lives under
+    /// the data dir, NOT namespaced by port, so a second worker on a
+    /// different port would still see "another launcher holds the spawn
+    /// lock" and refuse to start. CLAUDE_MEM_DATA_DIR (a real, supported
+    /// override the worker reads via its Ui() state-dir resolver) is what
+    /// actually isolates the lock file, settings, and state - the port
+    /// override then just avoids the two workers' actual TCP listeners
+    /// colliding. Every session this app launches sets both, so it gets its
+    /// own separate worker - never touching, never blocking, the Desktop
+    /// app's. Sessions launched by THIS app still share ONE worker with each
+    /// other (same shared-across-concurrent-windows design as before, just
+    /// pointed at a different home).
+    /// </summary>
+    public const int IsolatedWorkerPort = 37778;
+
+    public static readonly string IsolatedDataDir =
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude-mem-tokenoptimizer");
+
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(60) };
 
     private readonly ConfigStore _configStore;
@@ -128,6 +155,159 @@ public sealed class CompanionToolingInstaller
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Self-heal for github.com/thedotmack/claude-mem#2926 (open upstream):
+    /// claude-mem's background worker can die without releasing its listener
+    /// on port 37777 (CLAUDE_MEM_WORKER_PORT). The next session's worker then
+    /// fails to bind, and because claude-mem's UserPromptSubmit hook fails
+    /// CLOSED when the worker is unreachable, every prompt gets blocked while
+    /// ~/.claude-mem/state/hook-failures.json's consecutiveFailures counter
+    /// climbs without bound ("hook blocked your prompt"). Ported 1:1 from
+    /// LLM-TokenOptimizer.ps1's Repair-ClaudeMemWorker - runs right before
+    /// every launch (see EnsureSharedClaudeEnvironmentAsync), entirely
+    /// best-effort. Multi-session safe: the worker is one process shared by
+    /// every concurrently-open Claude Code window, so this runs under a
+    /// machine-wide mutex and only reclaims the port if its owning process is
+    /// orphaned (no longer enumerable) - a live worker actually in use by
+    /// another window is left alone.
+    /// </summary>
+    public async Task RepairClaudeMemWorkerAsync()
+    {
+        var config = await _configStore.LoadAsync();
+        if (!config.ClaudeMemInstalled) return;
+
+        using var repairMutex = new Mutex(false, "Global\\LLMTokenOptimizer_ClaudeMemRepair");
+        bool haveMutex;
+        try { haveMutex = repairMutex.WaitOne(TimeSpan.FromSeconds(3)); }
+        catch (AbandonedMutexException) { haveMutex = true; }
+        if (!haveMutex) return;
+
+        try
+        {
+            var port = IsolatedWorkerPort;
+
+            // 1. Reclaim the port only if its owning process is orphaned.
+            try
+            {
+                var netstat = await ExternalCommandRunner.RunAsync("netstat", "-ano -p TCP", timeoutSeconds: 10);
+                if (netstat.Success)
+                {
+                    foreach (var line in netstat.Output.Split('\n'))
+                    {
+                        var parts = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+                        if (parts.Length < 5 || !parts[0].Equals("TCP", StringComparison.OrdinalIgnoreCase)) continue;
+                        if (!parts[1].EndsWith($":{port}", StringComparison.Ordinal)) continue;
+                        if (!parts[3].Equals("LISTENING", StringComparison.OrdinalIgnoreCase)) continue;
+                        if (!int.TryParse(parts[4], out var ownerPid)) continue;
+
+                        try { Process.GetProcessById(ownerPid); }
+                        catch (ArgumentException)
+                        {
+                            try { Process.GetProcessById(ownerPid).Kill(); } catch { /* already gone */ }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is IOException or InvalidOperationException) { /* best effort */ }
+
+            // 2. Clear a stuck failure counter, only if the worker is demonstrably unreachable.
+            try
+            {
+                var failFile = Path.Combine(IsolatedDataDir, "state", "hook-failures.json");
+                if (File.Exists(failFile))
+                {
+                    var raw = await File.ReadAllTextAsync(failFile);
+                    using var doc = JsonDocument.Parse(raw);
+                    var count = doc.RootElement.TryGetProperty("consecutiveFailures", out var countProp) ? countProp.GetInt32() : 0;
+                    if (count >= 10 && !await IsClaudeMemWorkerHealthyAsync(port))
+                    {
+                        File.Delete(failFile);
+                        var supervisorFile = Path.Combine(IsolatedDataDir, "supervisor.json");
+                        if (File.Exists(supervisorFile)) File.Delete(supervisorFile);
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is IOException or JsonException) { /* malformed state file - not fatal */ }
+        }
+        finally
+        {
+            try { if (haveMutex) repairMutex.ReleaseMutex(); } catch { /* already released */ }
+        }
+    }
+
+    /// <summary>Plain TCP-connect liveness probe - deliberately doesn't assume any HTTP path on claude-mem's bundled worker.</summary>
+    private static async Task<bool> IsClaudeMemWorkerHealthyAsync(int port)
+    {
+        try
+        {
+            using var client = new System.Net.Sockets.TcpClient();
+            var connectTask = client.ConnectAsync("127.0.0.1", port);
+            var completed = await Task.WhenAny(connectTask, Task.Delay(750));
+            return completed == connectTask && client.Connected;
+        }
+        catch (Exception ex) when (ex is SocketException or ObjectDisposedException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Stops claude-mem's isolated worker (see IsolatedDataDir) when the app
+    /// window closes, but ONLY if no other `claude` process launched by this
+    /// app is still running - since every session this app launches shares
+    /// that one isolated worker, killing it while another of this app's own
+    /// sessions is still using it would interrupt that session's memory
+    /// capture. Nothing in claude-mem's own hooks ever stops the worker (its
+    /// SessionStart hook only ever runs "start", never "stop"), so left
+    /// alone it runs forever after the last window closes - this is the
+    /// missing other half of RepairClaudeMemWorkerAsync. Same machine-wide
+    /// mutex, so the two never race each other. Because this worker is
+    /// isolated to its own data dir/port, this never touches (and never
+    /// needs to check for) the standalone Claude Code Desktop app's own
+    /// separate worker.
+    /// </summary>
+    public async Task StopClaudeMemWorkerIfLastWindowAsync()
+    {
+        var config = await _configStore.LoadAsync();
+        if (!config.ClaudeMemInstalled) return;
+
+        if (Process.GetProcessesByName("claude").Length > 0) return;
+
+        var lockFile = Path.Combine(IsolatedDataDir, "spawn.lock");
+        if (!File.Exists(lockFile)) return;
+
+        using var repairMutex = new Mutex(false, "Global\\LLMTokenOptimizer_ClaudeMemRepair");
+        bool haveMutex;
+        try { haveMutex = repairMutex.WaitOne(TimeSpan.FromSeconds(3)); }
+        catch (AbandonedMutexException) { haveMutex = true; }
+        if (!haveMutex) return;
+
+        try
+        {
+            var raw = await File.ReadAllTextAsync(lockFile);
+            using var doc = JsonDocument.Parse(raw);
+            if (!doc.RootElement.TryGetProperty("pid", out var pidProp)) return;
+            var pid = pidProp.GetInt32();
+
+            // Re-check under the mutex - another window may have started since the check above.
+            if (Process.GetProcessesByName("claude").Length > 0) return;
+
+            try
+            {
+                var proc = Process.GetProcessById(pid);
+                if (!proc.ProcessName.Contains("bun", StringComparison.OrdinalIgnoreCase)) return;
+                proc.Kill();
+                File.Delete(lockFile);
+            }
+            catch (ArgumentException) { /* already gone */ }
+        }
+        catch (Exception ex) when (ex is IOException or JsonException) { /* malformed lock file - not fatal */ }
+        finally
+        {
+            try { if (haveMutex) repairMutex.ReleaseMutex(); } catch { /* already released */ }
+        }
     }
 
     // ------------------------------------------------------------------
@@ -255,6 +435,9 @@ public sealed class CompanionToolingInstaller
 
     public async Task InstallClaudePluginsAndSkillsAsync()
     {
+        var config = await _configStore.LoadAsync();
+        if (config.ClaudePluginsAndSkillsInstalled) return;
+
         var claudeBase = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");
         var pluginsDir = Path.Combine(claudeBase, "plugins");
         var skillsDir = Path.Combine(claudeBase, "skills");
@@ -308,6 +491,9 @@ public sealed class CompanionToolingInstaller
         {
             try { Directory.Delete(legacyFolder, recursive: true); } catch (IOException) { }
         }
+
+        config.ClaudePluginsAndSkillsInstalled = true;
+        await _configStore.SaveAsync(config);
     }
 
     /// <summary>
@@ -323,6 +509,7 @@ public sealed class CompanionToolingInstaller
     public async Task EnsureSharedClaudeEnvironmentAsync(string? projectDirectory)
     {
         await InstallClaudePluginsAndSkillsAsync();
+        await RepairClaudeMemWorkerAsync();
         if (projectDirectory is not null)
         {
             await InstallCodeIntelligencePluginAsync(projectDirectory);

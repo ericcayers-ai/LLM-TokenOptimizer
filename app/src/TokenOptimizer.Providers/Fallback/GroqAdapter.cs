@@ -102,6 +102,8 @@ public sealed class GroqAdapter : IProviderAdapter
         };
         psi.EnvironmentVariables["ANTHROPIC_BASE_URL"] = proxy.BaseUrl;
         psi.EnvironmentVariables["ANTHROPIC_AUTH_TOKEN"] = "proxied-locally"; // the proxy injects the real Groq key upstream; the CLI never needs to see it.
+        psi.EnvironmentVariables["CLAUDE_MEM_WORKER_PORT"] = CompanionToolingInstaller.IsolatedWorkerPort.ToString();
+        psi.EnvironmentVariables["CLAUDE_MEM_DATA_DIR"] = CompanionToolingInstaller.IsolatedDataDir;
 
         if (options.IsolateConfig)
         {

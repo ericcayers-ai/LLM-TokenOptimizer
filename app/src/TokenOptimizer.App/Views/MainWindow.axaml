@@ -187,8 +187,58 @@
                 <ScrollViewer>
                     <StackPanel Spacing="12" Margin="8">
                         <Border Classes="Card">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="Session type" Classes="SectionHeader" />
+                                <TextBlock Text="Pick what this session is for and a cost preset - the priority tree below ranks every provider for that combination, sets it as the single-provider pick, and reorders the fallback chain to match."
+                                           Opacity="0.65" FontSize="11" TextWrapping="Wrap" />
+                                <StackPanel Orientation="Horizontal" Spacing="12">
+                                    <StackPanel Spacing="4" Width="160">
+                                        <TextBlock Text="Decision type" />
+                                        <ComboBox ItemsSource="{Binding SessionIntentNames}" SelectedItem="{Binding SelectedSessionIntent}" HorizontalAlignment="Stretch" />
+                                    </StackPanel>
+                                    <StackPanel Spacing="4" Width="160">
+                                        <TextBlock Text="Preset" />
+                                        <ComboBox ItemsSource="{Binding PresetNames}" SelectedItem="{Binding SelectedPreset}" HorizontalAlignment="Stretch" />
+                                    </StackPanel>
+                                    <StackPanel Spacing="4" VerticalAlignment="Bottom">
+                                        <Button Content="Re-apply" Command="{Binding ApplyIntentPresetCommand}" ToolTip.Tip="Re-run the priority tree now (it also re-runs automatically whenever you change either dropdown above)." />
+                                    </StackPanel>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Classes="Card">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="Models" Classes="SectionHeader" />
+                                <TextBlock Text="Tick whichever models you want available. Claude direct, Groq, and OpenCode Go all show up together in one Claude Code window's own model picker. Codex, Cursor, and Antigravity open their own separate window - they're marked below. Click a provider's name to collapse its list."
+                                           Opacity="0.65" FontSize="11" TextWrapping="Wrap" />
+                                <Button Content="Tick all (except separate-window ones)" Command="{Binding TickAllBridgeableModelsCommand}" HorizontalAlignment="Left" />
+                                <ItemsControl ItemsSource="{Binding ModelCatalogGroups}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Expander Header="{Binding ProviderHeader}" IsExpanded="{Binding IsExpanded}" Margin="0,2">
+                                                <ItemsControl ItemsSource="{Binding Models}" Margin="20,4,0,4">
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <CheckBox Content="{Binding DisplayLabel}" IsChecked="{Binding IsTicked}" ToolTip.Tip="{Binding Key}" Margin="0,2" />
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+                                            </Expander>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button Content="Launch" Command="{Binding LaunchTickedModelsCommand}" IsEnabled="{Binding HasTickedModels}" />
+                                    <ComboBox ItemsSource="{Binding ResumeModeNames}" SelectedItem="{Binding SelectedResumeModeName}" Width="110" ToolTip.Tip="Resume mode" />
+                                </StackPanel>
+                                <TextBlock Text="Tick at least one model above to enable Launch." Opacity="0.6" FontSize="11" IsVisible="{Binding !HasTickedModels}" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Classes="Card">
                             <StackPanel Spacing="10">
-                                <TextBlock Text="Session Launch" Classes="SectionHeader" />
+                                <TextBlock Text="Session Launch (single provider, single model)" Classes="SectionHeader" />
                                 <StackPanel Orientation="Horizontal" Spacing="12">
                                     <StackPanel Spacing="4" Width="220">
                                         <TextBlock Text="Provider" />
@@ -197,7 +247,7 @@
                                                   HorizontalAlignment="Stretch" />
                                     </StackPanel>
                                     <StackPanel Spacing="4" Width="220">
-                                        <TextBlock Text="Model override (optional)" />
+                                        <TextBlock Text="Model" />
                                         <ComboBox ItemsSource="{Binding ModelOverrideOptions}"
                                                   Text="{Binding ModelOverride}"
                                                   IsEditable="True"
@@ -220,16 +270,20 @@
                                 </StackPanel>
                                 <TextBlock Text="{Binding SelectedProviderDescription}" Opacity="0.65" FontSize="11" TextWrapping="Wrap" />
                                 <CheckBox Content="Isolate Claude config for this project (separate CLAUDE_CONFIG_DIR)" IsChecked="{Binding IsolateClaudeConfig}" />
-                                <StackPanel Orientation="Horizontal" Spacing="8">
-                                    <CheckBox Content="Auto-wire RAG retrieval (embeddings endpoint):" IsChecked="{Binding RagEnabled}" />
-                                    <TextBox Text="{Binding RagEmbeddingsUrl}" PlaceholderText="http://localhost:1234/v1" Width="220" IsEnabled="{Binding RagEnabled}" />
-                                </StackPanel>
+                                <TextBlock Text="RAG retrieval auto-wires itself when a local model server (LM Studio/Unsloth Studio, Ollama) is detected running - nothing to configure here." Opacity="0.55" FontSize="11" TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>
 
                         <Border Classes="Card">
                             <StackPanel Spacing="8">
-                                <TextBlock Text="Fallback chain (priority order)" Classes="SectionHeader" />
+                                <Grid ColumnDefinitions="*,Auto">
+                                    <TextBlock Text="Fallback chain (priority order)" Classes="SectionHeader" />
+                                    <StackPanel Grid.Column="1" Spacing="4" Width="200">
+                                        <TextBlock Text="Launch mode" FontSize="11" Opacity="0.7" />
+                                        <ComboBox ItemsSource="{Binding LaunchModeNames}" SelectedItem="{Binding SelectedLaunchMode}" HorizontalAlignment="Stretch" />
+                                    </StackPanel>
+                                </Grid>
+                                <TextBlock Text="Set to Auto or Custom here to launch under a fallback chain instead of the single provider above - independent of the Provider dropdown." Opacity="0.6" FontSize="11" TextWrapping="Wrap" />
                                 <ItemsControl ItemsSource="{Binding FallbackChain}">
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
@@ -244,7 +298,7 @@
                             </StackPanel>
                         </Border>
 
-                        <Border Classes="Card">
+                        <Border Classes="Card" IsVisible="{Binding IsCustomChainSelected}">
                             <StackPanel Spacing="8">
                                 <Grid ColumnDefinitions="*,Auto">
                                     <StackPanel Spacing="2">
@@ -292,7 +346,7 @@
                                     <TextBox Text="{Binding OpenCodeApiKeyInput}" PlaceholderText="API key for OpenCode Go" Width="220" PasswordChar="*" />
                                     <Button Content="Save OpenCode Key" Command="{Binding SetOpenCodeCredentialCommand}" />
                                 </StackPanel>
-                                <TextBlock Text="OpenCode Go models: mimo2.5 (default, balanced), v4-flash (cheap), minimax2.7, kimik2.5, qwen3.8, glm-5.2 (optional, expensive) - or type any model id it offers in the Model override field above."
+                                <TextBlock Text="OpenCode Go models: mimo-v2.5 (default, balanced), glm-5 (cheap), minimax-m2.7, kimi-k2.5, qwen3.8-max, glm-5.2 (optional, expensive) - or type any model id it offers in the Model override field above."
                                            Opacity="0.6" FontSize="11" TextWrapping="Wrap" />
 
                                 <Border BorderBrush="Gray" BorderThickness="1" CornerRadius="4" Padding="10">
@@ -334,19 +388,11 @@
                                     <TextBlock Text="Active session" Classes="SectionHeader" />
                                     <Button Grid.Column="1" Content="Refresh" Command="{Binding RefreshDashboardCommand}" />
                                 </Grid>
-                                <StackPanel Spacing="4" Width="260">
-                                    <TextBlock Text="Provider (switch on the fly)" />
-                                    <ComboBox ItemsSource="{Binding ProviderNames}"
-                                              SelectedItem="{Binding SelectedProviderName}"
-                                              HorizontalAlignment="Stretch" />
-                                    <TextBlock Text="{Binding SelectedProviderDescription}" Opacity="0.65" FontSize="11" TextWrapping="Wrap" />
-                                </StackPanel>
                                 <TextBlock Text="{Binding ActiveProviderLabel}" FontWeight="SemiBold" />
+                                <TextBlock Text="Set the provider and fallback mode in the Session tab - it applies to the next launch." Opacity="0.6" FontSize="11" TextWrapping="Wrap" />
                                 <TextBlock Text="{Binding TokenUsageSummaryText}" Opacity="0.75" FontSize="12"
                                            ToolTip.Tip="Via ccusage - local, offline, reads Claude Code/Codex/etc session logs already on disk. No proxy, no upload." />
                                 <ProgressBar IsIndeterminate="True" Height="4" IsVisible="{Binding IsDashboardRefreshing}" />
-                                <TextBlock Text="Switching providers applies to the NEXT session launch - Claude Code can't hot-swap the backend of an already-running session. Switching to/from Custom fallback chain also needs a fresh launch."
-                                           TextWrapping="Wrap" Opacity="0.65" FontSize="11" />
                             </StackPanel>
                         </Border>
 
@@ -423,6 +469,20 @@
             <!-- ==================== DANGER ZONE TAB ==================== -->
             <TabItem Header="Danger Zone">
                 <StackPanel Spacing="10" Margin="16" MaxWidth="440" HorizontalAlignment="Left">
+                    <Border Classes="Card">
+                        <StackPanel Spacing="8">
+                            <TextBlock Text="Cache" FontWeight="Bold" FontSize="16" />
+                            <TextBlock Text="Isolated Claude profiles (-IsolateClaudeConfig) are a full copy of ~/.claude per project - one folder per distinct project, never cleaned up automatically."
+                                       TextWrapping="Wrap" Opacity="0.75" FontSize="12" />
+                            <TextBlock Text="{Binding CacheSummaryText}" FontSize="12" />
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button Content="Scan Cache" Command="{Binding RefreshCacheInfoCommand}" />
+                                <Button Content="Clear Stale (30+ days)" Command="{Binding ClearStaleCacheCommand}" />
+                            </StackPanel>
+                            <TextBox Text="{Binding ClearCacheConfirmationInput}" PlaceholderText="Type CLEAR to confirm" />
+                            <Button Content="Clear All Cached Profiles" Command="{Binding ClearAllCacheCommand}" HorizontalAlignment="Stretch" />
+                        </StackPanel>
+                    </Border>
                     <Border Classes="Card" BorderBrush="IndianRed" BorderThickness="1">
                         <StackPanel Spacing="8">
                             <TextBlock Text="Uninstall everything" FontWeight="Bold" Foreground="IndianRed" FontSize="16" />

@@ -142,7 +142,8 @@ public sealed class AnthropicCompatProxy : IAsyncDisposable
 
     // ---- Anthropic request -> OpenAI request ----
 
-    private static JsonObject AnthropicToOpenAiRequest(JsonObject anthropic)
+    // internal (not private): UnifiedModelRouter reuses this translation logic for its own OpenAI-shaped routes rather than duplicating it.
+    internal static JsonObject AnthropicToOpenAiRequest(JsonObject anthropic)
     {
         var openAi = new JsonObject
         {
@@ -270,7 +271,7 @@ public sealed class AnthropicCompatProxy : IAsyncDisposable
 
     // ---- OpenAI response -> Anthropic response ----
 
-    private static async Task RelayNonStreamingAsync(HttpListenerContext ctx, HttpResponseMessage upstream, CancellationToken ct)
+    internal static async Task RelayNonStreamingAsync(HttpListenerContext ctx, HttpResponseMessage upstream, CancellationToken ct)
     {
         var body = await upstream.Content.ReadAsStringAsync(ct);
         if (!upstream.IsSuccessStatusCode)
@@ -343,7 +344,7 @@ public sealed class AnthropicCompatProxy : IAsyncDisposable
     /// message_stop) as chunks arrive, so the CLI's streaming UI keeps
     /// working rather than degrading to a blocking wait.
     /// </summary>
-    private static async Task RelayStreamingAsync(HttpListenerContext ctx, HttpResponseMessage upstream, CancellationToken ct)
+    internal static async Task RelayStreamingAsync(HttpListenerContext ctx, HttpResponseMessage upstream, CancellationToken ct)
     {
         ctx.Response.ContentType = "text/event-stream";
         var output = ctx.Response.OutputStream;

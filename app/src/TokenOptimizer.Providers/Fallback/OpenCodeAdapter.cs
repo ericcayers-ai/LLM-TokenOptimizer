@@ -86,6 +86,8 @@ public sealed class OpenCodeAdapter : IProviderAdapter
         };
         psi.EnvironmentVariables["ANTHROPIC_BASE_URL"] = ApiBaseUrl.ToString();
         psi.EnvironmentVariables["ANTHROPIC_AUTH_TOKEN"] = apiKey;
+        psi.EnvironmentVariables["CLAUDE_MEM_WORKER_PORT"] = CompanionToolingInstaller.IsolatedWorkerPort.ToString();
+        psi.EnvironmentVariables["CLAUDE_MEM_DATA_DIR"] = CompanionToolingInstaller.IsolatedDataDir;
 
         if (options.IsolateConfig)
         {

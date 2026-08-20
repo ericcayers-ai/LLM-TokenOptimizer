@@ -35,6 +35,15 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        Closing += OnClosing;
+    }
+
+    private void OnClosing(object? sender, WindowClosingEventArgs e)
+    {
+        if (DataContext is MainViewModel viewModel)
+        {
+            _ = viewModel.OnWindowClosingAsync();
+        }
     }
 
     private void CustomChainItem_PointerPressed(object? sender, PointerPressedEventArgs e)

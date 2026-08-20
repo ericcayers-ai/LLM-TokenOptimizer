@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Net.Http;
 using System.Text.RegularExpressions;
 using Avalonia.Input.Platform;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -12,6 +13,7 @@ using TokenOptimizer.Core.Projects;
 using TokenOptimizer.Core.Security;
 using TokenOptimizer.Providers;
 using TokenOptimizer.Providers.Claude;
+using TokenOptimizer.Providers.Compat;
 using TokenOptimizer.Providers.Fallback;
 
 namespace TokenOptimizer.App.ViewModels;
@@ -20,6 +22,7 @@ public partial class MainViewModel : ViewModelBase
 {
     private const string AutoFallbackProviderName = "Auto (fallback chain)";
     private const string CustomFallbackProviderName = "Custom (fallback chain)";
+    private const string SingleProviderModeName = "Single provider (below)";
 
     private readonly ConfigStore _configStore = new();
     private readonly CommandAvailability _availability = new();
@@ -53,7 +56,7 @@ public partial class MainViewModel : ViewModelBase
         _dependencyChecker = new DependencyChecker(_availability, _pythonLocator);
         _claudeLocator = new ClaudeExecutableLocator(_configStore, _availability);
         _claudeAdapter = new ClaudeCodeAdapter(_claudeLocator, _availability);
-        _llamaCppAdapter = new TokenOptimizer.Providers.LlamaCpp.LlamaCppAdapter();
+        _llamaCppAdapter = new TokenOptimizer.Providers.LlamaCpp.LlamaCppAdapter(claudeLocator: _claudeLocator);
         _antigravityAdapter = new AntigravityAdapter(_credentials);
         _codexAdapter = new CodexAdapter(_credentials);
         _cursorAdapter = new CursorAdapter(_credentials);
@@ -72,14 +75,14 @@ public partial class MainViewModel : ViewModelBase
         {
             _claudeAdapter, _antigravityAdapter, _openCodeAdapter, _llamaCppAdapter, _codexAdapter, _cursorAdapter, _groqAdapter, _deepSeekHarnessAdapter,
         };
-        ProviderNames = new ObservableCollection<string>(
-            new[] { AutoFallbackProviderName, CustomFallbackProviderName }.Concat(_providers.Select(p => p.Name)));
+        ProviderNames = new ObservableCollection<string>(_providers.Select(p => p.Name));
         SelectedProviderName = ProviderNames.FirstOrDefault() ?? string.Empty;
 
         _ = RefreshAllAsync();
         _ = RefreshDashboardAsync();
         _ = CheckAntigravityLoginAsync();
         _ = CheckCursorLoginAsync();
+        _ = AutoDetectRagEndpointAsync();
     }
 
     public ObservableCollection<ProjectInfo> ProjectHistoryList { get; } = new();
@@ -111,16 +114,233 @@ public partial class MainViewModel : ViewModelBase
         // Index 0 of each array is that provider's default/auto model (see DefaultModelFor) - kept first
         // deliberately, the rest of the array is re-sorted alphabetically wherever it's shown in full.
         ["Claude Code"] = new[] { "claude-sonnet-5", "claude-fable-5", "claude-haiku-4-5-20251001", "claude-opus-5" },
-        ["Groq"] = new[] { "llama-3.3-70b-versatile", "deepseek-r1-distill-llama-70b", "llama-3.1-8b-instant", "moonshotai/kimi-k2-instruct", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3-32b" },
+        // Verified 2026-08-20 against GET /openai/v1/models plus a live chat-completions call
+        // per model with a real API key - the previous ids (llama-3.3-70b-versatile,
+        // deepseek-r1-distill-llama-70b, llama-3.1-8b-instant, moonshotai/kimi-k2-instruct,
+        // qwen/qwen3-32b) all 404'd or were decommissioned; these are the account's real models.
+        ["Groq"] = new[] { "openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b", "groq/compound", "groq/compound-mini" },
         ["Codex"] = new[] { "gpt-5-codex", "gpt-5.1-codex", "gpt-5.1-codex-mini" },
         ["Antigravity"] = new[] { "gemini-3-pro", "gemini-3-pro-high" },
         ["Cursor"] = new[] { "auto", "composer-1" },
         ["OpenCode"] = OpenCodeModelCatalog.ModelIds.ToArray(),
+        // "Unsloth (local model)" is deliberately absent here - its models come from
+        // LlamaCppModelCatalog.SupportedFamilies, live-queried per family against the
+        // Hugging Face API (see RefreshModelCatalogAsync/RefreshModelOverrideOptionsAsync)
+        // instead of a hand-maintained id list, so every quant that repo actually publishes
+        // shows up rather than a handful of guessed ones.
     };
 
     /// <summary>Single default/auto model per provider - what Auto/Custom fallback chain shows, so the dropdown isn't every provider's full curated list mashed together (see RefreshModelOverrideOptionsAsync).</summary>
-    private static string DefaultModelFor(string providerName) =>
-        StaticModelCatalog.TryGetValue(providerName, out var curated) ? curated[0] : providerName;
+    private static string DefaultModelFor(string providerName)
+    {
+        if (providerName == "Unsloth (local model)")
+        {
+            var family = TokenOptimizer.Providers.LlamaCpp.LlamaCppModelCatalog.SupportedFamilies[0];
+            return $"{family.RepoId}:{family.RecommendedQuant}";
+        }
+        return StaticModelCatalog.TryGetValue(providerName, out var curated) ? curated[0] : providerName;
+    }
+
+    /// <summary>Providers that can share one Claude Code CLI window via UnifiedModelRouter - each speaks (or can be translated to) the Anthropic Messages API. Everything else opens its own separate tool, same as today.</summary>
+    private static readonly HashSet<string> BridgeableProviders = new(StringComparer.Ordinal) { "Claude Code", "Groq", "OpenCode" };
+
+    /// <summary>Plain-language row text for the Models card - no raw ids, so a first-time user doesn't need to know what "glm-5.2" or "gpt-5-codex" means.</summary>
+    private static string PlainLabelFor(string providerName, string modelId) => providerName switch
+    {
+        "Claude Code" => modelId switch
+        {
+            "claude-sonnet-5" => "Claude Sonnet 5 - Anthropic's default, balanced",
+            "claude-opus-5" => "Claude Opus 5 - most capable, slower/pricier",
+            "claude-haiku-4-5-20251001" => "Claude Haiku 4.5 - fastest, cheapest",
+            "claude-fable-5" => "Claude Fable 5 - creative writing focus",
+            _ => modelId,
+        },
+        "Groq" => modelId switch
+        {
+            "openai/gpt-oss-120b" => "GPT-OSS 120B (Groq) - large open-weight, good default",
+            "openai/gpt-oss-20b" => "GPT-OSS 20B (Groq) - small, fast open-weight",
+            "qwen/qwen3.6-27b" => "Qwen3.6 27B (Groq) - balanced, strong at code",
+            "groq/compound" => "Compound (Groq) - agentic, tool-use built in",
+            "groq/compound-mini" => "Compound Mini (Groq) - faster agentic variant",
+            _ => $"{modelId} (Groq)",
+        },
+        "OpenCode" => OpenCodeModelCatalog.Models.FirstOrDefault(m => m.Id == modelId) is { } opencodeModel
+            ? $"{modelId} (OpenCode Go) - {opencodeModel.Description}"
+            : $"{modelId} (OpenCode Go)",
+        // Unsloth entries get their label built directly in BuildUnslothModelGroupsAsync (quant tag + size + family) - not routed through here.
+        "Codex" => $"{modelId} (opens separately - OpenAI's own tool)",
+        "Cursor" => $"{modelId} (opens separately - Cursor's own tool)",
+        "Antigravity" => $"{modelId} (opens separately - Google's own tool)",
+        _ => modelId,
+    };
+
+    /// <summary>Every model from every provider, tick to make it show up on next launch - see LaunchTickedModelsAsync.</summary>
+    public ObservableCollection<ProviderModelOptionViewModel> ModelCatalog { get; } = new();
+
+    /// <summary>Same models as ModelCatalog, grouped by provider with a collapsible header - what the Models card actually binds to.</summary>
+    public ObservableCollection<ProviderModelGroupViewModel> ModelCatalogGroups { get; } = new();
+
+    private async Task RefreshModelCatalogAsync()
+    {
+        var config = await _configStore.LoadAsync();
+        var ticked = new HashSet<string>(config.TickedModels ?? new List<string>(), StringComparer.Ordinal);
+
+        ModelCatalog.Clear();
+        ModelCatalogGroups.Clear();
+        foreach (var provider in _providers)
+        {
+            if (provider == _llamaCppAdapter)
+            {
+                await AddUnslothModelGroupsAsync(ticked);
+                continue;
+            }
+
+            if (!StaticModelCatalog.TryGetValue(provider.Name, out var models)) continue;
+            var bridgeable = BridgeableProviders.Contains(provider.Name);
+            var options = new List<ProviderModelOptionViewModel>();
+            foreach (var modelId in models)
+            {
+                var option = AddModelOption(provider.Name, modelId, PlainLabelFor(provider.Name, modelId), bridgeable, ticked);
+                options.Add(option);
+            }
+            ModelCatalogGroups.Add(new ProviderModelGroupViewModel(provider.Name, options, bridgeable));
+        }
+    }
+
+    private ProviderModelOptionViewModel AddModelOption(string providerName, string modelId, string label, bool bridgeable, HashSet<string> ticked)
+    {
+        var option = new ProviderModelOptionViewModel(providerName, modelId, label, bridgeable, ticked.Contains($"{providerName}::{modelId}"));
+        option.PropertyChanged += async (_, e) =>
+        {
+            if (e.PropertyName != nameof(ProviderModelOptionViewModel.IsTicked)) return;
+            OnPropertyChanged(nameof(HasTickedModels));
+            await SaveTickedModelsAsync();
+        };
+        ModelCatalog.Add(option);
+        return option;
+    }
+
+    /// <summary>
+    /// One group per model family (not one flat "Unsloth" group) - each
+    /// family's own menu of EVERY quantization Hugging Face actually lists
+    /// for it, fetched live via LlamaCppModelCatalog.ListQuantsAsync rather
+    /// than a hand-picked shortlist. A family with zero quants found
+    /// (offline, or the repo's filenames don't match either naming
+    /// convention) is skipped rather than shown as an empty menu.
+    /// </summary>
+    private async Task AddUnslothModelGroupsAsync(HashSet<string> ticked)
+    {
+        foreach (var family in _llamaCppAdapter.ListSupportedFamilies())
+        {
+            var quants = await _llamaCppAdapter.ListQuantsAsync(family.RepoId);
+            if (quants.Count == 0) continue;
+
+            var options = new List<ProviderModelOptionViewModel>();
+            foreach (var quant in quants)
+            {
+                var modelId = $"{family.RepoId}:{quant.Tag}";
+                var sizeLabel = quant.SizeBytes is { } bytes ? $" - {bytes / 1_073_741_824.0:F1} GB" : "";
+                var recommended = string.Equals(quant.Tag, family.RecommendedQuant, StringComparison.OrdinalIgnoreCase) ? " (recommended)" : "";
+                options.Add(AddModelOption(_llamaCppAdapter.Name, modelId, $"{quant.Tag}{sizeLabel}{recommended}", false, ticked));
+            }
+            ModelCatalogGroups.Add(new ProviderModelGroupViewModel($"{family.DisplayName} - every quantization", options, isBridgeable: false));
+        }
+    }
+
+    /// <summary>Tick every model that can share one Claude Code window (Claude direct, Groq, OpenCode Go) - skips Codex/Cursor/Antigravity, which always open their own separate window regardless.</summary>
+    [RelayCommand]
+    private async Task TickAllBridgeableModelsAsync()
+    {
+        foreach (var option in ModelCatalog.Where(m => m.IsBridgeable))
+        {
+            option.IsTicked = true;
+        }
+        OnPropertyChanged(nameof(HasTickedModels));
+        await SaveTickedModelsAsync();
+    }
+
+    private async Task SaveTickedModelsAsync()
+    {
+        await _configStore.UpdateAsync(config =>
+        {
+            config.TickedModels = ModelCatalog.Where(m => m.IsTicked).Select(m => m.Key).ToList();
+        });
+    }
+    private enum ModelCostTier { Cheap, Balanced, Premium }
+
+    /// <summary>Provider-level "priority tree" node: how well that provider's default model fits reasoning-heavy planning work vs. fast execution work, and roughly what it costs. Deliberately provider-granularity, not per-model - ApplyIntentPresetAsync uses this to both pick a single provider/model and to reorder the fallback chain, and the fallback chain is already provider-granularity.</summary>
+    private sealed record ModelFit(double ReasoningScore, double SpeedScore, ModelCostTier CostTier);
+
+    private static readonly IReadOnlyDictionary<string, ModelFit> ProviderFit = new Dictionary<string, ModelFit>
+    {
+        ["Claude Code"] = new(0.95, 0.55, ModelCostTier.Premium),
+        ["Antigravity"] = new(0.85, 0.55, ModelCostTier.Premium),
+        ["Codex"] = new(0.85, 0.50, ModelCostTier.Premium),
+        ["DeepSeek Harness"] = new(0.80, 0.50, ModelCostTier.Balanced),
+        ["Cursor"] = new(0.75, 0.60, ModelCostTier.Balanced),
+        ["OpenCode"] = new(0.70, 0.60, ModelCostTier.Balanced),
+        ["Unsloth (local model)"] = new(0.50, 0.70, ModelCostTier.Cheap),
+        ["Groq"] = new(0.55, 0.95, ModelCostTier.Cheap),
+    };
+
+    public ObservableCollection<string> SessionIntentNames { get; } = new(new[] { "Planning", "Execution" });
+    public ObservableCollection<string> PresetNames { get; } = new(new[] { "Cost-effective", "Balanced", "Quality" });
+
+    [ObservableProperty]
+    public partial string SelectedSessionIntent { get; set; } = "Execution";
+
+    [ObservableProperty]
+    public partial string SelectedPreset { get; set; } = "Balanced";
+
+    partial void OnSelectedSessionIntentChanged(string value) => _ = ApplyIntentPresetAsync();
+    partial void OnSelectedPresetChanged(string value) => _ = ApplyIntentPresetAsync();
+
+    /// <summary>
+    /// Ranks every available provider by fit for the chosen session intent
+    /// (Planning favors reasoning strength, Execution favors speed) within
+    /// the chosen cost preset, then applies the result two ways: the top
+    /// pick becomes the single-provider/model selection, and the FULL
+    /// ranked order becomes the custom fallback chain order - so Auto/Custom
+    /// both try the best-fit providers first for whatever kind of session
+    /// this is, instead of a fixed order that doesn't know planning from
+    /// execution.
+    /// </summary>
+    [RelayCommand]
+    private async Task ApplyIntentPresetAsync()
+    {
+        bool CostAllowed(ModelCostTier tier) => SelectedPreset switch
+        {
+            "Cost-effective" => tier == ModelCostTier.Cheap,
+            "Quality" => tier != ModelCostTier.Cheap,
+            _ => true,
+        };
+
+        var known = ProviderFit.Where(kv => _providers.Any(p => p.Name == kv.Key)).ToList();
+        var pool = known.Where(kv => CostAllowed(kv.Value.CostTier)).ToList();
+        if (pool.Count == 0) pool = known; // preset filtered out everything available - fall back to ranking all of it rather than picking nothing
+
+        var ranked = pool
+            .OrderByDescending(kv => SelectedSessionIntent == "Planning" ? kv.Value.ReasoningScore : kv.Value.SpeedScore)
+            .Select(kv => kv.Key)
+            .Concat(_providers.Select(p => p.Name).Except(pool.Select(kv => kv.Key)))
+            .ToList();
+        if (ranked.Count == 0) return;
+
+        SelectedProviderName = ranked[0];
+        ModelOverride = DefaultModelFor(ranked[0]);
+
+        var excluded = CustomChainOrder.Where(i => !i.IsIncluded).Select(i => i.ProviderName).ToHashSet(StringComparer.Ordinal);
+        CustomChainOrder.Clear();
+        var index = 0;
+        foreach (var name in ranked)
+        {
+            CustomChainOrder.Add(new FallbackChainOrderItemViewModel(name, !excluded.Contains(name), index++));
+        }
+        await SaveCustomFallbackOrderAsync();
+
+        Log($"Priority tree applied: {SelectedSessionIntent}/{SelectedPreset} -> {ranked[0]} first (fallback chain reordered to match).");
+    }
+
     public ObservableCollection<string> ActiveSkills { get; } = new();
     public ObservableCollection<string> ActivePlugins { get; } = new();
     public ObservableCollection<SkillGuideEntry> SkillGuide { get; } = new();
@@ -144,12 +364,36 @@ public partial class MainViewModel : ViewModelBase
     partial void OnSelectedProviderNameChanged(string value)
     {
         _ = RefreshModelOverrideOptionsAsync(value);
-        _ = RefreshDashboardAsync();
+        if (SelectedLaunchMode == SingleProviderModeName) _ = RefreshDashboardAsync();
         SelectedProviderDescription = ProviderDescriptions.TryGetValue(value, out var description) ? description : string.Empty;
     }
 
     [ObservableProperty]
     public partial string SelectedProviderDescription { get; set; } = string.Empty;
+
+    /// <summary>The three ways a launch can pick its backend - a single provider/model (the everyday case) or one of the two fallback chains, kept as its own dropdown separate from the Provider picker so a fallback-chain choice doesn't get lost among individual provider names.</summary>
+    public ObservableCollection<string> LaunchModeNames { get; } = new(new[] { SingleProviderModeName, AutoFallbackProviderName, CustomFallbackProviderName });
+
+    [ObservableProperty]
+    public partial string SelectedLaunchMode { get; set; } = SingleProviderModeName;
+
+    partial void OnSelectedLaunchModeChanged(string value)
+    {
+        IsCustomChainSelected = value == CustomFallbackProviderName;
+        _ = RefreshDashboardAsync();
+    }
+
+    /// <summary>Gates the Custom fallback chain card - only relevant, so only shown, when "Custom (fallback chain)" is the selected launch mode.</summary>
+    [ObservableProperty]
+    public partial bool IsCustomChainSelected { get; set; }
+
+    /// <summary>Single place every launch path resolves its provider from - Auto/Custom fallback chain, or whatever's picked in the Provider dropdown.</summary>
+    private Task<IProviderAdapter?> ResolveLaunchProviderAsync() => SelectedLaunchMode switch
+    {
+        AutoFallbackProviderName => _fallbackResolver.ResolveAsync(),
+        CustomFallbackProviderName => ResolveCustomChainProviderAsync(),
+        _ => Task.FromResult(_providers.FirstOrDefault(p => p.Name == SelectedProviderName)),
+    };
 
     /// <summary>
     /// One-line "what is this and how does it work" per dropdown entry, shown
@@ -174,7 +418,7 @@ public partial class MainViewModel : ViewModelBase
     };
 
     /// <summary>Selecting the provider IS the category (Avalonia has no built-in grouped-combo control worth the complexity here) - Auto/Custom show the union of everything since the resolved provider decides which entry actually applies.</summary>
-    private Task RefreshModelOverrideOptionsAsync(string providerName)
+    private async Task RefreshModelOverrideOptionsAsync(string providerName)
     {
         IEnumerable<string> options;
         if (providerName is AutoFallbackProviderName or CustomFallbackProviderName)
@@ -183,8 +427,12 @@ public partial class MainViewModel : ViewModelBase
             // full curated list at once was an unreadable, uncategorized wall of
             // entries - one default model per provider keeps it scannable and each
             // entry still comes straight from that provider's own model set.
-            options = StaticModelCatalog.Keys.Select(DefaultModelFor)
+            options = StaticModelCatalog.Keys.Append("Unsloth (local model)").Select(DefaultModelFor)
                 .Distinct(StringComparer.OrdinalIgnoreCase);
+        }
+        else if (providerName == "Unsloth (local model)")
+        {
+            options = await GetAllUnslothModelIdsAsync();
         }
         else if (StaticModelCatalog.TryGetValue(providerName, out var curated))
         {
@@ -198,7 +446,18 @@ public partial class MainViewModel : ViewModelBase
         var sorted = options.OrderBy(o => o, StringComparer.OrdinalIgnoreCase).ToList();
         ModelOverrideOptions.Clear();
         foreach (var option in sorted) ModelOverrideOptions.Add(option);
-        return Task.CompletedTask;
+    }
+
+    /// <summary>Every "repoId:quant" id across every supported Unsloth family, live-queried - same source AddUnslothModelGroupsAsync uses, so the Model override field's options always match what the Models card actually offers.</summary>
+    private async Task<IReadOnlyList<string>> GetAllUnslothModelIdsAsync()
+    {
+        var ids = new List<string>();
+        foreach (var family in _llamaCppAdapter.ListSupportedFamilies())
+        {
+            var quants = await _llamaCppAdapter.ListQuantsAsync(family.RepoId);
+            ids.AddRange(quants.Select(q => $"{family.RepoId}:{q.Tag}"));
+        }
+        return ids;
     }
 
     [ObservableProperty]
@@ -210,11 +469,36 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty]
     public partial bool IsolateClaudeConfig { get; set; }
 
+    /// <summary>No manual checkbox any more - AutoDetectRagEndpointAsync probes known local endpoints (LM Studio/Unsloth Studio, Ollama) at startup and sets both of these automatically.</summary>
     [ObservableProperty]
     public partial bool RagEnabled { get; set; }
 
     [ObservableProperty]
     public partial string RagEmbeddingsUrl { get; set; } = string.Empty;
+
+    private static readonly string[] KnownLocalEmbeddingsEndpoints = { "http://localhost:1234/v1", "http://localhost:11434/v1" };
+
+    /// <summary>Best-effort, short-timeout probe of common local model-server ports - first one that answers wins. Silent no-op if none are running; RAG simply stays off until one is.</summary>
+    private async Task AutoDetectRagEndpointAsync()
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromMilliseconds(600) };
+        foreach (var url in KnownLocalEmbeddingsEndpoints)
+        {
+            try
+            {
+                var response = await http.GetAsync($"{url}/models");
+                if (!response.IsSuccessStatusCode) continue;
+
+                RagEnabled = true;
+                RagEmbeddingsUrl = url;
+                await _configStore.UpdateAsync(c => c.LastDetectedRagEmbeddingsUrl = url);
+                return;
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException) { /* not reachable - try next */ }
+        }
+        RagEnabled = false;
+        RagEmbeddingsUrl = string.Empty;
+    }
 
     public ObservableCollection<string> ResumeModeNames { get; } = new(Enum.GetNames<SessionResumeMode>());
 
@@ -223,6 +507,14 @@ public partial class MainViewModel : ViewModelBase
 
     [ObservableProperty]
     public partial string UninstallConfirmationInput { get; set; } = string.Empty;
+
+    [ObservableProperty]
+    public partial string ClearCacheConfirmationInput { get; set; } = string.Empty;
+
+    [ObservableProperty]
+    public partial string CacheSummaryText { get; set; } = "Cache not scanned yet.";
+
+    public ObservableCollection<CacheEntry> CacheProfiles { get; } = new();
 
     [ObservableProperty]
     public partial bool IsBusy { get; set; }
@@ -267,7 +559,7 @@ public partial class MainViewModel : ViewModelBase
     private void RecomputeSetupSteps()
     {
         SetupStep1Done = ProjectHistoryList.Count > 0 || !string.IsNullOrWhiteSpace(MasterFolderPath);
-        SetupStep2Done = Dependencies.Count > 0 && Dependencies.All(d => d.IsAvailable);
+        SetupStep2Done = Dependencies.Count > 0 && Dependencies.Where(d => d.Name != "Unsloth").All(d => d.IsAvailable);
         SetupStep3Done = CompanionToolingProgress >= 1;
 
         var doneCount = new[] { SetupStep1Done, SetupStep2Done, SetupStep3Done }.Count(d => d);
@@ -303,6 +595,8 @@ public partial class MainViewModel : ViewModelBase
             SelectedProject ??= ProjectHistoryList.FirstOrDefault();
 
             var deps = await _dependencyChecker.CheckAllAsync();
+            var unslothExe = TokenOptimizer.Providers.LlamaCpp.LlamaCppLocator.Find();
+            deps = deps.Append(new DependencyStatus("Unsloth", unslothExe is not null, unslothExe, null)).ToList();
             Dependencies.Clear();
             foreach (var dep in deps) Dependencies.Add(dep);
 
@@ -313,6 +607,11 @@ public partial class MainViewModel : ViewModelBase
             if (CustomChainOrder.Count == 0)
             {
                 await SeedCustomChainOrderAsync();
+            }
+
+            if (ModelCatalog.Count == 0)
+            {
+                await RefreshModelCatalogAsync();
             }
 
             if (string.IsNullOrWhiteSpace(MasterFolderPath))
@@ -367,6 +666,9 @@ public partial class MainViewModel : ViewModelBase
         });
         Log("Custom fallback chain saved.");
     }
+
+    /// <summary>Called from MainWindow's Closing event - stops claude-mem's shared worker if this was the last open Claude Code window, best-effort.</summary>
+    public Task OnWindowClosingAsync() => _companionTooling.StopClaudeMemWorkerIfLastWindowAsync();
 
     /// <summary>Drag-reorder support: swaps two rows' SortIndex, called by the drag/drop behavior in MainWindow.axaml.cs.</summary>
     public void ReorderCustomChain(int fromIndex, int toIndex)
@@ -439,7 +741,7 @@ public partial class MainViewModel : ViewModelBase
         IsMasterFolderTreeOpen = true;
     }
 
-    /// <summary>Double-click on a subdirectory tree node: launches a session directly against that path, under AutoLaunchProviderName if configured, otherwise whatever's currently selected in the Provider dropdown.</summary>
+    /// <summary>Double-click on a subdirectory tree node: launches a session directly against that path, under AutoLaunchProviderName if configured (a provider name, or "Auto"/"Custom (fallback chain)"), otherwise whatever's currently selected in the Provider dropdown.</summary>
     [RelayCommand]
     private async Task LaunchAtPathAsync(string path)
     {
@@ -530,12 +832,7 @@ public partial class MainViewModel : ViewModelBase
             return;
         }
 
-        IProviderAdapter? provider = SelectedProviderName switch
-        {
-            AutoFallbackProviderName => await _fallbackResolver.ResolveAsync(),
-            CustomFallbackProviderName => await ResolveCustomChainProviderAsync(),
-            _ => _providers.FirstOrDefault(p => p.Name == SelectedProviderName),
-        };
+        var provider = await ResolveLaunchProviderAsync();
 
         if (provider is null)
         {
@@ -719,6 +1016,51 @@ public partial class MainViewModel : ViewModelBase
     }
 
     /// <summary>
+    /// Sizes %AppData%\TokenOptimizer\claude-profiles - the one cache this app
+    /// grows without bound (one full ~/.claude copy per distinct project ever
+    /// launched with -IsolateClaudeConfig, never previously cleaned up). Scans
+    /// on a background thread since a large profile set means walking many
+    /// files, and this runs on tab open, not just on demand.
+    /// </summary>
+    [RelayCommand]
+    private async Task RefreshCacheInfoAsync()
+    {
+        var entries = await Task.Run(() => CacheManagementService.ListClaudeProfiles());
+        CacheProfiles.Clear();
+        foreach (var entry in entries) CacheProfiles.Add(entry);
+
+        var totalBytes = entries.Sum(e => e.SizeBytes);
+        CacheSummaryText = entries.Count == 0
+            ? "No isolated Claude profiles cached."
+            : $"{entries.Count} isolated Claude profile(s), {totalBytes / 1_048_576.0:F1} MB total.";
+    }
+
+    /// <summary>Removes profiles untouched for 30+ days - safe by construction (age-bounded), so this needs no confirmation unlike the full clear below.</summary>
+    [RelayCommand]
+    private async Task ClearStaleCacheAsync()
+    {
+        var removed = await Task.Run(() => CacheManagementService.DeleteStaleProfiles(TimeSpan.FromDays(30)));
+        Log(removed == 0 ? "No stale cached profiles (30+ days unused) to remove." : $"Removed {removed} stale cached profile(s).");
+        await RefreshCacheInfoAsync();
+    }
+
+    /// <summary>Requires the user to type CLEAR first - same deliberate-friction pattern as UninstallEverythingAsync, since this deletes every isolated project's saved Claude settings/history, not just stale ones.</summary>
+    [RelayCommand]
+    private async Task ClearAllCacheAsync()
+    {
+        if (!string.Equals(ClearCacheConfirmationInput.Trim(), "CLEAR", StringComparison.Ordinal))
+        {
+            Log("Type CLEAR (exact case) in the confirmation box first.");
+            return;
+        }
+
+        await Task.Run(() => CacheManagementService.ClearAllProfiles());
+        ClearCacheConfirmationInput = string.Empty;
+        Log("Cleared all cached isolated Claude profiles.");
+        await RefreshCacheInfoAsync();
+    }
+
+    /// <summary>
     /// Any explicit ModelOverride text wins - otherwise null, and the
     /// provider adapter picks its own default (e.g. LlamaCppAdapter falls
     /// back to its first supported model family).
@@ -740,17 +1082,12 @@ public partial class MainViewModel : ViewModelBase
         IsDashboardRefreshing = true;
         try
         {
-            IProviderAdapter? resolved = SelectedProviderName switch
-            {
-                AutoFallbackProviderName => await _fallbackResolver.ResolveAsync(),
-                CustomFallbackProviderName => await ResolveCustomChainProviderAsync(),
-                _ => _providers.FirstOrDefault(p => p.Name == SelectedProviderName),
-            };
+            var resolved = await ResolveLaunchProviderAsync();
 
-            ActiveProviderLabel = SelectedProviderName switch
+            ActiveProviderLabel = SelectedLaunchMode switch
             {
                 AutoFallbackProviderName or CustomFallbackProviderName =>
-                    resolved is not null ? $"{SelectedProviderName} -> currently resolves to {resolved.Name}" : $"{SelectedProviderName} -> nothing available right now",
+                    resolved is not null ? $"{SelectedLaunchMode} -> currently resolves to {resolved.Name}" : $"{SelectedLaunchMode} -> nothing available right now",
                 _ => SelectedProviderName,
             };
 
@@ -971,7 +1308,7 @@ public partial class MainViewModel : ViewModelBase
         }
 
         IsBusy = true;
-        StatusText = $"Launching {SelectedProviderName}...";
+        StatusText = $"Launching {SelectedLaunchMode}...";
         try
         {
             using var instanceLock = InstanceLock.TryAcquire(SelectedProject.FullPath);
@@ -981,7 +1318,7 @@ public partial class MainViewModel : ViewModelBase
             }
 
             IProviderAdapter? provider;
-            if (SelectedProviderName == AutoFallbackProviderName)
+            if (SelectedLaunchMode == AutoFallbackProviderName)
             {
                 provider = await _fallbackResolver.ResolveAsync();
                 if (provider is null)
@@ -992,7 +1329,7 @@ public partial class MainViewModel : ViewModelBase
                 }
                 Log($"Fallback chain resolved to: {provider.Name}");
             }
-            else if (SelectedProviderName == CustomFallbackProviderName)
+            else if (SelectedLaunchMode == CustomFallbackProviderName)
             {
                 provider = await ResolveCustomChainProviderAsync();
                 if (provider is null)
@@ -1042,6 +1379,134 @@ public partial class MainViewModel : ViewModelBase
             await _projectHistory.AddAsync(SelectedProject.FullPath);
             Log($"Launched {handle.ProviderName} for {handle.ProjectPath} (pid {handle.ProcessId?.ToString() ?? "n/a"}).");
             TrackRateLimitOutcome(handle);
+            StatusText = "Ready.";
+        }
+        catch (Exception ex)
+        {
+            Log($"Launch failed: {ex.Message}");
+            StatusText = "Ready.";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    /// <summary>Any model ticked in the Models card - Launch is disabled otherwise.</summary>
+    public bool HasTickedModels => ModelCatalog.Any(m => m.IsTicked);
+
+    /// <summary>
+    /// One click, everything ticked in the Models card shows up. Bridgeable
+    /// models (Claude direct, Groq, OpenCode Go) share a single Claude Code
+    /// CLI window - if more than one bridgeable provider is ticked,
+    /// UnifiedModelRouter fronts them all behind one ANTHROPIC_BASE_URL so
+    /// the CLI's own /model picker lists every one; if only Claude models are
+    /// ticked, launches straight through the existing ClaudeCodeAdapter path
+    /// (no router needed, zero change to today's subscription-auth
+    /// behavior). Non-bridgeable providers (Codex, Cursor, Antigravity - each
+    /// a closed CLI with no chat-completions API to bridge) launch as their
+    /// own separate window alongside it, same as today, one per provider.
+    /// </summary>
+    [RelayCommand]
+    private async Task LaunchTickedModelsAsync()
+    {
+        if (SelectedProject is null) { Log("Select a project first."); return; }
+
+        var ticked = ModelCatalog.Where(m => m.IsTicked).ToList();
+        if (ticked.Count == 0) { Log("Tick at least one model above."); return; }
+
+        IsBusy = true;
+        StatusText = "Launching...";
+        try
+        {
+            using var instanceLock = InstanceLock.TryAcquire(SelectedProject.FullPath);
+            if (instanceLock is null)
+            {
+                Log("Another setup is already running for this project - launching anyway (setup skipped).");
+            }
+
+            var resumeMode = Enum.Parse<SessionResumeMode>(SelectedResumeModeName);
+            var bridged = ticked.Where(m => m.IsBridgeable).ToList();
+            var standalone = ticked.Where(m => !m.IsBridgeable).GroupBy(m => m.ProviderName).ToList();
+
+            if (bridged.Count > 0)
+            {
+                await _companionTooling.EnsureSharedClaudeEnvironmentAsync(SelectedProject.FullPath);
+                await PrepareProjectDirectiveAsync(SelectedProject.FullPath, _claudeAdapter);
+
+                var claudeModels = bridged.Where(m => m.ProviderName == "Claude Code").ToList();
+                var otherBridged = bridged.Where(m => m.ProviderName != "Claude Code").ToList();
+
+                if (otherBridged.Count == 0)
+                {
+                    // Every ticked bridgeable model is Claude-native - no router needed, launch straight through today's path.
+                    var options = new SessionLaunchOptions(SelectedProject.FullPath, claudeModels[0].ModelId, IsolateClaudeConfig, resumeMode);
+                    var handle = await _claudeAdapter.LaunchSessionAsync(options);
+                    await _projectHistory.AddAsync(SelectedProject.FullPath);
+                    Log($"Launched {handle.ProviderName} for {handle.ProjectPath} (pid {handle.ProcessId?.ToString() ?? "n/a"}). Ticked models: {string.Join(", ", claudeModels.Select(m => m.ModelId))}");
+                    TrackRateLimitOutcome(handle);
+                }
+                else
+                {
+                    var claudeExe = await _claudeLocator.FindAsync()
+                                     ?? throw new InvalidOperationException("Claude Code executable not found - install it first.");
+
+                    var routes = new Dictionary<string, UnifiedModelRouter.ModelRoute>(StringComparer.Ordinal);
+                    foreach (var m in claudeModels)
+                        routes[m.ModelId] = new UnifiedModelRouter.ModelRoute(new Uri("https://api.anthropic.com"), RouteKind.AnthropicPassthrough);
+                    foreach (var m in bridged.Where(m => m.ProviderName == "Groq"))
+                        routes[m.ModelId] = new UnifiedModelRouter.ModelRoute(new Uri("https://api.groq.com/openai/v1"), RouteKind.OpenAiTranslate, () => _credentials.GetCredentialPlainText(FallbackProvider.Groq));
+                    foreach (var m in bridged.Where(m => m.ProviderName == "OpenCode"))
+                        routes[m.ModelId] = new UnifiedModelRouter.ModelRoute(new Uri("https://opencode.ai/zen/go"), RouteKind.AnthropicPassthrough, () => _credentials.GetCredentialPlainText(FallbackProvider.OpenCode));
+
+                    var router = new UnifiedModelRouter(routes);
+                    await router.StartAsync();
+
+                    var args = new List<string> { $"--model {bridged[0].ModelId}" };
+                    var resumeFlag = resumeMode switch { SessionResumeMode.Continue => "--continue", SessionResumeMode.Pick => "--resume", _ => null };
+                    if (resumeFlag is not null) args.Add(resumeFlag);
+
+                    var psi = new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = claudeExe,
+                        Arguments = string.Join(' ', args),
+                        WorkingDirectory = SelectedProject.FullPath,
+                        UseShellExecute = false,
+                    };
+                    psi.EnvironmentVariables["ANTHROPIC_BASE_URL"] = router.BaseUrl;
+                    psi.EnvironmentVariables["CLAUDE_MEM_WORKER_PORT"] = CompanionToolingInstaller.IsolatedWorkerPort.ToString();
+                    psi.EnvironmentVariables["CLAUDE_MEM_DATA_DIR"] = CompanionToolingInstaller.IsolatedDataDir;
+                    if (IsolateClaudeConfig)
+                    {
+                        psi.EnvironmentVariables["CLAUDE_CONFIG_DIR"] = IsolatedClaudeProfileService.GetOrCreateProfileDir(SelectedProject.FullPath);
+                    }
+
+                    var process = System.Diagnostics.Process.Start(psi);
+                    var handle = new ProcessSessionHandle("Claude Code", SelectedProject.FullPath, process, watchForRateLimit: true);
+                    _ = handle.RateLimitOutcome.ContinueWith(async _ => await router.DisposeAsync());
+                    await _projectHistory.AddAsync(SelectedProject.FullPath);
+                    Log($"Launched one Claude Code window (pid {handle.ProcessId?.ToString() ?? "n/a"}) with models available: {string.Join(", ", bridged.Select(m => m.ModelId))}");
+                    TrackRateLimitOutcome(handle);
+                }
+            }
+
+            foreach (var group in standalone)
+            {
+                var provider = _providers.FirstOrDefault(p => p.Name == group.Key);
+                if (provider is null) continue;
+                if (!await provider.IsAvailableAsync())
+                {
+                    Log($"{provider.Name} is not available - skipped.");
+                    continue;
+                }
+
+                var options = new SessionLaunchOptions(SelectedProject.FullPath, group.First().ModelId, IsolateClaudeConfig, resumeMode);
+                var handle = await provider.LaunchSessionAsync(options);
+                await _projectHistory.AddAsync(SelectedProject.FullPath);
+                Log($"Launched {handle.ProviderName} separately (pid {handle.ProcessId?.ToString() ?? "n/a"}).");
+                TrackRateLimitOutcome(handle);
+            }
+
             StatusText = "Ready.";
         }
         catch (Exception ex)

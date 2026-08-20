@@ -7,7 +7,7 @@ public sealed record GroqModel(string Id, long? ContextWindow, string? OwnedBy);
 
 /// <summary>
 /// Groq's model catalog changes often (new/deprecated model ids) and its
-/// namespace (llama-3.3-70b-versatile, openai/gpt-oss-120b, ...) shares
+/// namespace (openai/gpt-oss-120b, groq/compound, ...) shares
 /// nothing with Anthropic's - free-text model entry means users have to
 /// know/guess a valid id. Queries Groq's own /models endpoint (OpenAI-
 /// compatible: GET {base}/models, bearer-auth) so the UI can offer a

@@ -19,6 +19,7 @@ public sealed class AppConfig
     public bool ImpeccableSkillInstalled { get; set; }
     public bool AutoSkillsCliInstalled { get; set; }
     public bool RtkCliInstalled { get; set; }
+    public bool ClaudePluginsAndSkillsInstalled { get; set; }
     public string? PreferredModel { get; set; }
     public bool IsolateClaudeConfig { get; set; }
 
@@ -36,6 +37,12 @@ public sealed class AppConfig
     /// <summary>Provider names excluded from the custom chain (unchecked in the drag-reorder list) - everything else in CustomFallbackOrder is used.</summary>
     public List<string>? CustomFallbackExcluded { get; set; }
 
+    /// <summary>"ProviderName::ModelId" keys ticked in the Models card - what shows up in Claude Code's own /model list on next launch (see MainViewModel.LaunchTickedModelsAsync / UnifiedModelRouter).</summary>
+    public List<string>? TickedModels { get; set; }
+
     /// <summary>Provider (or "Auto (fallback chain)" / "Custom (fallback chain)") to launch under when a master-folder subdirectory is double-clicked in the tree browser. Null = use whatever SelectedProviderName currently is.</summary>
     public string? AutoLaunchProviderName { get; set; }
+
+    /// <summary>Last resolved local embeddings endpoint for auto-wired RAG retrieval (see MainViewModel.AutoDetectRagEndpointAsync) - probed automatically, no manual toggle.</summary>
+    public string? LastDetectedRagEmbeddingsUrl { get; set; }
 }
