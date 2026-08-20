@@ -22,9 +22,13 @@ public static class SkillCatalogService
 {
     private static readonly Regex FrontmatterField = new(@"^\s*(name|description)\s*:\s*(.+?)\s*$", RegexOptions.Multiline | RegexOptions.Compiled);
 
-    public static IReadOnlyList<SkillGuideEntry> ListSkillGuide()
+    private static string GetClaudeConfigDir() =>
+        Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR") ??
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");
+
+    public static IReadOnlyList<SkillGuideEntry> ListSkillGuide(string? claudeConfigDir = null)
     {
-        var claudeHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");
+        var claudeHome = claudeConfigDir ?? GetClaudeConfigDir();
         var entries = new List<SkillGuideEntry>();
 
         var userSkillsDir = Path.Combine(claudeHome, "skills");
@@ -52,9 +56,9 @@ public static class SkillCatalogService
             .ToList();
     }
 
-    public static IReadOnlyList<SkillGuideEntry> ListPluginGuide()
+    public static IReadOnlyList<SkillGuideEntry> ListPluginGuide(string? claudeConfigDir = null)
     {
-        var claudeHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");
+        var claudeHome = claudeConfigDir ?? GetClaudeConfigDir();
         var pluginsCacheDir = Path.Combine(claudeHome, "plugins", "cache");
         var entries = new List<SkillGuideEntry>();
         if (!Directory.Exists(pluginsCacheDir)) return entries;

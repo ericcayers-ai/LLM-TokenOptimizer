@@ -109,6 +109,19 @@ public class SessionHandoffExporterTests : IDisposable
         Assert.Equal(transcript, found);
     }
 
+    [Fact]
+    public void GetAvailableSkillsDigest_WithCustomClaudeConfigDir_IncludesCustomSkills()
+    {
+        var customClaudeHome = Path.Combine(_tempDir, "custom-claude");
+        var skillsDir = Path.Combine(customClaudeHome, "skills", "custom-skill");
+        Directory.CreateDirectory(skillsDir);
+        File.WriteAllText(Path.Combine(skillsDir, "SKILL.md"), "# Custom Skill");
+
+        var digest = SessionHandoffExporter.GetAvailableSkillsDigest(_tempDir, customClaudeHome);
+
+        Assert.Contains("Custom Skill", digest);
+    }
+
     public void Dispose()
     {
         try { Directory.Delete(_tempDir, recursive: true); } catch { }

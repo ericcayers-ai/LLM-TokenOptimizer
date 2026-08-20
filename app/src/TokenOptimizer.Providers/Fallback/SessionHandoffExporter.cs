@@ -18,6 +18,10 @@ public static class SessionHandoffExporter
 {
     private const int MaxTranscriptChars = 60_000;
 
+    private static string GetClaudeConfigDir() =>
+        Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR") ??
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");
+
     public static string? FindLatestTranscript(string projectDirectory, string? claudeConfigDir = null)
     {
         var claudeHome = claudeConfigDir ?? Path.Combine(
@@ -93,11 +97,12 @@ public static class SessionHandoffExporter
         return full;
     }
 
-    public static string GetAvailableSkillsDigest(string projectDirectory)
+    public static string GetAvailableSkillsDigest(string projectDirectory, string? claudeConfigDir = null)
     {
+        var claudeHome = claudeConfigDir ?? GetClaudeConfigDir();
         var dirs = new[]
         {
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "skills"),
+            Path.Combine(claudeHome, "skills"),
             Path.Combine(projectDirectory, ".claude", "skills"),
         }.Where(Directory.Exists);
 
