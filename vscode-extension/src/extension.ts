@@ -122,7 +122,7 @@ async function launchProjectSession(context: vscode.ExtensionContext, projectPat
 
 async function transferSession(
     context: vscode.ExtensionContext,
-    provider: 'Codex' | 'Cursor' | 'LM Studio (local)',
+    provider: 'Codex' | 'Cursor' | 'Unsloth (local model)',
     targetLabel: string
 ): Promise<void> {
     const folders = vscode.workspace.workspaceFolders;
@@ -249,7 +249,7 @@ const ACTIONS: ActionEntry[] = [
         id: 'llmTokenOptimizer.continueLocally',
         label: 'Continue Locally',
         themeIcon: 'arrow-swap',
-        description: 'Continue with the configured local LM Studio model - no credential needed, hotswappable any time from the provider dropdown.'
+        description: 'Continue with the configured local Unsloth model - no credential needed, hotswappable any time from the provider dropdown.'
     },
     {
         id: 'llmTokenOptimizer.openDashboard',
@@ -372,7 +372,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand('llmTokenOptimizer.transferToCursor', () =>
             transferSession(context, 'Cursor', 'Cursor')),
         vscode.commands.registerCommand('llmTokenOptimizer.continueLocally', () =>
-            transferSession(context, 'LM Studio (local)', 'the local model')),
+            transferSession(context, 'Unsloth (local model)', 'the local model')),
 
         vscode.commands.registerCommand('llmTokenOptimizer.openDashboard', () => openDashboard(context)),
         vscode.commands.registerCommand('llmTokenOptimizer.openApp', () => launchApp(context)),

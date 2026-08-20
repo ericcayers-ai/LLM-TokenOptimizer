@@ -5,7 +5,7 @@ reimplementation. Every action here runs `TokenOptimizer.App.exe --cli
 <command>` and reads back one JSON object. All the actual behavior -
 Graphify extraction, companion tooling (claude-mem/headroom/RTK/Caveman/
 context-mode/impeccable/...), the fallback chain (Claude Code -> Antigravity
--> local LM Studio model), provider hotswap, and benchmarking - lives in the
+-> local Unsloth model), provider hotswap, and benchmarking - lives in the
 C# app (`TokenOptimizer.Core` / `TokenOptimizer.Providers`) and nowhere
 else. This extension and the desktop app UI drive the exact same code, so
 they can never drift into different behavior. There is no PowerShell
@@ -50,7 +50,7 @@ The actions, reachable from all three surfaces:
 | **Change Master Folder** | Native VS Code folder picker + `--cli master-folder-set`, remembered for next time. |
 | **Set Up Fallback Providers** | `--cli set-credential` (Codex/Groq, via a masked VS Code input box - the key never touches this extension's own logic, only the CLI argument) or `--cli opt-in` (Antigravity/Cursor). |
 | **Transfer Session to Codex / Cursor** | `--cli launch --project <path> --provider Codex\|Cursor` - the provider adapter itself exports the session handoff (`.claude-handoff/session-handoff.md` + `AGENTS.md`) before launching, so this is one call, not two. |
-| **Continue Locally** | `--cli launch --project <path> --provider "LM Studio (local)"` - uses the app's configured local model (manual override or the benchmark auto-pick), no credential needed. |
+| **Continue Locally** | `--cli launch --project <path> --provider "Unsloth (local model)"` - uses the app's configured local model (manual override or the benchmark auto-pick), no credential needed. |
 | **Reset Configuration** | `--cli reset-config`, behind a confirmation modal - deletes the saved config and starts fresh. |
 | **Open Dashboard** | Independent of the CLI - tails the project's own Claude Code session transcript and `rtk gain --format json` directly, live. |
 | **Open TokenOptimizer App** | Spawns `TokenOptimizer.App.exe` directly (no `--cli`) with this workspace pre-selected - the full desktop UI (provider dropdown, benchmark tab, dependency dashboard) for anything not exposed as a quick action here. |
@@ -65,7 +65,7 @@ there's one obvious way in instead of many competing entries.
 
 - `llmTokenOptimizer.model` - forwards `--cli launch --model <id>` for a
   session-only override. Leave blank to use the provider's own default (or,
-  for LM Studio, the app's configured local model).
+  for Unsloth, the app's configured local model).
 - `llmTokenOptimizer.isolateClaudeConfig` - forwards `--cli launch --isolate`
   (gives the project its own `CLAUDE_CONFIG_DIR`).
 - `llmTokenOptimizer.appExecutablePath` - path to `TokenOptimizer.App.exe`.
