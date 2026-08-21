@@ -413,7 +413,7 @@ public partial class MainViewModel : ViewModelBase
         ["OpenCode"] = "Launches Claude Code itself, pointed at the OpenCode Go model gateway through a local proxy. Same terminal, skills, plugins, and memory as Claude Code direct. Needs an API key below (sign in at opencode.ai/zen).",
         ["Unsloth (local model)"] = "Launches Claude Code itself, pointed at a model running locally on this machine (no internet, no API key). Always ready once Unsloth and a model are installed - use Install Companion Tooling below if it isn't found. Same terminal, skills, plugins, and memory as Claude Code direct.",
         ["Groq"] = "Launches Claude Code itself, pointed at Groq through a local proxy. Same terminal, skills, plugins, and memory as Claude Code direct. Needs an API key below. Manual-only - not part of Auto.",
-        ["Codex"] = "A separate tool: OpenAI's own Codex CLI, its own session and terminal. Needs an API key below. Manual-only - not part of Auto.",
+        ["Codex"] = "Routes through jcode to OpenAI's Codex CLI, its own session and terminal. Needs jcode login below (run `jcode login --provider openai`). Manual-only - not part of Auto.",
         ["Cursor"] = "A separate tool: the Cursor CLI, its own session and terminal. Needs CLI login below. Manual-only - not part of Auto.",
         ["DeepSeek Harness"] = "A separate tool: deepseek-ai's own agent runtime (dev preview) - opens its own local web UI in your browser, not a terminal session. Manual-only - not part of Auto.",
     };
@@ -1123,13 +1123,13 @@ public partial class MainViewModel : ViewModelBase
     {
         if (string.IsNullOrWhiteSpace(CodexApiKeyInput))
         {
-            Log("Enter an OPENAI_API_KEY first.");
+            Log("Enter any value to mark Codex as opted-in (jcode manages its own OAuth via `jcode login --provider openai`).");
             return;
         }
 
         _credentials.SetCredential(FallbackProvider.Codex, CodexApiKeyInput);
         CodexApiKeyInput = string.Empty;
-        Log("Codex credential stored (DPAPI-encrypted, this account only).");
+        Log("Codex opt-in marker stored. jcode manages OpenAI auth separately — run `jcode login --provider openai` to complete setup.");
         _ = RefreshAllAsync();
     }
 

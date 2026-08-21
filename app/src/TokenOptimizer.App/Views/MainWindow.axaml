@@ -335,7 +335,7 @@
                                 <TextBlock Text="Fallback credentials" Classes="SectionHeader" />
                                 <TextBlock Text="API keys for the providers above that need one. See the description under the Provider picker for what each one does." Opacity="0.6" FontSize="11" TextWrapping="Wrap" />
                                 <StackPanel Orientation="Horizontal" Spacing="8">
-                                    <TextBox Text="{Binding CodexApiKeyInput}" PlaceholderText="OPENAI_API_KEY for Codex" Width="220" PasswordChar="*" />
+                                    <TextBox Text="{Binding CodexApiKeyInput}" PlaceholderText="Opt-in marker for Codex (jcode manages auth)" Width="220" PasswordChar="*" />
                                     <Button Content="Save Codex Key" Command="{Binding SetCodexCredentialCommand}" />
                                 </StackPanel>
                                 <StackPanel Orientation="Horizontal" Spacing="8">
