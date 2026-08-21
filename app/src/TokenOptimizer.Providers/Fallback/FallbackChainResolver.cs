@@ -17,8 +17,8 @@ public sealed record FallbackChainStep(string ProviderName, bool IsAvailable, st
 public sealed class FallbackChainResolver
 {
     private readonly IProviderAdapter _claudeAdapter;
-    private readonly AntigravityAdapter _antigravity;
-    private readonly CodexAdapter _codex;
+    private readonly JcodeHarnessAdapter _antigravity;
+    private readonly JcodeHarnessAdapter _codex;
     private readonly CursorAdapter _cursor;
     private readonly GroqAdapter _groq;
     private readonly DeepSeekHarnessAdapter _deepSeekHarness;
@@ -28,8 +28,8 @@ public sealed class FallbackChainResolver
 
     public FallbackChainResolver(
         IProviderAdapter claudeAdapter,
-        AntigravityAdapter antigravity,
-        CodexAdapter codex,
+        JcodeHarnessAdapter antigravity,
+        JcodeHarnessAdapter codex,
         CursorAdapter cursor,
         GroqAdapter groq,
         DeepSeekHarnessAdapter deepSeekHarness,
