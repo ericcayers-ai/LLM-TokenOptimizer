@@ -10,40 +10,17 @@
         Title="TokenOptimizer" Width="1100" Height="760" MinWidth="880" MinHeight="600">
 
     <Design.DataContext>
-        <!-- This only sets the DataContext for the previewer in an IDE,
-             to set the actual DataContext for runtime, set the DataContext property in code (look at App.axaml.cs) -->
         <vm:MainViewModel />
     </Design.DataContext>
-
-    <Window.Styles>
-        <Style Selector="TabItem">
-            <Setter Property="FontSize" Value="14" />
-            <Setter Property="Padding" Value="16,10" />
-        </Style>
-        <Style Selector="TextBlock.SectionHeader">
-            <Setter Property="FontWeight" Value="Bold" />
-            <Setter Property="FontSize" Value="16" />
-            <Setter Property="Margin" Value="0,0,0,4" />
-        </Style>
-        <Style Selector="TextBlock.SubHeader">
-            <Setter Property="FontWeight" Value="Bold" />
-            <Setter Property="Margin" Value="0,14,0,2" />
-        </Style>
-        <Style Selector="Border.Card">
-            <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}" />
-            <Setter Property="CornerRadius" Value="6" />
-            <Setter Property="Padding" Value="16" />
-        </Style>
-    </Window.Styles>
 
     <Grid RowDefinitions="Auto,*,Auto,Auto">
 
         <!-- Title bar -->
-        <Border Grid.Row="0" Padding="16,10" BorderThickness="0,0,0,1" BorderBrush="Gray">
+        <Border Grid.Row="0" Padding="16,10" BorderThickness="0,0,0,1" BorderBrush="{DynamicResource Separator}" Background="{DynamicResource BGSecondary}">
             <Grid ColumnDefinitions="*,Auto">
                 <StackPanel Orientation="Horizontal" Spacing="10">
                     <TextBlock Text="TokenOptimizer" FontWeight="Bold" FontSize="18" VerticalAlignment="Center" />
-                    <TextBlock Text="{Binding StatusText}" Opacity="0.65" VerticalAlignment="Center" />
+                    <TextBlock Text="{Binding StatusText}" Foreground="{DynamicResource LabelSecondary}" VerticalAlignment="Center" />
                 </StackPanel>
                 <ProgressBar Grid.Column="1" Width="140" IsIndeterminate="True" IsVisible="{Binding IsBusy}" VerticalAlignment="Center" />
             </Grid>
@@ -63,9 +40,9 @@
                             <Border Classes="Card">
                                 <StackPanel Spacing="8">
                                     <StackPanel Orientation="Horizontal" Spacing="6">
-                                        <TextBlock Text="①" FontWeight="Bold" />
+                                        <TextBlock Text="1" FontWeight="Bold" />
                                         <TextBlock Text="Projects" Classes="SectionHeader" />
-                                        <TextBlock Text="✓ done" Foreground="MediumSeaGreen" FontSize="11" VerticalAlignment="Center" IsVisible="{Binding SetupStep1Done}" />
+                                        <TextBlock Text="done" Foreground="{DynamicResource SystemGreen}" FontSize="11" VerticalAlignment="Center" IsVisible="{Binding SetupStep1Done}" />
                                     </StackPanel>
                                     <ListBox ItemsSource="{Binding ProjectHistoryList}"
                                              SelectedItem="{Binding SelectedProject}"
@@ -74,7 +51,7 @@
                                             <DataTemplate>
                                                 <StackPanel>
                                                     <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
-                                                    <TextBlock Text="{Binding FullPath}" FontSize="10" Opacity="0.6" />
+                                                    <TextBlock Text="{Binding FullPath}" FontSize="10" Foreground="{DynamicResource LabelSecondary}" />
                                                 </StackPanel>
                                             </DataTemplate>
                                         </ListBox.ItemTemplate>
@@ -103,13 +80,13 @@
                                                 <StackPanel Orientation="Horizontal" Spacing="6">
                                                     <CheckBox IsChecked="{Binding IsSelected}" />
                                                     <TextBlock Text="{Binding Name}" />
-                                                    <TextBlock Text="(seen)" FontSize="10" Opacity="0.6" IsVisible="{Binding SeenBefore}" />
+                                                    <TextBlock Text="(seen)" FontSize="10" Foreground="{DynamicResource LabelSecondary}" IsVisible="{Binding SeenBefore}" />
                                                 </StackPanel>
                                             </DataTemplate>
                                         </ListBox.ItemTemplate>
                                     </ListBox>
 
-                                    <Border IsVisible="{Binding IsMasterFolderTreeOpen}" BorderBrush="Gray" BorderThickness="1" CornerRadius="4" Height="260" ClipToBounds="True">
+                                    <Border IsVisible="{Binding IsMasterFolderTreeOpen}" BorderBrush="{DynamicResource SystemGray3}" BorderThickness="1" CornerRadius="6" Height="260" ClipToBounds="True">
                                         <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" Padding="6">
                                             <TreeView ItemsSource="{Binding MasterFolderTree}">
                                                 <TreeView.ItemTemplate>
@@ -135,22 +112,22 @@
                                 <StackPanel Spacing="8">
                                     <Grid ColumnDefinitions="*,Auto">
                                         <StackPanel Orientation="Horizontal" Spacing="6">
-                                            <TextBlock Text="②" FontWeight="Bold" />
+                                            <TextBlock Text="2" FontWeight="Bold" />
                                             <TextBlock Text="Dependencies" Classes="SectionHeader" />
-                                            <TextBlock Text="✓ done" Foreground="MediumSeaGreen" FontSize="11" VerticalAlignment="Center" IsVisible="{Binding SetupStep2Done}" />
+                                            <TextBlock Text="done" Foreground="{DynamicResource SystemGreen}" FontSize="11" VerticalAlignment="Center" IsVisible="{Binding SetupStep2Done}" />
                                         </StackPanel>
                                         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
                                             <Button Content="Refresh" Command="{Binding RefreshAllCommand}" />
-                                            <Button Content="Install Missing" Command="{Binding InstallMissingDependenciesCommand}" />
+                                            <Button Content="Install Missing" Command="{Binding InstallMissingDependenciesCommand}" Classes="primary" />
                                         </StackPanel>
                                     </Grid>
                                     <ItemsControl ItemsSource="{Binding Dependencies}">
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
                                                 <StackPanel Orientation="Horizontal" Spacing="6">
-                                                    <TextBlock Text="{Binding IsAvailable}" Width="36" FontSize="10" Opacity="0.8" />
+                                                    <TextBlock Text="{Binding IsAvailable}" Width="36" FontSize="10" Foreground="{DynamicResource LabelSecondary}" />
                                                     <TextBlock Text="{Binding Name}" Width="90" />
-                                                    <TextBlock Text="{Binding Version}" Opacity="0.6" FontSize="10" />
+                                                    <TextBlock Text="{Binding Version}" Foreground="{DynamicResource LabelSecondary}" FontSize="10" />
                                                 </StackPanel>
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>
@@ -164,14 +141,14 @@
                                 <StackPanel Spacing="8">
                                     <Grid ColumnDefinitions="*,Auto">
                                         <StackPanel Orientation="Horizontal" Spacing="6">
-                                            <TextBlock Text="③" FontWeight="Bold" />
+                                            <TextBlock Text="3" FontWeight="Bold" />
                                             <TextBlock Text="Companion tooling" Classes="SectionHeader" />
-                                            <TextBlock Text="✓ done" Foreground="MediumSeaGreen" FontSize="11" VerticalAlignment="Center" IsVisible="{Binding SetupStep3Done}" />
+                                            <TextBlock Text="done" Foreground="{DynamicResource SystemGreen}" FontSize="11" VerticalAlignment="Center" IsVisible="{Binding SetupStep3Done}" />
                                         </StackPanel>
-                                        <Button Grid.Column="1" Content="Install Companion Tooling" Command="{Binding InstallCompanionToolingCommand}" />
+                                        <Button Grid.Column="1" Content="Install Companion Tooling" Command="{Binding InstallCompanionToolingCommand}" Classes="primary" />
                                     </Grid>
                                     <TextBlock Text="graphify, claude-mem, headroom, rtk, context7, context-mode, caveman, claude-md-management, impeccable, task-observer, and the Codex/Antigravity/Cursor fallback-chain CLIs."
-                                               TextWrapping="Wrap" Opacity="0.7" FontSize="11" />
+                                               TextWrapping="Wrap" Foreground="{DynamicResource LabelTertiary}" FontSize="11" />
                                     <ProgressBar Value="{Binding CompanionToolingProgress}" Minimum="0" Maximum="1"
                                                  IsVisible="{Binding IsCompanionToolingInstalling}" Height="6" />
                                 </StackPanel>
@@ -190,7 +167,7 @@
                             <StackPanel Spacing="8">
                                 <TextBlock Text="Session type" Classes="SectionHeader" />
                                 <TextBlock Text="Pick what this session is for and a cost preset - the priority tree below ranks every provider for that combination, sets it as the single-provider pick, and reorders the fallback chain to match."
-                                           Opacity="0.65" FontSize="11" TextWrapping="Wrap" />
+                                           Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
                                 <StackPanel Orientation="Horizontal" Spacing="12">
                                     <StackPanel Spacing="4" Width="160">
                                         <TextBlock Text="Decision type" />
@@ -211,7 +188,7 @@
                             <StackPanel Spacing="8">
                                 <TextBlock Text="Models" Classes="SectionHeader" />
                                 <TextBlock Text="Tick whichever models you want available. Claude direct, Groq, and OpenCode Go all show up together in one Claude Code window's own model picker. Codex, Cursor, and Antigravity open their own separate window - they're marked below. Click a provider's name to collapse its list."
-                                           Opacity="0.65" FontSize="11" TextWrapping="Wrap" />
+                                           Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
                                 <Button Content="Tick all (except separate-window ones)" Command="{Binding TickAllBridgeableModelsCommand}" HorizontalAlignment="Left" />
                                 <ItemsControl ItemsSource="{Binding ModelCatalogGroups}">
                                     <ItemsControl.ItemTemplate>
@@ -229,10 +206,10 @@
                                     </ItemsControl.ItemTemplate>
                                 </ItemsControl>
                                 <StackPanel Orientation="Horizontal" Spacing="8">
-                                    <Button Content="Launch" Command="{Binding LaunchTickedModelsCommand}" IsEnabled="{Binding HasTickedModels}" />
+                                    <Button Content="Launch" Command="{Binding LaunchTickedModelsCommand}" IsEnabled="{Binding HasTickedModels}" Classes="primary" />
                                     <ComboBox ItemsSource="{Binding ResumeModeNames}" SelectedItem="{Binding SelectedResumeModeName}" Width="110" ToolTip.Tip="Resume mode" />
                                 </StackPanel>
-                                <TextBlock Text="Tick at least one model above to enable Launch." Opacity="0.6" FontSize="11" IsVisible="{Binding !HasTickedModels}" />
+                                <TextBlock Text="Tick at least one model above to enable Launch." Foreground="{DynamicResource LabelSecondary}" FontSize="11" IsVisible="{Binding !HasTickedModels}" />
                             </StackPanel>
                         </Border>
 
@@ -262,15 +239,15 @@
                                                   HorizontalAlignment="Stretch" />
                                     </StackPanel>
                                     <StackPanel Spacing="4" VerticalAlignment="Bottom">
-                                        <Button Content="Launch Session" Command="{Binding LaunchSessionCommand}" />
+                                        <Button Content="Launch Session" Command="{Binding LaunchSessionCommand}" Classes="primary" />
                                     </StackPanel>
                                     <StackPanel Spacing="4" VerticalAlignment="Bottom">
                                         <Button Content="Export Handoff" Command="{Binding ExportHandoffCommand}" />
                                     </StackPanel>
                                 </StackPanel>
-                                <TextBlock Text="{Binding SelectedProviderDescription}" Opacity="0.65" FontSize="11" TextWrapping="Wrap" />
+                                <TextBlock Text="{Binding SelectedProviderDescription}" Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
                                 <CheckBox Content="Isolate Claude config for this project (separate CLAUDE_CONFIG_DIR)" IsChecked="{Binding IsolateClaudeConfig}" />
-                                <TextBlock Text="RAG retrieval auto-wires itself when a local model server (Unsloth Studio, Ollama) is detected running - nothing to configure here." Opacity="0.55" FontSize="11" TextWrapping="Wrap" />
+                                <TextBlock Text="RAG retrieval auto-wires itself when a local model server (Unsloth Studio, Ollama) is detected running - nothing to configure here." Foreground="{DynamicResource LabelTertiary}" FontSize="11" TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>
 
@@ -279,18 +256,18 @@
                                 <Grid ColumnDefinitions="*,Auto">
                                     <TextBlock Text="Fallback chain (priority order)" Classes="SectionHeader" />
                                     <StackPanel Grid.Column="1" Spacing="4" Width="200">
-                                        <TextBlock Text="Launch mode" FontSize="11" Opacity="0.7" />
+                                        <TextBlock Text="Launch mode" FontSize="11" Foreground="{DynamicResource LabelTertiary}" />
                                         <ComboBox ItemsSource="{Binding LaunchModeNames}" SelectedItem="{Binding SelectedLaunchMode}" HorizontalAlignment="Stretch" />
                                     </StackPanel>
                                 </Grid>
-                                <TextBlock Text="Set to Auto or Custom here to launch under a fallback chain instead of the single provider above - independent of the Provider dropdown." Opacity="0.6" FontSize="11" TextWrapping="Wrap" />
+                                <TextBlock Text="Set to Auto or Custom here to launch under a fallback chain instead of the single provider above - independent of the Provider dropdown." Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
                                 <ItemsControl ItemsSource="{Binding FallbackChain}">
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
                                             <StackPanel Orientation="Horizontal" Spacing="6">
-                                                <TextBlock Text="{Binding IsAvailable}" Width="36" FontSize="10" Opacity="0.8" />
+                                                <TextBlock Text="{Binding IsAvailable}" Width="36" FontSize="10" Foreground="{DynamicResource LabelSecondary}" />
                                                 <TextBlock Text="{Binding ProviderName}" Width="100" />
-                                                <TextBlock Text="{Binding UnavailableReason}" Opacity="0.6" FontSize="10" />
+                                                <TextBlock Text="{Binding UnavailableReason}" Foreground="{DynamicResource LabelSecondary}" FontSize="10" />
                                             </StackPanel>
                                         </DataTemplate>
                                     </ItemsControl.ItemTemplate>
@@ -303,7 +280,7 @@
                                 <Grid ColumnDefinitions="*,Auto">
                                     <StackPanel Spacing="2">
                                         <TextBlock Text="Custom fallback chain" Classes="SectionHeader" />
-                                        <TextBlock Text="Drag to reorder, uncheck to exclude. Select &quot;Custom (fallback chain)&quot; as the Provider above to use this order." Opacity="0.6" FontSize="11" TextWrapping="Wrap" />
+                                        <TextBlock Text="Drag to reorder, uncheck to exclude. Select &quot;Custom (fallback chain)&quot; as the Provider above to use this order." Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
                                     </StackPanel>
                                     <Button Grid.Column="1" Content="Save Order" Command="{Binding SaveCustomFallbackOrderCommand}" VerticalAlignment="Top" />
                                 </Grid>
@@ -314,13 +291,13 @@
                                                   PointerPressed="CustomChainItem_PointerPressed"
                                                   PointerReleased="CustomChainItem_PointerReleased"
                                                   Background="Transparent">
-                                                <TextBlock Grid.Column="0" Text="::" FontWeight="Bold" Opacity="0.5" Width="20" Cursor="SizeAll" />
+                                                <TextBlock Grid.Column="0" Text="::" FontWeight="Bold" Foreground="{DynamicResource LabelTertiary}" Width="20" Cursor="SizeAll" />
                                                 <CheckBox Grid.Column="1" Content="{Binding ProviderName}" IsChecked="{Binding IsIncluded}" />
-                                                <TextBlock Grid.Column="2" Text="{Binding SortIndex}" Opacity="0.4" FontSize="10" Width="20" VerticalAlignment="Center" />
-                                                <Button Grid.Column="3" Content="↑"
+                                                <TextBlock Grid.Column="2" Text="{Binding SortIndex}" Foreground="{DynamicResource LabelTertiary}" FontSize="10" Width="20" VerticalAlignment="Center" />
+                                                <Button Grid.Column="3" Content="up"
                                                         Command="{Binding $parent[ListBox].((vm:MainViewModel)DataContext).MoveCustomChainItemUpCommand}"
                                                         CommandParameter="{Binding}" Padding="6,2" />
-                                                <Button Grid.Column="4" Content="↓"
+                                                <Button Grid.Column="4" Content="down"
                                                         Command="{Binding $parent[ListBox].((vm:MainViewModel)DataContext).MoveCustomChainItemDownCommand}"
                                                         CommandParameter="{Binding}" Padding="6,2" />
                                             </Grid>
@@ -333,7 +310,7 @@
                         <Border Classes="Card">
                             <StackPanel Spacing="8">
                                 <TextBlock Text="Fallback credentials" Classes="SectionHeader" />
-                                <TextBlock Text="API keys for the providers above that need one. See the description under the Provider picker for what each one does." Opacity="0.6" FontSize="11" TextWrapping="Wrap" />
+                                <TextBlock Text="API keys for the providers above that need one. See the description under the Provider picker for what each one does." Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
                                 <StackPanel Orientation="Horizontal" Spacing="8">
                                     <TextBox Text="{Binding CodexApiKeyInput}" PlaceholderText="Opt-in marker for Codex (jcode manages auth)" Width="220" PasswordChar="*" />
                                     <Button Content="Save Codex Key" Command="{Binding SetCodexCredentialCommand}" />
@@ -347,29 +324,29 @@
                                     <Button Content="Save OpenCode Key" Command="{Binding SetOpenCodeCredentialCommand}" />
                                 </StackPanel>
                                 <TextBlock Text="OpenCode Go models: mimo-v2.5 (default, balanced), glm-5 (cheap), minimax-m2.7, kimi-k2.5, qwen3.8-max, glm-5.2 (optional, expensive) - or type any model id it offers in the Model override field above."
-                                           Opacity="0.6" FontSize="11" TextWrapping="Wrap" />
+                                           Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
 
-                                <Border BorderBrush="Gray" BorderThickness="1" CornerRadius="4" Padding="10">
+                                <Border BorderBrush="{DynamicResource SystemGray3}" BorderThickness="1" CornerRadius="6" Padding="10">
                                     <StackPanel Spacing="4">
                                         <TextBlock Text="Login: Antigravity" FontWeight="SemiBold" />
-                                        <TextBlock Text="Opens the Antigravity CLI in a new window - sign in there (OAuth), then it's available in the fallback chain." Opacity="0.6" FontSize="11" TextWrapping="Wrap" />
+                                        <TextBlock Text="Opens the Antigravity CLI in a new window - sign in there (OAuth), then it's available in the fallback chain." Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
                                         <StackPanel Orientation="Horizontal" Spacing="8">
                                             <Button Content="Login: Antigravity" Command="{Binding LoginAntigravityCommand}" />
                                             <Button Content="Check" Command="{Binding CheckAntigravityLoginCommand}" />
                                         </StackPanel>
-                                        <TextBlock Text="{Binding AntigravityLoginStatusText}" FontSize="11" Opacity="0.8" TextWrapping="Wrap" />
+                                        <TextBlock Text="{Binding AntigravityLoginStatusText}" FontSize="11" Foreground="{DynamicResource LabelSecondary}" TextWrapping="Wrap" />
                                     </StackPanel>
                                 </Border>
 
-                                <Border BorderBrush="Gray" BorderThickness="1" CornerRadius="4" Padding="10">
+                                <Border BorderBrush="{DynamicResource SystemGray3}" BorderThickness="1" CornerRadius="6" Padding="10">
                                     <StackPanel Spacing="4">
                                         <TextBlock Text="Login: Cursor" FontWeight="SemiBold" />
-                                        <TextBlock Text="Opens 'cursor-agent login' in a new window - sign in there, then it's available in the fallback chain." Opacity="0.6" FontSize="11" TextWrapping="Wrap" />
+                                        <TextBlock Text="Opens 'cursor-agent login' in a new window - sign in there, then it's available in the fallback chain." Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
                                         <StackPanel Orientation="Horizontal" Spacing="8">
                                             <Button Content="Login: Cursor" Command="{Binding LoginCursorCommand}" />
                                             <Button Content="Check" Command="{Binding CheckCursorLoginCommand}" />
                                         </StackPanel>
-                                        <TextBlock Text="{Binding CursorLoginStatusText}" FontSize="11" Opacity="0.8" TextWrapping="Wrap" />
+                                        <TextBlock Text="{Binding CursorLoginStatusText}" FontSize="11" Foreground="{DynamicResource LabelSecondary}" TextWrapping="Wrap" />
                                     </StackPanel>
                                 </Border>
                             </StackPanel>
@@ -389,8 +366,8 @@
                                     <Button Grid.Column="1" Content="Refresh" Command="{Binding RefreshDashboardCommand}" />
                                 </Grid>
                                 <TextBlock Text="{Binding ActiveProviderLabel}" FontWeight="SemiBold" />
-                                <TextBlock Text="Set the provider and fallback mode in the Session tab - it applies to the next launch." Opacity="0.6" FontSize="11" TextWrapping="Wrap" />
-                                <TextBlock Text="{Binding TokenUsageSummaryText}" Opacity="0.75" FontSize="12"
+                                <TextBlock Text="Set the provider and fallback mode in the Session tab - it applies to the next launch." Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
+                                <TextBlock Text="{Binding TokenUsageSummaryText}" Foreground="{DynamicResource LabelTertiary}" FontSize="12"
                                            ToolTip.Tip="Via ccusage - local, offline, reads Claude Code/Codex/etc session logs already on disk. No proxy, no upload." />
                                 <ProgressBar IsIndeterminate="True" Height="4" IsVisible="{Binding IsDashboardRefreshing}" />
                             </StackPanel>
@@ -399,7 +376,7 @@
                         <Border Classes="Card">
                             <StackPanel Spacing="8">
                                 <TextBlock Text="Skills in use (Claude Code terminal)" Classes="SectionHeader" />
-                                <TextBlock Text="Every provider routes through this one terminal, so these are always active regardless of the backend model selected above." Opacity="0.6" FontSize="11" TextWrapping="Wrap" />
+                                <TextBlock Text="Every provider routes through this one terminal, so these are always active regardless of the backend model selected above." Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
                                 <ItemsControl ItemsSource="{Binding ActiveSkills}">
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
@@ -426,18 +403,18 @@
                         <Border Classes="Card">
                             <StackPanel Spacing="8">
                                 <TextBlock Text="Guide: what's available, and when to use it" Classes="SectionHeader" />
-                                <TextBlock Text="Every skill/plugin this Claude Code environment can reach, with its own description - the same text Claude reads to decide when to trigger it." Opacity="0.6" FontSize="11" TextWrapping="Wrap" />
+                                <TextBlock Text="Every skill/plugin this Claude Code environment can reach, with its own description - the same text Claude reads to decide when to trigger it." Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
 
                                 <TextBlock Text="Skills" Classes="SubHeader" />
-                                <Border BorderBrush="Gray" BorderThickness="1" CornerRadius="4" Height="220">
+                                <Border BorderBrush="{DynamicResource SystemGray3}" BorderThickness="1" CornerRadius="6" Height="220">
                                     <ScrollViewer>
                                         <ItemsControl ItemsSource="{Binding SkillGuide}" Margin="6">
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
                                                     <Grid ColumnDefinitions="160,Auto,*" Margin="0,3">
                                                         <TextBlock Grid.Column="0" Text="{Binding Name}" FontWeight="SemiBold" FontSize="12" TextWrapping="Wrap" />
-                                                        <TextBlock Grid.Column="1" Text="{Binding Source}" Opacity="0.5" FontSize="10" Margin="6,0" VerticalAlignment="Top" />
-                                                        <TextBlock Grid.Column="2" Text="{Binding Description}" Opacity="0.75" FontSize="11" TextWrapping="Wrap" Margin="6,0,0,0" />
+                                                        <TextBlock Grid.Column="1" Text="{Binding Source}" Foreground="{DynamicResource LabelTertiary}" FontSize="10" Margin="6,0" VerticalAlignment="Top" />
+                                                        <TextBlock Grid.Column="2" Text="{Binding Description}" Foreground="{DynamicResource LabelTertiary}" FontSize="11" TextWrapping="Wrap" Margin="6,0,0,0" />
                                                     </Grid>
                                                 </DataTemplate>
                                             </ItemsControl.ItemTemplate>
@@ -446,14 +423,14 @@
                                 </Border>
 
                                 <TextBlock Text="Plugins" Classes="SubHeader" />
-                                <Border BorderBrush="Gray" BorderThickness="1" CornerRadius="4" Height="160">
+                                <Border BorderBrush="{DynamicResource SystemGray3}" BorderThickness="1" CornerRadius="6" Height="160">
                                     <ScrollViewer>
                                         <ItemsControl ItemsSource="{Binding PluginGuide}" Margin="6">
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
                                                     <Grid ColumnDefinitions="160,*" Margin="0,3">
                                                         <TextBlock Grid.Column="0" Text="{Binding Name}" FontWeight="SemiBold" FontSize="12" TextWrapping="Wrap" />
-                                                        <TextBlock Grid.Column="1" Text="{Binding Description}" Opacity="0.75" FontSize="11" TextWrapping="Wrap" Margin="6,0,0,0" />
+                                                        <TextBlock Grid.Column="1" Text="{Binding Description}" Foreground="{DynamicResource LabelTertiary}" FontSize="11" TextWrapping="Wrap" Margin="6,0,0,0" />
                                                     </Grid>
                                                 </DataTemplate>
                                             </ItemsControl.ItemTemplate>
@@ -473,23 +450,23 @@
                         <StackPanel Spacing="8">
                             <TextBlock Text="Cache" FontWeight="Bold" FontSize="16" />
                             <TextBlock Text="Isolated Claude profiles (-IsolateClaudeConfig) are a full copy of ~/.claude per project - one folder per distinct project, never cleaned up automatically."
-                                       TextWrapping="Wrap" Opacity="0.75" FontSize="12" />
+                                       TextWrapping="Wrap" Foreground="{DynamicResource LabelTertiary}" FontSize="12" />
                             <TextBlock Text="{Binding CacheSummaryText}" FontSize="12" />
                             <StackPanel Orientation="Horizontal" Spacing="8">
                                 <Button Content="Scan Cache" Command="{Binding RefreshCacheInfoCommand}" />
                                 <Button Content="Clear Stale (30+ days)" Command="{Binding ClearStaleCacheCommand}" />
                             </StackPanel>
                             <TextBox Text="{Binding ClearCacheConfirmationInput}" PlaceholderText="Type CLEAR to confirm" />
-                            <Button Content="Clear All Cached Profiles" Command="{Binding ClearAllCacheCommand}" HorizontalAlignment="Stretch" />
+                            <Button Content="Clear All Cached Profiles" Command="{Binding ClearAllCacheCommand}" HorizontalAlignment="Stretch" Classes="destructive" />
                         </StackPanel>
                     </Border>
-                    <Border Classes="Card" BorderBrush="IndianRed" BorderThickness="1">
+                    <Border Classes="Card" BorderBrush="{DynamicResource SystemRed}" BorderThickness="1">
                         <StackPanel Spacing="8">
-                            <TextBlock Text="Uninstall everything" FontWeight="Bold" Foreground="IndianRed" FontSize="16" />
+                            <TextBlock Text="Uninstall everything" FontWeight="Bold" Foreground="{DynamicResource SystemRed}" FontSize="16" />
                             <TextBlock Text="Removes companion tooling and app-managed configuration installed by TokenOptimizer. This cannot be undone."
-                                       TextWrapping="Wrap" Opacity="0.75" FontSize="12" />
+                                       TextWrapping="Wrap" Foreground="{DynamicResource LabelTertiary}" FontSize="12" />
                             <TextBox Text="{Binding UninstallConfirmationInput}" PlaceholderText="Type UNINSTALL to confirm" />
-                            <Button Content="Uninstall Everything" Command="{Binding UninstallEverythingCommand}" HorizontalAlignment="Stretch" />
+                            <Button Content="Uninstall Everything" Command="{Binding UninstallEverythingCommand}" HorizontalAlignment="Stretch" Classes="destructive" />
                         </StackPanel>
                     </Border>
                 </StackPanel>
@@ -503,7 +480,7 @@
                      IsVisible="{Binding IsCompanionToolingInstalling}" />
 
         <!-- Log pane: persistent across all tabs -->
-        <Border Grid.Row="3" BorderBrush="Gray" BorderThickness="0,1,0,0" Height="150" Margin="8,4,8,8">
+        <Border Grid.Row="3" BorderBrush="{DynamicResource Separator}" BorderThickness="0,1,0,0" Height="150" Margin="8,4,8,8">
             <Grid RowDefinitions="Auto,*">
                 <TextBlock Text="Log" Classes="SubHeader" Margin="4,4,0,0" />
                 <ListBox Grid.Row="1" ItemsSource="{Binding LogLines}" />
