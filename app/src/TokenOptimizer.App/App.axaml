@@ -9,23 +9,59 @@
     </Application.DataTemplates>
 
     <Application.Resources>
-        <SolidColorBrush x:Key="SystemBlue" Color="#007AFF"/>
-        <SolidColorBrush x:Key="SystemGreen" Color="#34C759"/>
-        <SolidColorBrush x:Key="SystemRed" Color="#FF3B30"/>
-        <SolidColorBrush x:Key="SystemOrange" Color="#FF9500"/>
-        <SolidColorBrush x:Key="SystemGray" Color="#8E8E93"/>
-        <SolidColorBrush x:Key="SystemGray2" Color="#AEAEB2"/>
-        <SolidColorBrush x:Key="SystemGray3" Color="#C7C7CC"/>
-        <SolidColorBrush x:Key="SystemGray4" Color="#D1D1D6"/>
-        <SolidColorBrush x:Key="SystemGray5" Color="#E5E5EA"/>
-        <SolidColorBrush x:Key="SystemGray6" Color="#F2F2F7"/>
-        <SolidColorBrush x:Key="LabelPrimary" Color="#000000"/>
-        <SolidColorBrush x:Key="LabelSecondary" Color="#3C3C4399"/>
-        <SolidColorBrush x:Key="LabelTertiary" Color="#3C3C434D"/>
-        <SolidColorBrush x:Key="BGPrimary" Color="#FFFFFF"/>
-        <SolidColorBrush x:Key="BGSecondary" Color="#F2F2F7"/>
-        <SolidColorBrush x:Key="BGTertiary" Color="#FFFFFF"/>
-        <SolidColorBrush x:Key="Separator" Color="#3C3C4349"/>
+        <ResourceDictionary>
+            <Color x:Key="SystemAccentColor">#FF007AFF</Color>
+            <Color x:Key="SystemAccentColorLight1">#FF3395FF</Color>
+            <Color x:Key="SystemAccentColorLight2">#FF66B0FF</Color>
+            <Color x:Key="SystemAccentColorLight3">#FF99CAFF</Color>
+            <Color x:Key="SystemAccentColorDark1">#FF0062CC</Color>
+            <Color x:Key="SystemAccentColorDark2">#FF004A99</Color>
+            <Color x:Key="SystemAccentColorDark3">#FF003166</Color>
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Light">
+                    <SolidColorBrush x:Key="SystemBlue" Color="#007AFF"/>
+                    <SolidColorBrush x:Key="SystemGreen" Color="#34C759"/>
+                    <SolidColorBrush x:Key="SystemRed" Color="#FF3B30"/>
+                    <SolidColorBrush x:Key="SystemOrange" Color="#FF9500"/>
+                    <SolidColorBrush x:Key="SystemGray" Color="#8E8E93"/>
+                    <SolidColorBrush x:Key="SystemGray2" Color="#AEAEB2"/>
+                    <SolidColorBrush x:Key="SystemGray3" Color="#C7C7CC"/>
+                    <SolidColorBrush x:Key="SystemGray4" Color="#D1D1D6"/>
+                    <SolidColorBrush x:Key="SystemGray5" Color="#E5E5EA"/>
+                    <SolidColorBrush x:Key="SystemGray6" Color="#F2F2F7"/>
+                    <SolidColorBrush x:Key="LabelPrimary" Color="#000000"/>
+                    <SolidColorBrush x:Key="LabelSecondary" Color="#993C3C43"/>
+                    <SolidColorBrush x:Key="LabelTertiary" Color="#4D3C3C43"/>
+                    <SolidColorBrush x:Key="BGPrimary" Color="#FFFFFF"/>
+                    <SolidColorBrush x:Key="BGSecondary" Color="#F2F2F7"/>
+                    <SolidColorBrush x:Key="BGTertiary" Color="#FFFFFF"/>
+                    <SolidColorBrush x:Key="Separator" Color="#4A3C3C43"/>
+                    <SolidColorBrush x:Key="ControlFill" Color="#1F787880"/>
+                    <SolidColorBrush x:Key="SelectionFill" Color="#14007AFF"/>
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Dark">
+                    <SolidColorBrush x:Key="SystemBlue" Color="#0A84FF"/>
+                    <SolidColorBrush x:Key="SystemGreen" Color="#30D158"/>
+                    <SolidColorBrush x:Key="SystemRed" Color="#FF453A"/>
+                    <SolidColorBrush x:Key="SystemOrange" Color="#FF9F0A"/>
+                    <SolidColorBrush x:Key="SystemGray" Color="#8E8E93"/>
+                    <SolidColorBrush x:Key="SystemGray2" Color="#636366"/>
+                    <SolidColorBrush x:Key="SystemGray3" Color="#48484A"/>
+                    <SolidColorBrush x:Key="SystemGray4" Color="#3A3A3C"/>
+                    <SolidColorBrush x:Key="SystemGray5" Color="#2C2C2E"/>
+                    <SolidColorBrush x:Key="SystemGray6" Color="#1C1C1E"/>
+                    <SolidColorBrush x:Key="LabelPrimary" Color="#FFFFFF"/>
+                    <SolidColorBrush x:Key="LabelSecondary" Color="#99EBEBF5"/>
+                    <SolidColorBrush x:Key="LabelTertiary" Color="#4DEBEBF5"/>
+                    <SolidColorBrush x:Key="BGPrimary" Color="#1C1C1E"/>
+                    <SolidColorBrush x:Key="BGSecondary" Color="#000000"/>
+                    <SolidColorBrush x:Key="BGTertiary" Color="#2C2C2E"/>
+                    <SolidColorBrush x:Key="Separator" Color="#99545458"/>
+                    <SolidColorBrush x:Key="ControlFill" Color="#3D787880"/>
+                    <SolidColorBrush x:Key="SelectionFill" Color="#260A84FF"/>
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+        </ResourceDictionary>
     </Application.Resources>
 
     <Application.Styles>
@@ -53,6 +89,22 @@
             <Setter Property="Margin" Value="0,4"/>
             <Setter Property="BorderBrush" Value="{DynamicResource SystemGray5}"/>
             <Setter Property="BorderThickness" Value="1"/>
+        </Style>
+
+        <!-- Apple HIG: Button (bordered, default for all unstyled buttons) -->
+        <Style Selector="Button">
+            <Setter Property="Background" Value="{DynamicResource ControlFill}"/>
+            <Setter Property="Foreground" Value="{DynamicResource LabelPrimary}"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="Padding" Value="12,6"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+        <Style Selector="Button:pointerover">
+            <Setter Property="Opacity" Value="0.85"/>
+        </Style>
+        <Style Selector="Button:pressed">
+            <Setter Property="Opacity" Value="0.65"/>
         </Style>
 
         <!-- Apple HIG: Primary Button -->
@@ -87,16 +139,29 @@
             <Setter Property="FontSize" Value="13"/>
         </Style>
 
-        <!-- Apple HIG: TabControl -->
+        <!-- Apple HIG: TabControl as a macOS-style sidebar (TabStripPlacement="Left") -->
         <Style Selector="TabControl">
             <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Padding" Value="0"/>
         </Style>
 
-        <!-- Apple HIG: TabItem -->
+        <!-- Apple HIG: TabItem (sidebar row) -->
         <Style Selector="TabItem">
             <Setter Property="FontSize" Value="13"/>
-            <Setter Property="Padding" Value="16,10"/>
             <Setter Property="FontWeight" Value="Medium"/>
+            <Setter Property="Foreground" Value="{DynamicResource LabelPrimary}"/>
+            <Setter Property="Padding" Value="14,9"/>
+            <Setter Property="Margin" Value="8,2"/>
+            <Setter Property="MinWidth" Value="168"/>
+            <Setter Property="CornerRadius" Value="7"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+        </Style>
+        <Style Selector="TabItem:pointerover">
+            <Setter Property="Background" Value="{DynamicResource ControlFill}"/>
+        </Style>
+        <Style Selector="TabItem:selected">
+            <Setter Property="Background" Value="{DynamicResource SelectionFill}"/>
+            <Setter Property="Foreground" Value="{DynamicResource SystemBlue}"/>
         </Style>
 
         <!-- Apple HIG: ProgressBar -->
@@ -114,6 +179,19 @@
         <!-- Apple HIG: ListBox -->
         <Style Selector="ListBox">
             <Setter Property="FontSize" Value="13"/>
+        </Style>
+
+        <!-- Apple HIG: Log pane (monospace console) -->
+        <Style Selector="ListBox.log">
+            <Setter Property="Background" Value="{DynamicResource BGSecondary}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+        </Style>
+        <Style Selector="ListBox.log ListBoxItem">
+            <Setter Property="FontFamily" Value="Cascadia Mono,Consolas,SF Mono,monospace"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Foreground" Value="{DynamicResource LabelSecondary}"/>
+            <Setter Property="Padding" Value="4,1"/>
+            <Setter Property="MinHeight" Value="0"/>
         </Style>
 
         <!-- Apple HIG: ItemsControl -->

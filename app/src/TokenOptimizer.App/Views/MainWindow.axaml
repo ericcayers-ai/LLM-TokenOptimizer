@@ -7,6 +7,7 @@
         x:Class="TokenOptimizer.App.Views.MainWindow"
         x:DataType="vm:MainViewModel"
         Icon="/Assets/app-icon.ico"
+        Background="{DynamicResource BGSecondary}"
         Title="TokenOptimizer" Width="1100" Height="760" MinWidth="880" MinHeight="600">
 
     <Design.DataContext>
@@ -26,13 +27,13 @@
             </Grid>
         </Border>
 
-        <!-- Main content: tabs -->
-        <TabControl Grid.Row="1" Margin="8">
+        <!-- Main content: sidebar navigation -->
+        <TabControl Grid.Row="1" TabStripPlacement="Left" Margin="0">
 
             <!-- ==================== SETUP TAB ==================== -->
             <TabItem Header="Setup">
                 <ScrollViewer>
-                    <StackPanel Margin="8">
+                    <StackPanel Margin="24">
                         <TextBlock Text="{Binding SetupStepsSummary}" FontWeight="SemiBold" Margin="0,0,0,8" />
                         <Grid ColumnDefinitions="320,*">
 
@@ -125,7 +126,8 @@
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
                                                 <StackPanel Orientation="Horizontal" Spacing="6">
-                                                    <TextBlock Text="{Binding IsAvailable}" Width="36" FontSize="10" Foreground="{DynamicResource LabelSecondary}" />
+                                                    <TextBlock Text="&#10003;" Width="16" FontWeight="Bold" Foreground="{DynamicResource SystemGreen}" IsVisible="{Binding IsAvailable}" />
+                                                    <TextBlock Text="&#8212;" Width="16" Foreground="{DynamicResource LabelTertiary}" IsVisible="{Binding !IsAvailable}" />
                                                     <TextBlock Text="{Binding Name}" Width="90" />
                                                     <TextBlock Text="{Binding Version}" Foreground="{DynamicResource LabelSecondary}" FontSize="10" />
                                                 </StackPanel>
@@ -162,7 +164,7 @@
             <!-- ==================== SESSION TAB ==================== -->
             <TabItem Header="Session">
                 <ScrollViewer>
-                    <StackPanel Spacing="12" Margin="8">
+                    <StackPanel Spacing="12" Margin="24">
                         <Border Classes="Card">
                             <StackPanel Spacing="8">
                                 <TextBlock Text="Session type" Classes="SectionHeader" />
@@ -265,7 +267,8 @@
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
                                             <StackPanel Orientation="Horizontal" Spacing="6">
-                                                <TextBlock Text="{Binding IsAvailable}" Width="36" FontSize="10" Foreground="{DynamicResource LabelSecondary}" />
+                                                <TextBlock Text="&#10003;" Width="16" FontWeight="Bold" Foreground="{DynamicResource SystemGreen}" IsVisible="{Binding IsAvailable}" />
+                                                <TextBlock Text="&#8212;" Width="16" Foreground="{DynamicResource LabelTertiary}" IsVisible="{Binding !IsAvailable}" />
                                                 <TextBlock Text="{Binding ProviderName}" Width="100" />
                                                 <TextBlock Text="{Binding UnavailableReason}" Foreground="{DynamicResource LabelSecondary}" FontSize="10" />
                                             </StackPanel>
@@ -294,12 +297,12 @@
                                                 <TextBlock Grid.Column="0" Text="::" FontWeight="Bold" Foreground="{DynamicResource LabelTertiary}" Width="20" Cursor="SizeAll" />
                                                 <CheckBox Grid.Column="1" Content="{Binding ProviderName}" IsChecked="{Binding IsIncluded}" />
                                                 <TextBlock Grid.Column="2" Text="{Binding SortIndex}" Foreground="{DynamicResource LabelTertiary}" FontSize="10" Width="20" VerticalAlignment="Center" />
-                                                <Button Grid.Column="3" Content="up"
+                                                <Button Grid.Column="3" Content="&#8593;" ToolTip.Tip="Move up"
                                                         Command="{Binding $parent[ListBox].((vm:MainViewModel)DataContext).MoveCustomChainItemUpCommand}"
-                                                        CommandParameter="{Binding}" Padding="6,2" />
-                                                <Button Grid.Column="4" Content="down"
+                                                        CommandParameter="{Binding}" Padding="8,2" />
+                                                <Button Grid.Column="4" Content="&#8595;" ToolTip.Tip="Move down"
                                                         Command="{Binding $parent[ListBox].((vm:MainViewModel)DataContext).MoveCustomChainItemDownCommand}"
-                                                        CommandParameter="{Binding}" Padding="6,2" />
+                                                        CommandParameter="{Binding}" Padding="8,2" />
                                             </Grid>
                                         </DataTemplate>
                                     </ListBox.ItemTemplate>
@@ -358,7 +361,7 @@
             <!-- ==================== DASHBOARD TAB ==================== -->
             <TabItem Header="Dashboard">
                 <ScrollViewer>
-                    <StackPanel Spacing="12" Margin="8">
+                    <StackPanel Spacing="12" Margin="24">
                         <Border Classes="Card">
                             <StackPanel Spacing="10">
                                 <Grid ColumnDefinitions="*,Auto">
@@ -445,7 +448,7 @@
 
             <!-- ==================== DANGER ZONE TAB ==================== -->
             <TabItem Header="Danger Zone">
-                <StackPanel Spacing="10" Margin="16" MaxWidth="440" HorizontalAlignment="Left">
+                <StackPanel Spacing="10" Margin="24" MaxWidth="440" HorizontalAlignment="Left">
                     <Border Classes="Card">
                         <StackPanel Spacing="8">
                             <TextBlock Text="Cache" FontWeight="Bold" FontSize="16" />
@@ -480,10 +483,10 @@
                      IsVisible="{Binding IsCompanionToolingInstalling}" />
 
         <!-- Log pane: persistent across all tabs -->
-        <Border Grid.Row="3" BorderBrush="{DynamicResource Separator}" BorderThickness="0,1,0,0" Height="150" Margin="8,4,8,8">
+        <Border Grid.Row="3" BorderBrush="{DynamicResource Separator}" BorderThickness="0,1,0,0" Height="150" Margin="0">
             <Grid RowDefinitions="Auto,*">
-                <TextBlock Text="Log" Classes="SubHeader" Margin="4,4,0,0" />
-                <ListBox Grid.Row="1" ItemsSource="{Binding LogLines}" />
+                <TextBlock Text="Log" Classes="SubHeader" Margin="24,8,0,4" />
+                <ListBox Grid.Row="1" Classes="log" ItemsSource="{Binding LogLines}" Margin="16,0,16,8" />
             </Grid>
         </Border>
 

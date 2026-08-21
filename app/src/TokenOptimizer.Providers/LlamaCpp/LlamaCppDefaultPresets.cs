@@ -26,6 +26,42 @@ public enum LlamaCppQuantTier
 /// </summary>
 public static class LlamaCppDefaultPresets
 {
+    /// <summary>
+    /// One (context length, required headroom) rung per doubling step. Headroom is GB of
+    /// inference pool left over after the model's own weights - i.e. what's free for KV cache.
+    /// The GB-per-step figures are an engineering heuristic (KV cache scales roughly linearly
+    /// with context length; 16GB for a full 131072-token window is a working estimate for the
+    /// model sizes this catalog supports, not a measured-per-model figure) - not a documented
+    /// llama.cpp/Unsloth constant. Ordered largest-to-smallest so the first fitting rung wins.
+    /// </summary>
+    private static readonly (int ContextLength, double RequiredHeadroomGb)[] ContextLengthSteps =
+    [
+        (131_072, 16.0),
+        (65_536, 8.0),
+        (32_768, 4.0),
+        (16_384, 2.0),
+        (8_192, 1.0),
+    ];
+
+    /// <summary>
+    /// Steps context length down when the inference pool is too tight for the model's weights
+    /// plus a full 128k KV cache, instead of always requesting 131072 and letting llama.cpp fail
+    /// the allocation outright (the real OOM in docs/testing/selftest-2026-08-20.md).
+    /// </summary>
+    public static int SelectContextLength(double inferencePoolGb, double modelWeightGb, int maxContextLength = 131_072)
+    {
+        var availableForKv = inferencePoolGb - modelWeightGb;
+        foreach (var (contextLength, requiredHeadroomGb) in ContextLengthSteps)
+        {
+            if (contextLength <= maxContextLength && availableForKv >= requiredHeadroomGb)
+                return contextLength;
+        }
+
+        // Nothing comfortably fits - fall back to the smallest supported step rather than
+        // refusing to launch. Still better than the unconditional 131072 that caused the OOM.
+        return ContextLengthSteps[^1].ContextLength;
+    }
+
     public static LlamaCppQuantTier ClassifyTier(string quantTag)
     {
         var tag = quantTag.ToUpperInvariant();
