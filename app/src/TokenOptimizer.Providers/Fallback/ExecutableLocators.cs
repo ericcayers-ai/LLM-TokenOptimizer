@@ -64,4 +64,9 @@ public static class ExecutableLocators
 
         return new CommandAvailability().ResolveOnPath("opencode");
     }
+
+    public static string? FindJcode()
+    {
+        return new CommandAvailability().ResolveOnPath("jcode");
+    }
 }
