@@ -68,14 +68,14 @@ public static class CliHost
             return await RagMcpStdioServer.RunAsync(ragProject, ragUri);
         }
 
-        var configStore = new ConfigStore();
+        var configStore = new ConfigStore(Environment.GetEnvironmentVariable("TOKENOPTIMIZER_CONFIG_DIR"));
         var availability = new CommandAvailability();
         var pythonLocator = new PythonLocator(availability);
         var dependencyChecker = new DependencyChecker(availability, pythonLocator);
         var claudeLocator = new ClaudeExecutableLocator(configStore, availability);
         var claudeAdapter = new ClaudeCodeAdapter(claudeLocator, availability);
         var llamaCppAdapter = new TokenOptimizer.Providers.LlamaCpp.LlamaCppAdapter();
-        var credentials = new ProxyCredentialStore();
+        var credentials = new ProxyCredentialStore(Environment.GetEnvironmentVariable("TOKENOPTIMIZER_CREDENTIAL_DIR"));
         var antigravityAdapter = new AntigravityAdapter(credentials);
         var codexAdapter = new CodexAdapter(credentials);
         var cursorAdapter = new CursorAdapter(credentials);
