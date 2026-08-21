@@ -131,7 +131,8 @@ public sealed class AnthropicCompatProxy : IAsyncDisposable
                 };
                 var passthroughToken = _upstreamBearerToken();
                 if (!string.IsNullOrEmpty(passthroughToken))
-                    passthroughReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", passthroughToken);
+                    passthroughReq.Headers.TryAddWithoutValidation("x-api-key", passthroughToken);
+                passthroughReq.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
 
                 using var passthroughResp = await _http.SendAsync(passthroughReq, HttpCompletionOption.ResponseHeadersRead, ct);
                 await RelayAnthropicPassthroughAsync(ctx, passthroughResp, ct);
@@ -311,6 +312,12 @@ public sealed class AnthropicCompatProxy : IAsyncDisposable
     {
         ctx.Response.StatusCode = (int)upstream.StatusCode;
         ctx.Response.ContentType = upstream.Content.Headers.ContentType?.ToString() ?? "application/json";
+        if (!upstream.IsSuccessStatusCode)
+        {
+            var errBody = await upstream.Content.ReadAsStringAsync(ct);
+            await ctx.Response.OutputStream.WriteAsync(Encoding.UTF8.GetBytes(errBody), ct);
+            return;
+        }
         await using var upstreamStream = await upstream.Content.ReadAsStreamAsync(ct);
         await upstreamStream.CopyToAsync(ctx.Response.OutputStream, ct);
     }
