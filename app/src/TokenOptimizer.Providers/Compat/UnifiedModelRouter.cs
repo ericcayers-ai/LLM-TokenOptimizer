@@ -30,20 +30,42 @@ public enum RouteKind
 /// reaches this router, so passthrough forwards those headers verbatim
 /// rather than injecting our own; the router never needs to know how the
 /// CLI is authenticated for its own models.
+///
+/// GET /v1/models returns every routed model plus, when an auto-fallback
+/// delegate is supplied, a "__auto__" meta-model - that lets Claude Code's
+/// own /model picker list every ticked model the user picked (previously
+/// only POST /v1/messages was handled, so the picker silently fell back to
+/// whatever the upstream returned, often just the user's account default).
 /// </summary>
 public sealed class UnifiedModelRouter : IAsyncDisposable
 {
     public sealed record ModelRoute(Uri UpstreamBaseUrl, RouteKind Kind, Func<string?>? AuthToken = null);
 
+    /// <summary>Special model id - selecting it in Claude Code's /model picker routes each request through whatever the auto-fallback delegate returns (typically the next live provider in the Claude Code -> Antigravity -> OpenCode -> local chain).</summary>
+    public const string AutoModelId = "__auto__";
+
     private readonly IReadOnlyDictionary<string, ModelRoute> _routes;
+    private readonly Func<Task<ModelRoute?>>? _autoFallbackDelegate;
     private readonly HttpClient _http = new() { Timeout = Timeout.InfiniteTimeSpan };
     private readonly HttpListener _listener = new();
     private CancellationTokenSource? _cts;
     private Task? _acceptLoop;
 
-    public UnifiedModelRouter(IReadOnlyDictionary<string, ModelRoute> routes)
+    public UnifiedModelRouter(IReadOnlyDictionary<string, ModelRoute> routes, Func<Task<ModelRoute?>>? autoFallbackDelegate = null)
     {
         _routes = routes;
+        _autoFallbackDelegate = autoFallbackDelegate;
+    }
+
+    /// <summary>Every model id the router exposes via GET /v1/models - static routes plus "__auto__" when an auto-fallback delegate is set.</summary>
+    public IReadOnlyList<string> AdvertisedModelIds
+    {
+        get
+        {
+            var ids = _routes.Keys.ToList();
+            if (_autoFallbackDelegate is not null) ids.Add(AutoModelId);
+            return ids;
+        }
     }
 
     public int Port { get; private set; }
@@ -93,7 +115,29 @@ public sealed class UnifiedModelRouter : IAsyncDisposable
     {
         try
         {
-            if (ctx.Request.Url?.AbsolutePath != "/v1/messages" || ctx.Request.HttpMethod != "POST")
+            var path = ctx.Request.Url?.AbsolutePath ?? string.Empty;
+            var method = ctx.Request.HttpMethod;
+
+            // Claude Code CLI's /model picker populates from GET /v1/models. Without this handler the picker
+            // silently falls back to whatever the upstream /v1/models endpoint returns (often just the user's
+            // account-default model), hiding every other ticked model. Returning every routed model + the
+            // "__auto__" meta-model here is what makes the in-CLI picker actually list all ticked options.
+            if (method == "GET" && path == "/v1/models")
+            {
+                await RespondWithModelsAsync(ctx, ct);
+                return;
+            }
+
+            // Some Claude Code CLI versions probe additional endpoints; respond 204 to silence them cleanly
+            // instead of letting them bubble up as 404 in the log and confuse users.
+            if (method == "GET" && (path == "/" || path == "/health" || path == "/v1/messages"))
+            {
+                ctx.Response.StatusCode = 204;
+                ctx.Response.Close();
+                return;
+            }
+
+            if (path != "/v1/messages" || method != "POST")
             {
                 ctx.Response.StatusCode = 404;
                 ctx.Response.Close();
@@ -105,7 +149,28 @@ public sealed class UnifiedModelRouter : IAsyncDisposable
             var anthropicRequest = JsonNode.Parse(body)!.AsObject();
             var model = anthropicRequest["model"]?.GetValue<string>() ?? "";
 
-            if (!_routes.TryGetValue(model, out var route))
+            ModelRoute route;
+            if (_routes.TryGetValue(model, out var directRoute))
+            {
+                route = directRoute;
+            }
+            else if (model == AutoModelId && _autoFallbackDelegate is not null)
+            {
+                var fallback = await _autoFallbackDelegate();
+                if (fallback is null)
+                {
+                    ctx.Response.StatusCode = 503;
+                    var errorBody = new JsonObject
+                    {
+                        ["type"] = "error",
+                        ["error"] = new JsonObject { ["type"] = "api_error", ["message"] = "No provider in the auto fallback chain is currently available." },
+                    };
+                    await ctx.Response.OutputStream.WriteAsync(Encoding.UTF8.GetBytes(errorBody.ToJsonString()), ct);
+                    return;
+                }
+                route = fallback;
+            }
+            else
             {
                 ctx.Response.StatusCode = 400;
                 var errorBody = new JsonObject
@@ -160,6 +225,41 @@ public sealed class UnifiedModelRouter : IAsyncDisposable
         {
             try { ctx.Response.Close(); } catch { /* already closed */ }
         }
+    }
+
+    private async Task RespondWithModelsAsync(HttpListenerContext ctx, CancellationToken ct)
+    {
+        var data = new JsonArray();
+        foreach (var id in _routes.Keys.OrderBy(k => k, StringComparer.Ordinal))
+        {
+            data.Add(new JsonObject
+            {
+                ["id"] = id,
+                ["type"] = "model",
+                ["display_name"] = id,
+                ["created_at"] = "2024-01-01T00:00:00Z",
+            });
+        }
+        if (_autoFallbackDelegate is not null)
+        {
+            data.Add(new JsonObject
+            {
+                ["id"] = AutoModelId,
+                ["type"] = "model",
+                ["display_name"] = "Auto (fallback chain) - picks the next available provider per request",
+                ["created_at"] = "2024-01-01T00:00:00Z",
+            });
+        }
+        var body = new JsonObject
+        {
+            ["data"] = data,
+            ["first_id"] = data.FirstOrDefault()?["id"]?.GetValue<string>(),
+            ["last_id"] = data.LastOrDefault()?["id"]?.GetValue<string>(),
+            ["has_more"] = false,
+        };
+        ctx.Response.StatusCode = 200;
+        ctx.Response.ContentType = "application/json";
+        await ctx.Response.OutputStream.WriteAsync(Encoding.UTF8.GetBytes(body.ToJsonString()), ct);
     }
 
     /// <summary>

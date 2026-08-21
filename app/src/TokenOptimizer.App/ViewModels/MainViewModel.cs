@@ -22,7 +22,6 @@ public partial class MainViewModel : ViewModelBase
 {
     private const string AutoFallbackProviderName = "Auto (fallback chain)";
     private const string CustomFallbackProviderName = "Custom (fallback chain)";
-    private const string SingleProviderModeName = "Single provider (below)";
 
     private readonly ConfigStore _configStore = new();
     private readonly CommandAvailability _availability = new();
@@ -331,7 +330,7 @@ public partial class MainViewModel : ViewModelBase
     /// Ranks every available provider by fit for the chosen session intent
     /// (Planning favors reasoning strength, Execution favors speed) within
     /// the chosen cost preset, then applies the result two ways: the top
-    /// pick becomes the single-provider/model selection, and the FULL
+    /// pick becomes the default model-override selection, and the FULL
     /// ranked order becomes the custom fallback chain order - so Auto/Custom
     /// both try the best-fit providers first for whatever kind of session
     /// this is, instead of a fixed order that doesn't know planning from
@@ -396,18 +395,18 @@ public partial class MainViewModel : ViewModelBase
     partial void OnSelectedProviderNameChanged(string value)
     {
         _ = RefreshModelOverrideOptionsAsync(value);
-        if (SelectedLaunchMode == SingleProviderModeName) _ = RefreshDashboardAsync();
+        _ = RefreshDashboardAsync();
         SelectedProviderDescription = ProviderDescriptions.TryGetValue(value, out var description) ? description : string.Empty;
     }
 
     [ObservableProperty]
     public partial string SelectedProviderDescription { get; set; } = string.Empty;
 
-    /// <summary>The three ways a launch can pick its backend - a single provider/model (the everyday case) or one of the two fallback chains, kept as its own dropdown separate from the Provider picker so a fallback-chain choice doesn't get lost among individual provider names.</summary>
-    public ObservableCollection<string> LaunchModeNames { get; } = new(new[] { SingleProviderModeName, AutoFallbackProviderName, CustomFallbackProviderName });
+    /// <summary>The two ways a launch can pick its backend - an automatic fallback chain (default) or a user-drag-reordered custom chain.</summary>
+    public ObservableCollection<string> LaunchModeNames { get; } = new(new[] { AutoFallbackProviderName, CustomFallbackProviderName });
 
     [ObservableProperty]
-    public partial string SelectedLaunchMode { get; set; } = SingleProviderModeName;
+    public partial string SelectedLaunchMode { get; set; } = AutoFallbackProviderName;
 
     partial void OnSelectedLaunchModeChanged(string value)
     {
@@ -419,12 +418,12 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty]
     public partial bool IsCustomChainSelected { get; set; }
 
-    /// <summary>Single place every launch path resolves its provider from - Auto/Custom fallback chain, or whatever's picked in the Provider dropdown.</summary>
+    /// <summary>Single place every launch path resolves its provider from - Auto or Custom fallback chain (single-provider launch was removed; the Provider dropdown now only drives model-override options and the dashboard label).</summary>
     private Task<IProviderAdapter?> ResolveLaunchProviderAsync() => SelectedLaunchMode switch
     {
         AutoFallbackProviderName => _fallbackResolver.ResolveAsync(),
         CustomFallbackProviderName => ResolveCustomChainProviderAsync(),
-        _ => Task.FromResult(_providers.FirstOrDefault(p => p.Name == SelectedProviderName)),
+        _ => _fallbackResolver.ResolveAsync(),
     };
 
     /// <summary>
@@ -437,13 +436,13 @@ public partial class MainViewModel : ViewModelBase
     /// </summary>
     private static readonly IReadOnlyDictionary<string, string> ProviderDescriptions = new Dictionary<string, string>
     {
-        [AutoFallbackProviderName] = "Tries Claude Code, then Antigravity, then OpenCode, then the local model - first one available wins. Nothing to configure beyond credentials below.",
+        [AutoFallbackProviderName] = "Tries Claude Code, then Antigravity, then OpenCode, then the local model - first one available wins. Nothing to configure beyond credentials below. This is the default.",
         [CustomFallbackProviderName] = "Same idea as Auto, but in the order you drag-reorder in the list above, and only across providers you've checked on.",
         ["Claude Code"] = "Anthropic's own CLI, direct - no bridging, no fallback. The default.",
         ["Antigravity"] = "Launches Claude Code itself, pointed at Antigravity through a local proxy. Same terminal, skills, plugins, and memory as Claude Code direct. Needs CLI login below.",
         ["OpenCode"] = "Launches Claude Code itself, pointed at the OpenCode Go model gateway through a local proxy. Same terminal, skills, plugins, and memory as Claude Code direct. Needs an API key below (sign in at opencode.ai/zen).",
         ["Unsloth (local model)"] = "Launches Claude Code itself, pointed at a model running locally on this machine (no internet, no API key). Always ready once Unsloth and a model are installed - use Install Companion Tooling below if it isn't found. Same terminal, skills, plugins, and memory as Claude Code direct.",
-        ["Groq"] = "Launches Claude Code itself, pointed at Groq through a local proxy. Same terminal, skills, plugins, and memory as Claude Code direct. Needs an API key below. Manual-only - not part of Auto.",
+        ["Groq"] = "Launches Claude Code itself, pointed at Groq through a local proxy. Same terminal, skills, plugins, and memory as Claude Code direct. Needs an API key below. Manual-only - not part of the Auto fallback chain.",
         ["Codex"] = "Routes through jcode to OpenAI's Codex CLI, its own session and terminal. Needs jcode login below (run `jcode login --provider openai`). Manual-only - not part of Auto.",
         ["Cursor"] = "A separate tool: the Cursor CLI, its own session and terminal. Needs CLI login below. Manual-only - not part of Auto.",
         ["DeepSeek Harness"] = "A separate tool: deepseek-ai's own agent runtime (dev preview) - opens its own local web UI in your browser, not a terminal session. Manual-only - not part of Auto.",
@@ -778,7 +777,7 @@ public partial class MainViewModel : ViewModelBase
         IsMasterFolderTreeOpen = true;
     }
 
-    /// <summary>Double-click on a subdirectory tree node: launches a session directly against that path, under AutoLaunchProviderName if configured (a provider name, or "Auto"/"Custom (fallback chain)"), otherwise whatever's currently selected in the Provider dropdown.</summary>
+    /// <summary>Double-click on a subdirectory tree node: launches a session directly against that path, under AutoLaunchProviderName if configured ("Auto (fallback chain)" or "Custom (fallback chain)"), otherwise the Auto fallback chain.</summary>
     [RelayCommand]
     private async Task LaunchAtPathAsync(string path)
     {
@@ -786,14 +785,14 @@ public partial class MainViewModel : ViewModelBase
 
         var config = await _configStore.LoadAsync();
         var launchProviderName = string.IsNullOrWhiteSpace(config.AutoLaunchProviderName)
-            ? SelectedProviderName
+            ? AutoFallbackProviderName
             : config.AutoLaunchProviderName;
 
         IProviderAdapter? provider = launchProviderName switch
         {
             AutoFallbackProviderName => await _fallbackResolver.ResolveAsync(),
             CustomFallbackProviderName => await ResolveCustomChainProviderAsync(),
-            _ => _providers.FirstOrDefault(p => p.Name == launchProviderName),
+            _ => await _fallbackResolver.ResolveAsync(),
         };
 
         if (provider is null)
@@ -1125,7 +1124,7 @@ public partial class MainViewModel : ViewModelBase
             {
                 AutoFallbackProviderName or CustomFallbackProviderName =>
                     resolved is not null ? $"{SelectedLaunchMode} -> currently resolves to {resolved.Name}" : $"{SelectedLaunchMode} -> nothing available right now",
-                _ => SelectedProviderName,
+                _ => resolved is not null ? $"Auto (fallback chain) -> currently resolves to {resolved.Name}" : "Auto (fallback chain) -> nothing available right now",
             };
 
             var skills = await _claudeAdapter.ListInstalledSkillsAsync();
@@ -1380,19 +1379,15 @@ public partial class MainViewModel : ViewModelBase
             }
             else
             {
-                provider = _providers.FirstOrDefault(p => p.Name == SelectedProviderName);
+                // Defensive: SelectedLaunchMode should only ever be Auto or Custom now.
+                provider = await _fallbackResolver.ResolveAsync();
                 if (provider is null)
                 {
-                    Log($"Unknown provider: {SelectedProviderName}");
-                    return;
-                }
-
-                if (!await provider.IsAvailableAsync())
-                {
-                    Log($"{provider.Name} is not available on this machine.");
+                    Log("No backend in the fallback chain is currently available.");
                     StatusText = "Ready.";
                     return;
                 }
+                Log($"Fallback chain resolved to: {provider.Name}");
             }
 
             if (provider == _claudeAdapter || provider == _llamaCppAdapter || provider == _groqAdapter || provider == _openCodeAdapter)
@@ -1434,16 +1429,15 @@ public partial class MainViewModel : ViewModelBase
     public bool HasTickedModels => ModelCatalog.Any(m => m.IsTicked);
 
     /// <summary>
-    /// One click, everything ticked in the Models card shows up. Bridgeable
-    /// models (Claude direct, Groq, OpenCode Go) share a single Claude Code
-    /// CLI window - if more than one bridgeable provider is ticked,
-    /// UnifiedModelRouter fronts them all behind one ANTHROPIC_BASE_URL so
-    /// the CLI's own /model picker lists every one; if only Claude models are
-    /// ticked, launches straight through the existing ClaudeCodeAdapter path
-    /// (no router needed, zero change to today's subscription-auth
-    /// behavior). Non-bridgeable providers (Codex, Cursor, Antigravity - each
-    /// a closed CLI with no chat-completions API to bridge) launch as their
-    /// own separate window alongside it, same as today, one per provider.
+    /// One click, everything ticked in the Models card shows up in Claude
+    /// Code's own /model picker. Bridgeable models (Claude direct, Groq,
+    /// OpenCode Go, Unsloth/local) route to their upstream through
+    /// UnifiedModelRouter. Non-bridgeable providers (Codex, Cursor,
+    /// Antigravity, DeepSeek Harness) also appear in the same picker for
+    /// visibility, and selecting one routes to the auto fallback delegate
+    /// (Claude Code -> OpenCode Go) so the Claude Code window stays useful;
+    /// those providers additionally open their own separate window, one per
+    /// provider, exactly as before.
     /// </summary>
     [RelayCommand]
     private async Task LaunchTickedModelsAsync()
@@ -1472,62 +1466,41 @@ public partial class MainViewModel : ViewModelBase
                 await _companionTooling.EnsureSharedClaudeEnvironmentAsync(SelectedProject.FullPath);
                 await PrepareProjectDirectiveAsync(SelectedProject.FullPath, _claudeAdapter);
 
-                var claudeModels = bridged.Where(m => m.ProviderName == "Claude Code").ToList();
-                var otherBridged = bridged.Where(m => m.ProviderName != "Claude Code").ToList();
+                var claudeExe = await _claudeLocator.FindAsync()
+                                 ?? throw new InvalidOperationException("Claude Code executable not found - install it first.");
 
-                if (otherBridged.Count == 0)
+                await ClaudeCodeAdapter.RefreshPluginMarketplacesAsync(claudeExe);
+
+                var routes = BuildModelRoutesForTickedModels(ticked);
+                var router = new UnifiedModelRouter(routes, autoFallbackDelegate: ResolveAutoFallbackRouteAsync);
+                await router.StartAsync();
+
+                var defaultModelId = bridged[0].ModelId;
+                var args = new List<string> { $"--model {defaultModelId}" };
+                var resumeFlag = resumeMode switch { SessionResumeMode.Continue => "--continue", SessionResumeMode.Pick => "--resume", _ => null };
+                if (resumeFlag is not null) args.Add(resumeFlag);
+
+                var psi = new System.Diagnostics.ProcessStartInfo
                 {
-                    // Every ticked bridgeable model is Claude-native - no router needed, launch straight through today's path.
-                    var options = new SessionLaunchOptions(SelectedProject.FullPath, claudeModels[0].ModelId, IsolateClaudeConfig, resumeMode);
-                    var handle = await _claudeAdapter.LaunchSessionAsync(options);
-                    await _projectHistory.AddAsync(SelectedProject.FullPath);
-                    Log($"Launched {handle.ProviderName} for {handle.ProjectPath} (pid {handle.ProcessId?.ToString() ?? "n/a"}). Ticked models: {string.Join(", ", claudeModels.Select(m => m.ModelId))}");
-                    TrackRateLimitOutcome(handle);
-                }
-                else
+                    FileName = claudeExe,
+                    Arguments = string.Join(' ', args),
+                    WorkingDirectory = SelectedProject.FullPath,
+                    UseShellExecute = false,
+                };
+                psi.EnvironmentVariables["ANTHROPIC_BASE_URL"] = router.BaseUrl;
+                psi.EnvironmentVariables["CLAUDE_MEM_WORKER_PORT"] = CompanionToolingInstaller.IsolatedWorkerPort.ToString();
+                psi.EnvironmentVariables["CLAUDE_MEM_DATA_DIR"] = CompanionToolingInstaller.IsolatedDataDir;
+                if (IsolateClaudeConfig)
                 {
-                    var claudeExe = await _claudeLocator.FindAsync()
-                                     ?? throw new InvalidOperationException("Claude Code executable not found - install it first.");
-
-                    await ClaudeCodeAdapter.RefreshPluginMarketplacesAsync(claudeExe);
-
-                    var routes = new Dictionary<string, UnifiedModelRouter.ModelRoute>(StringComparer.Ordinal);
-                    foreach (var m in claudeModels)
-                        routes[m.ModelId] = new UnifiedModelRouter.ModelRoute(new Uri("https://api.anthropic.com"), RouteKind.AnthropicPassthrough);
-                    foreach (var m in bridged.Where(m => m.ProviderName == "Groq"))
-                        routes[m.ModelId] = new UnifiedModelRouter.ModelRoute(new Uri("https://api.groq.com/openai/v1"), RouteKind.OpenAiTranslate, () => _credentials.GetCredentialPlainText(FallbackProvider.Groq));
-                    foreach (var m in bridged.Where(m => m.ProviderName == "OpenCode"))
-                        routes[m.ModelId] = new UnifiedModelRouter.ModelRoute(new Uri("https://opencode.ai/zen/go"), RouteKind.AnthropicPassthrough, () => _credentials.GetCredentialPlainText(FallbackProvider.OpenCode));
-
-                    var router = new UnifiedModelRouter(routes);
-                    await router.StartAsync();
-
-                    var args = new List<string> { $"--model {bridged[0].ModelId}" };
-                    var resumeFlag = resumeMode switch { SessionResumeMode.Continue => "--continue", SessionResumeMode.Pick => "--resume", _ => null };
-                    if (resumeFlag is not null) args.Add(resumeFlag);
-
-                    var psi = new System.Diagnostics.ProcessStartInfo
-                    {
-                        FileName = claudeExe,
-                        Arguments = string.Join(' ', args),
-                        WorkingDirectory = SelectedProject.FullPath,
-                        UseShellExecute = false,
-                    };
-                    psi.EnvironmentVariables["ANTHROPIC_BASE_URL"] = router.BaseUrl;
-                    psi.EnvironmentVariables["CLAUDE_MEM_WORKER_PORT"] = CompanionToolingInstaller.IsolatedWorkerPort.ToString();
-                    psi.EnvironmentVariables["CLAUDE_MEM_DATA_DIR"] = CompanionToolingInstaller.IsolatedDataDir;
-                    if (IsolateClaudeConfig)
-                    {
-                        psi.EnvironmentVariables["CLAUDE_CONFIG_DIR"] = IsolatedClaudeProfileService.GetOrCreateProfileDir(SelectedProject.FullPath);
-                    }
-
-                    var process = System.Diagnostics.Process.Start(psi);
-                    var handle = new ProcessSessionHandle("Claude Code", SelectedProject.FullPath, process, watchForRateLimit: true);
-                    _ = handle.RateLimitOutcome.ContinueWith(async _ => await router.DisposeAsync());
-                    await _projectHistory.AddAsync(SelectedProject.FullPath);
-                    Log($"Launched one Claude Code window (pid {handle.ProcessId?.ToString() ?? "n/a"}) with models available: {string.Join(", ", bridged.Select(m => m.ModelId))}");
-                    TrackRateLimitOutcome(handle);
+                    psi.EnvironmentVariables["CLAUDE_CONFIG_DIR"] = IsolatedClaudeProfileService.GetOrCreateProfileDir(SelectedProject.FullPath);
                 }
+
+                var process = System.Diagnostics.Process.Start(psi);
+                var handle = new ProcessSessionHandle("Claude Code", SelectedProject.FullPath, process, watchForRateLimit: true);
+                _ = handle.RateLimitOutcome.ContinueWith(async _ => await router.DisposeAsync());
+                await _projectHistory.AddAsync(SelectedProject.FullPath);
+                Log($"Launched one Claude Code window (pid {handle.ProcessId?.ToString() ?? "n/a"}) with models available: {string.Join(", ", ticked.Select(m => m.ModelId))}");
+                TrackRateLimitOutcome(handle);
             }
 
             foreach (var group in standalone)
@@ -1558,6 +1531,58 @@ public partial class MainViewModel : ViewModelBase
         {
             IsBusy = false;
         }
+    }
+
+    /// <summary>Builds a route for every ticked model so Claude Code's /model picker can show all selected models, not just the bridgeable ones.</summary>
+    private Dictionary<string, UnifiedModelRouter.ModelRoute> BuildModelRoutesForTickedModels(IReadOnlyList<ProviderModelOptionViewModel> ticked)
+    {
+        var routes = new Dictionary<string, UnifiedModelRouter.ModelRoute>(StringComparer.Ordinal);
+        foreach (var m in ticked)
+        {
+            if (TryBuildDirectRoute(m.ProviderName, out var directRoute))
+            {
+                routes[m.ModelId] = directRoute;
+            }
+            // Non-bridgeable models intentionally do NOT get a direct route; they fall through
+            // to the auto-fallback delegate at request time so they still appear in /model picker
+            // but selecting them routes to the next available bridgeable provider.
+        }
+        return routes;
+    }
+
+    private bool TryBuildDirectRoute(string providerName, out UnifiedModelRouter.ModelRoute route)
+    {
+        switch (providerName)
+        {
+            case "Claude Code":
+                route = new UnifiedModelRouter.ModelRoute(new Uri("https://api.anthropic.com"), RouteKind.AnthropicPassthrough);
+                return true;
+            case "Groq":
+                route = new UnifiedModelRouter.ModelRoute(new Uri("https://api.groq.com/openai/v1"), RouteKind.OpenAiTranslate, () => _credentials.GetCredentialPlainText(FallbackProvider.Groq));
+                return true;
+            case "OpenCode":
+                route = new UnifiedModelRouter.ModelRoute(new Uri("https://opencode.ai/zen/go"), RouteKind.AnthropicPassthrough, () => _credentials.GetCredentialPlainText(FallbackProvider.OpenCode));
+                return true;
+            default:
+                route = null!;
+                return false;
+        }
+    }
+
+    /// <summary>Resolves the "auto" model and non-bridgeable model selections to the next available bridgeable provider in the auto fallback chain (Claude Code, then OpenCode Go). Unsloth and Antigravity are skipped because they require runtime server startup that can't happen inside a per-request router delegate.</summary>
+    private async Task<UnifiedModelRouter.ModelRoute?> ResolveAutoFallbackRouteAsync()
+    {
+        if (!await _rateLimits.IsRateLimitedAsync(FallbackProvider.Claude) && await _claudeAdapter.IsAvailableAsync())
+        {
+            return new UnifiedModelRouter.ModelRoute(new Uri("https://api.anthropic.com"), RouteKind.AnthropicPassthrough);
+        }
+
+        if (!await _rateLimits.IsRateLimitedAsync(FallbackProvider.OpenCode) && await _openCodeAdapter.IsAvailableAsync())
+        {
+            return new UnifiedModelRouter.ModelRoute(new Uri("https://opencode.ai/zen/go"), RouteKind.AnthropicPassthrough, () => _credentials.GetCredentialPlainText(FallbackProvider.OpenCode));
+        }
+
+        return null;
     }
 
     /// <summary>Delegates to the shared ProjectSessionPrep so the CLI host (used by the VS Code extension) runs the exact same pre-launch checks as this UI.</summary>
