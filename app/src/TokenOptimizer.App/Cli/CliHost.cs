@@ -76,7 +76,7 @@ public static class CliHost
         var claudeAdapter = new ClaudeCodeAdapter(claudeLocator, availability);
         var llamaCppAdapter = new TokenOptimizer.Providers.LlamaCpp.LlamaCppAdapter();
         var credentials = new ProxyCredentialStore(Environment.GetEnvironmentVariable("TOKENOPTIMIZER_CREDENTIAL_DIR"));
-        var antigravityAdapter = new JcodeHarnessAdapter(credentials, FallbackProvider.Antigravity, "antigravity", "Antigravity");
+        var antigravityAdapter = new AntigravityAdapter(credentials);
         var codexAdapter = new JcodeHarnessAdapter(credentials, FallbackProvider.Codex, "openai", "Codex");
         var cursorAdapter = new CursorAdapter(credentials);
         var groqAdapter = new GroqAdapter(credentials, claudeLocator);
@@ -206,7 +206,7 @@ public static class CliHost
                         ("claude-md-management", companionTooling.InstallClaudeMdManagementPluginAsync),
                         ("impeccable", companionTooling.InstallImpeccableSkillAsync),
                         ("task-observer", companionTooling.InstallTaskObserverSkillAsync),
-                        ("Codex CLI", providerCliInstaller.InstallCodexCliAsync),
+                        ("jcode CLI (Codex)", providerCliInstaller.InstallJcodeCliAsync),
                         ("Antigravity CLI", providerCliInstaller.InstallAntigravityCliAsync),
                         ("Cursor CLI", providerCliInstaller.InstallCursorCliAsync),
                         ("Antigravity plugin parity", async () => { await providerCliInstaller.SyncClaudePluginsIntoAntigravityAsync(); return true; }),

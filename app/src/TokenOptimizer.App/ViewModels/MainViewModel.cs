@@ -32,7 +32,7 @@ public partial class MainViewModel : ViewModelBase
     private readonly ClaudeCodeAdapter _claudeAdapter;
     private readonly TokenOptimizer.Providers.LlamaCpp.LlamaCppAdapter _llamaCppAdapter;
     private readonly ProxyCredentialStore _credentials = new();
-    private readonly JcodeHarnessAdapter _antigravityAdapter;
+    private readonly AntigravityAdapter _antigravityAdapter;
     private readonly JcodeHarnessAdapter _codexAdapter;
     private readonly CursorAdapter _cursorAdapter;
     private readonly GroqAdapter _groqAdapter;
@@ -58,7 +58,7 @@ public partial class MainViewModel : ViewModelBase
         _claudeLocator = new ClaudeExecutableLocator(_configStore, _availability);
         _claudeAdapter = new ClaudeCodeAdapter(_claudeLocator, _availability);
         _llamaCppAdapter = new TokenOptimizer.Providers.LlamaCpp.LlamaCppAdapter(claudeLocator: _claudeLocator);
-        _antigravityAdapter = new JcodeHarnessAdapter(_credentials, FallbackProvider.Antigravity, "antigravity", "Antigravity");
+        _antigravityAdapter = new AntigravityAdapter(_credentials);
         _codexAdapter = new JcodeHarnessAdapter(_credentials, FallbackProvider.Codex, "openai", "Codex");
         _cursorAdapter = new CursorAdapter(_credentials);
         _groqAdapter = new GroqAdapter(_credentials, _claudeLocator);
@@ -935,7 +935,7 @@ public partial class MainViewModel : ViewModelBase
         ("task-observer", _companionTooling.InstallTaskObserverSkillAsync),
         ("Unsloth CLI (local model)", _providerCliInstaller.InstallUnslothCliAsync),
         ("OpenCode CLI", _providerCliInstaller.InstallOpenCodeCliAsync),
-        ("Codex CLI", _providerCliInstaller.InstallCodexCliAsync),
+        ("jcode CLI (Codex)", _providerCliInstaller.InstallJcodeCliAsync),
         ("Antigravity CLI", _providerCliInstaller.InstallAntigravityCliAsync),
         ("Cursor CLI", _providerCliInstaller.InstallCursorCliAsync),
         ("Antigravity plugin parity", async () => { await _providerCliInstaller.SyncClaudePluginsIntoAntigravityAsync(); return true; }),

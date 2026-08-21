@@ -13,11 +13,14 @@ namespace TokenOptimizer.Providers.Fallback;
 /// </summary>
 public sealed class ProviderCliInstaller
 {
-    public async Task<bool> InstallCodexCliAsync()
+    public async Task<bool> InstallJcodeCliAsync()
     {
-        if (ExecutableLocators.FindCodex() is not null) return true;
-        await ExternalCommandRunner.RunAsync("npm", "install -g @openai/codex", timeoutSeconds: 180);
-        return ExecutableLocators.FindCodex() is not null;
+        if (ExecutableLocators.FindJcode() is not null) return true;
+        await ExternalCommandRunner.RunAsync(
+            "powershell.exe",
+            "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"irm https://jcode.sh/install.ps1 | iex\"",
+            timeoutSeconds: 180);
+        return ExecutableLocators.FindJcode() is not null;
     }
 
     public async Task<bool> InstallAntigravityCliAsync()

@@ -223,19 +223,17 @@ Stdout: {
 | Provider | Auth confirmed | Real response | Exit codes known | Verdict |
 |---|---|---|---|---|
 | **OpenAI/Codex** | YES (OAuth, account: openai-otter) | YES (PONG, model: gpt-5.6-terra) | YES (0/1/2) | **PASS** |
-| **Antigravity** | YES (OAuth, eric.c.ayers@gmail.com) | NO (429 quota exhausted) | YES (0/1/2) | **PASS** (auth + exit codes confirmed; 429 is external quota limit, not a code issue — same category as Groq's TPM tier failure in selftest-2026-08-20.md) |
+| **Antigravity** | YES (OAuth, eric.c.ayers@gmail.com) | NO (429 quota exhausted — persistent, retried multiple times) | YES (0/1/2) | **FAIL** — stays on AntigravityAdapter. jcode's Antigravity generateContent integration hits a different quota pool than `agy` (selftest proved `agy` works fine). The migration would be a real regression. |
 | **Cursor** | NO (needs API key) | NO | YES (0/1/2) | **FAIL** — stays on current adapter |
 
-### Flags forJcodeHarnessAdapter (from Phase 0 findings)
+### Flags for JcodeHarnessAdapter (from Phase 0 findings)
 
 ```csharp
-// Antigravity
-jcodeProviderId: "antigravity"  // confirmed from auth status + run --provider antigravity
-displayName: "Antigravity"      // unchanged from today's provider name
-
-// Codex/OpenAI
+// Codex/OpenAI (only provider migrated to jcode)
 jcodeProviderId: "openai"       // confirmed from auth status + run --provider openai
 displayName: "Codex"            // unchanged from today's provider name (UI shows "Codex", not "OpenAI")
+
+// Antigravity: FAIL (stays on AntigravityAdapter — jcode 429s where agy works)
 
 // BuildArguments shape (confirmed):
 $"--provider {jcodeProviderId}" + (model is null ? "" : $" --model {model}")

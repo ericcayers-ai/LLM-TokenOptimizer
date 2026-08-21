@@ -7,14 +7,14 @@ using TokenOptimizer.Providers.Manifests;
 namespace TokenOptimizer.Providers.Fallback;
 
 /// <summary>
-/// Generic jcode-routed provider adapter. Replaces per-provider
-/// AntigravityAdapter/CodexAdapter by routing through jcode instead,
-/// which manages its own auth and provider connections. Each instance
-/// is constructed with a specific jcode provider ID (e.g. "openai",
-/// "antigravity") and display name, so the same adapter class covers
-/// multiple upstream providers. Gated on jcode being installed AND a
-/// credential stored via ProxyCredentialStore (opt-in, same pattern
-/// as the adapters it replaces).
+/// Generic jcode-routed provider adapter. Replaces the per-provider
+/// CodexAdapter by routing through jcode instead, which manages its own
+/// auth and provider connections. Each instance is constructed with a
+/// specific jcode provider ID (e.g. "openai") and display name, so the
+/// same adapter class can cover multiple upstream providers as more are
+/// verified against it. Gated on jcode being installed AND a credential
+/// stored via ProxyCredentialStore (opt-in, same pattern as the adapters
+/// it replaces).
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class JcodeHarnessAdapter : IProviderAdapter

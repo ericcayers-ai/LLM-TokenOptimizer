@@ -21,17 +21,6 @@ public static class ExecutableLocators
         return new CommandAvailability().ResolveOnPath("agy");
     }
 
-    public static string? FindCodex()
-    {
-        var roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        foreach (var candidate in new[] { Path.Combine(roaming, "npm", "codex.cmd"), Path.Combine(roaming, "npm", "codex") })
-        {
-            if (File.Exists(candidate)) return candidate;
-        }
-
-        return new CommandAvailability().ResolveOnPath("codex");
-    }
-
     public static string? FindCursor()
     {
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
