@@ -45,4 +45,10 @@ public sealed class AppConfig
 
     /// <summary>Last resolved local embeddings endpoint for auto-wired RAG retrieval (see MainViewModel.AutoDetectRagEndpointAsync) - probed automatically, no manual toggle.</summary>
     public string? LastDetectedRagEmbeddingsUrl { get; set; }
+
+    /// <summary>Whether the agency-agents repo has been shallow-cloned into ~/.tokenoptimizer/agency-agents.</summary>
+    public bool AgencyAgentsCloned { get; set; }
+
+    /// <summary>Agency-agent slug names ticked for sync into Claude Code's agents directory.</summary>
+    public List<string>? TickedAgencyAgents { get; set; }
 }
