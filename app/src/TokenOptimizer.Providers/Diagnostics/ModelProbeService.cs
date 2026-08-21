@@ -231,7 +231,7 @@ public sealed class ModelProbeService
             return new ProbeResult(false, "Antigravity", model, "", (int)sw.ElapsedMilliseconds, null, Skipped: true, SkipReason: "agy has no non-interactive print flag; manual verify required.");
         }
 
-        var result = await _runCommand(agy, $"-p \"{ProbePrompt}\"", null, ProbeTimeoutSeconds, null, ct);
+        var result = await _runCommand(agy, $"-p \"{ProbePrompt}\" --model {model}", null, ProbeTimeoutSeconds, null, ct);
         return ToProbeResult("Antigravity", model, result, sw);
     }
 
