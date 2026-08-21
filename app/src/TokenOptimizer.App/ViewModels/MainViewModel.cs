@@ -32,8 +32,8 @@ public partial class MainViewModel : ViewModelBase
     private readonly ClaudeCodeAdapter _claudeAdapter;
     private readonly TokenOptimizer.Providers.LlamaCpp.LlamaCppAdapter _llamaCppAdapter;
     private readonly ProxyCredentialStore _credentials = new();
-    private readonly AntigravityAdapter _antigravityAdapter;
-    private readonly CodexAdapter _codexAdapter;
+    private readonly JcodeHarnessAdapter _antigravityAdapter;
+    private readonly JcodeHarnessAdapter _codexAdapter;
     private readonly CursorAdapter _cursorAdapter;
     private readonly GroqAdapter _groqAdapter;
     private readonly DeepSeekHarnessAdapter _deepSeekHarnessAdapter;
@@ -57,8 +57,8 @@ public partial class MainViewModel : ViewModelBase
         _claudeLocator = new ClaudeExecutableLocator(_configStore, _availability);
         _claudeAdapter = new ClaudeCodeAdapter(_claudeLocator, _availability);
         _llamaCppAdapter = new TokenOptimizer.Providers.LlamaCpp.LlamaCppAdapter(claudeLocator: _claudeLocator);
-        _antigravityAdapter = new AntigravityAdapter(_credentials);
-        _codexAdapter = new CodexAdapter(_credentials);
+        _antigravityAdapter = new JcodeHarnessAdapter(_credentials, FallbackProvider.Antigravity, "antigravity", "Antigravity");
+        _codexAdapter = new JcodeHarnessAdapter(_credentials, FallbackProvider.Codex, "openai", "Codex");
         _cursorAdapter = new CursorAdapter(_credentials);
         _groqAdapter = new GroqAdapter(_credentials, _claudeLocator);
         _deepSeekHarnessAdapter = new DeepSeekHarnessAdapter();

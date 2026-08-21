@@ -76,8 +76,8 @@ public static class CliHost
         var claudeAdapter = new ClaudeCodeAdapter(claudeLocator, availability);
         var llamaCppAdapter = new TokenOptimizer.Providers.LlamaCpp.LlamaCppAdapter();
         var credentials = new ProxyCredentialStore(Environment.GetEnvironmentVariable("TOKENOPTIMIZER_CREDENTIAL_DIR"));
-        var antigravityAdapter = new AntigravityAdapter(credentials);
-        var codexAdapter = new CodexAdapter(credentials);
+        var antigravityAdapter = new JcodeHarnessAdapter(credentials, FallbackProvider.Antigravity, "antigravity", "Antigravity");
+        var codexAdapter = new JcodeHarnessAdapter(credentials, FallbackProvider.Codex, "openai", "Codex");
         var cursorAdapter = new CursorAdapter(credentials);
         var groqAdapter = new GroqAdapter(credentials, claudeLocator);
         var deepSeekHarnessAdapter = new DeepSeekHarnessAdapter();
