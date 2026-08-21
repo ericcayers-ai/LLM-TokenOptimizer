@@ -50,17 +50,20 @@ public sealed class CompanionToolingInstaller
     private readonly ClaudeExecutableLocator _claudeLocator;
     private readonly CommandAvailability _availability;
     private readonly PythonLocator _pythonLocator;
+    private readonly AgencyAgentsInstaller _agencyAgents;
 
     public CompanionToolingInstaller(
         ConfigStore configStore,
         ClaudeExecutableLocator claudeLocator,
         CommandAvailability availability,
-        PythonLocator pythonLocator)
+        PythonLocator pythonLocator,
+        AgencyAgentsInstaller agencyAgents)
     {
         _configStore = configStore;
         _claudeLocator = claudeLocator;
         _availability = availability;
         _pythonLocator = pythonLocator;
+        _agencyAgents = agencyAgents;
     }
 
     // ------------------------------------------------------------------
@@ -514,6 +517,10 @@ public sealed class CompanionToolingInstaller
         {
             await InstallCodeIntelligencePluginAsync(projectDirectory);
         }
+
+        await _agencyAgents.EnsureClonedAsync();
+        var config = await _configStore.LoadAsync();
+        await _agencyAgents.SyncTickedAgentsAsync(config.TickedAgencyAgents ?? new List<string>());
     }
 
     // ------------------------------------------------------------------

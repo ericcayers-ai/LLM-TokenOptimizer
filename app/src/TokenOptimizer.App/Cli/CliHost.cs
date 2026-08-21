@@ -85,7 +85,8 @@ public static class CliHost
         var rateLimits = new RateLimitTracker(configStore);
         var fallbackResolver = new FallbackChainResolver(
             claudeAdapter, antigravityAdapter, codexAdapter, cursorAdapter, groqAdapter, deepSeekHarnessAdapter, openCodeAdapter, llamaCppAdapter, rateLimits);
-        var companionTooling = new CompanionToolingInstaller(configStore, claudeLocator, availability, pythonLocator);
+        var agencyAgents = new AgencyAgentsInstaller(configStore, availability);
+        var companionTooling = new CompanionToolingInstaller(configStore, claudeLocator, availability, pythonLocator, agencyAgents);
         var projectHistory = new ProjectHistoryService(configStore);
         var masterFolderService = new MasterFolderService(configStore, projectHistory);
         var claudeMdService = new ProjectClaudeMdService();

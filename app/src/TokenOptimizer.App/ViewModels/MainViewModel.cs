@@ -41,6 +41,7 @@ public partial class MainViewModel : ViewModelBase
     private readonly RateLimitTracker _rateLimits;
     private readonly FallbackChainResolver _fallbackResolver;
     private readonly PythonLocator _pythonLocator;
+    private readonly AgencyAgentsInstaller _agencyAgents;
     private readonly WingetInstaller _wingetInstaller;
     private readonly CompanionToolingInstaller _companionTooling;
     private readonly MasterFolderService _masterFolderService;
@@ -67,7 +68,8 @@ public partial class MainViewModel : ViewModelBase
         _fallbackResolver = new FallbackChainResolver(
             _claudeAdapter, _antigravityAdapter, _codexAdapter, _cursorAdapter, _groqAdapter, _deepSeekHarnessAdapter, _openCodeAdapter, _llamaCppAdapter, _rateLimits);
         _wingetInstaller = new WingetInstaller(_availability);
-        _companionTooling = new CompanionToolingInstaller(_configStore, _claudeLocator, _availability, _pythonLocator);
+        _agencyAgents = new AgencyAgentsInstaller(_configStore, _availability);
+        _companionTooling = new CompanionToolingInstaller(_configStore, _claudeLocator, _availability, _pythonLocator, _agencyAgents);
         _masterFolderService = new MasterFolderService(_configStore, _projectHistory);
         _uninstaller = new CompanionUninstaller(_availability, _configStore);
 
@@ -181,6 +183,9 @@ public partial class MainViewModel : ViewModelBase
     /// <summary>Same models as ModelCatalog, grouped by provider with a collapsible header - what the Models card actually binds to.</summary>
     public ObservableCollection<ProviderModelGroupViewModel> ModelCatalogGroups { get; } = new();
 
+    /// <summary>Every agency agent from the agency-agents repo, tick to sync into ~/.claude/agents on next launch.</summary>
+    public ObservableCollection<AgencyAgentCatalogEntry> AgencyAgentCatalog { get; } = new();
+
     private async Task RefreshModelCatalogAsync()
     {
         var config = await _configStore.LoadAsync();
@@ -206,6 +211,32 @@ public partial class MainViewModel : ViewModelBase
             }
             ModelCatalogGroups.Add(new ProviderModelGroupViewModel(provider.Name, options, bridgeable));
         }
+    }
+
+    private async Task RefreshAgencyAgentCatalogAsync()
+    {
+        var config = await _configStore.LoadAsync();
+        var ticked = new HashSet<string>(config.TickedAgencyAgents ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
+        var agents = await _agencyAgents.ListAvailableAgentsAsync();
+        AgencyAgentCatalog.Clear();
+        foreach (var agent in agents)
+        {
+            var entry = new AgencyAgentCatalogEntry(agent.Division, agent.Slug, agent.Name, agent.Description, ticked.Contains($"{agent.Division}/{agent.Slug}"));
+            entry.PropertyChanged += async (_, e) =>
+            {
+                if (e.PropertyName != nameof(AgencyAgentCatalogEntry.IsTicked)) return;
+                await SaveTickedAgencyAgentsAsync();
+            };
+            AgencyAgentCatalog.Add(entry);
+        }
+    }
+
+    private async Task SaveTickedAgencyAgentsAsync()
+    {
+        await _configStore.UpdateAsync(config =>
+        {
+            config.TickedAgencyAgents = AgencyAgentCatalog.Where(e => e.IsTicked).Select(e => e.Key).ToList();
+        });
     }
 
     private ProviderModelOptionViewModel AddModelOption(string providerName, string modelId, string label, bool bridgeable, HashSet<string> ticked)
@@ -613,6 +644,11 @@ public partial class MainViewModel : ViewModelBase
             if (ModelCatalog.Count == 0)
             {
                 await RefreshModelCatalogAsync();
+            }
+
+            if (AgencyAgentCatalog.Count == 0)
+            {
+                await RefreshAgencyAgentCatalogAsync();
             }
 
             if (string.IsNullOrWhiteSpace(MasterFolderPath))
