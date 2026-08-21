@@ -28,17 +28,34 @@ public sealed class AnthropicCompatProxy : IAsyncDisposable
 {
     private readonly Uri _upstreamBaseUrl;
     private readonly Func<string?> _upstreamBearerToken;
+    private readonly string? _forceModel;
+    private readonly bool _anthropicPassthrough;
     private readonly HttpClient _http = new() { Timeout = Timeout.InfiniteTimeSpan };
     private readonly HttpListener _listener = new();
     private CancellationTokenSource? _cts;
     private Task? _acceptLoop;
 
-    /// <param name="upstreamBaseUrl">OpenAI-compatible base, e.g. https://api.groq.com/openai/v1 or http://127.0.0.1:8085/v1</param>
+    /// <param name="upstreamBaseUrl">OpenAI-compatible base, e.g. https://api.groq.com/openai/v1 or http://127.0.0.1:8085/v1 - or, with <paramref name="anthropicPassthrough"/>, an Anthropic-Messages-API-shaped base like https://opencode.ai/zen/go.</param>
     /// <param name="upstreamBearerToken">Resolves the Authorization: Bearer token per request; return null for backends (llama.cpp) that need none.</param>
-    public AnthropicCompatProxy(Uri upstreamBaseUrl, Func<string?> upstreamBearerToken)
+    /// <param name="forceModel">
+    /// Overrides the "model" field on every incoming request before it is
+    /// forwarded upstream. Claude Code CLI 2.1.237 silently rewrites any
+    /// --model value it doesn't recognize as one of the account's allowed
+    /// Anthropic models back to the account default, so the model this proxy
+    /// receives from the CLI can no longer be trusted to carry the actual
+    /// provider-specific model id the caller asked for - it must be re-injected here.
+    /// </param>
+    /// <param name="anthropicPassthrough">
+    /// True for upstreams that already speak the Anthropic Messages API
+    /// (OpenCode Go) - skips the OpenAI chat-completions translation and
+    /// forwards the (model-corrected) request/response bytes as-is.
+    /// </param>
+    public AnthropicCompatProxy(Uri upstreamBaseUrl, Func<string?> upstreamBearerToken, string? forceModel = null, bool anthropicPassthrough = false)
     {
         _upstreamBaseUrl = upstreamBaseUrl;
         _upstreamBearerToken = upstreamBearerToken;
+        _forceModel = forceModel;
+        _anthropicPassthrough = anthropicPassthrough;
     }
 
     public int Port { get; private set; }
@@ -99,8 +116,28 @@ public sealed class AnthropicCompatProxy : IAsyncDisposable
             using var reader = new StreamReader(ctx.Request.InputStream, Encoding.UTF8);
             var body = await reader.ReadToEndAsync(ct);
             var anthropicRequest = JsonNode.Parse(body)!.AsObject();
+            if (!string.IsNullOrWhiteSpace(_forceModel))
+            {
+                anthropicRequest["model"] = _forceModel;
+            }
 
             var stream = anthropicRequest.TryGetPropertyValue("stream", out var s) && s?.GetValue<bool>() == true;
+
+            if (_anthropicPassthrough)
+            {
+                using var passthroughReq = new HttpRequestMessage(HttpMethod.Post, $"{_upstreamBaseUrl}/v1/messages")
+                {
+                    Content = new StringContent(anthropicRequest.ToJsonString(), Encoding.UTF8, "application/json"),
+                };
+                var passthroughToken = _upstreamBearerToken();
+                if (!string.IsNullOrEmpty(passthroughToken))
+                    passthroughReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", passthroughToken);
+
+                using var passthroughResp = await _http.SendAsync(passthroughReq, HttpCompletionOption.ResponseHeadersRead, ct);
+                await RelayAnthropicPassthroughAsync(ctx, passthroughResp, ct);
+                return;
+            }
+
             var openAiRequest = AnthropicToOpenAiRequest(anthropicRequest);
 
             using var upstreamReq = new HttpRequestMessage(HttpMethod.Post, $"{_upstreamBaseUrl}/chat/completions")
@@ -267,6 +304,15 @@ public sealed class AnthropicCompatProxy : IAsyncDisposable
             return sb.ToString();
         }
         return content.DeepClone();
+    }
+
+    /// <summary>Upstream already speaks Anthropic's wire format, so the response body and status are forwarded byte-for-byte in both streaming and non-streaming shapes.</summary>
+    private static async Task RelayAnthropicPassthroughAsync(HttpListenerContext ctx, HttpResponseMessage upstream, CancellationToken ct)
+    {
+        ctx.Response.StatusCode = (int)upstream.StatusCode;
+        ctx.Response.ContentType = upstream.Content.Headers.ContentType?.ToString() ?? "application/json";
+        await using var upstreamStream = await upstream.Content.ReadAsStreamAsync(ct);
+        await upstreamStream.CopyToAsync(ctx.Response.OutputStream, ct);
     }
 
     // ---- OpenAI response -> Anthropic response ----

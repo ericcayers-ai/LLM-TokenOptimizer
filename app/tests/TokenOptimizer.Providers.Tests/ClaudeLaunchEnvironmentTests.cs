@@ -83,11 +83,11 @@ public sealed class ClaudeLaunchEnvironmentTests
         var adapter = new OpenCodeAdapter(new ProxyCredentialStore(CreateTempDir()), CreateLocator());
         var options = new SessionLaunchOptions(ProjectPath, null, IsolateConfig: false, SessionResumeMode.Continue);
 
-        var env = adapter.BuildLaunchEnvironment(options, "oc_test_key");
+        var env = adapter.BuildLaunchEnvironment(options, "http://127.0.0.1:12345/");
 
         Assert.Equal($"--continue --model {OpenCodeModelCatalog.DefaultModel}", env.Arguments);
-        Assert.Equal("https://opencode.ai/zen/go", env.Env["ANTHROPIC_BASE_URL"]);
-        Assert.Equal("oc_test_key", env.Env["ANTHROPIC_AUTH_TOKEN"]);
+        Assert.Equal("http://127.0.0.1:12345/", env.Env["ANTHROPIC_BASE_URL"]);
+        Assert.Equal("proxied-locally", env.Env["ANTHROPIC_AUTH_TOKEN"]);
         Assert.Equal(CompanionToolingInstaller.IsolatedWorkerPort.ToString(), env.Env["CLAUDE_MEM_WORKER_PORT"]);
         Assert.Equal(CompanionToolingInstaller.IsolatedDataDir, env.Env["CLAUDE_MEM_DATA_DIR"]);
     }
@@ -98,7 +98,7 @@ public sealed class ClaudeLaunchEnvironmentTests
         var adapter = new OpenCodeAdapter(new ProxyCredentialStore(CreateTempDir()), CreateLocator());
         var options = new SessionLaunchOptions(ProjectPath, "custom-model", IsolateConfig: false, SessionResumeMode.New);
 
-        var env = adapter.BuildLaunchEnvironment(options, "key");
+        var env = adapter.BuildLaunchEnvironment(options, "http://127.0.0.1:12345/");
 
         Assert.Equal("--model custom-model", env.Arguments);
     }

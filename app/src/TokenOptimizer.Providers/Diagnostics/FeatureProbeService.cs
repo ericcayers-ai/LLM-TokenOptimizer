@@ -256,9 +256,10 @@ public sealed class FeatureProbeService
 
         if (normalized is "opencode" or "open code")
         {
-            var apiKey = _credentials.GetCredentialPlainText(FallbackProvider.OpenCode)
-                         ?? throw new InvalidOperationException("No OpenCode Go credential stored.");
-            return new OpenCodeAdapter(_credentials, _claudeLocator).BuildLaunchEnvironment(options, apiKey);
+            // `claude plugin list` is a local command that never calls out over
+            // ANTHROPIC_BASE_URL, so it can point straight at the real gateway
+            // rather than spinning up a local proxy just to sit idle.
+            return new OpenCodeAdapter(_credentials, _claudeLocator).BuildLaunchEnvironment(options, OpenCodeAdapter.ApiBaseUrl.ToString());
         }
 
         if (normalized is "unsloth (local model)" or "unsloth")

@@ -95,7 +95,7 @@ public sealed class GroqAdapter : IProviderAdapter
 
         await ExternalCommandRunner.RunAsync(claudeExe, "plugin marketplace update", timeoutSeconds: 20);
 
-        var proxy = new AnthropicCompatProxy(ApiBaseUrl, () => apiKey);
+        var proxy = new AnthropicCompatProxy(ApiBaseUrl, () => apiKey, forceModel: options.Model);
         await proxy.StartAsync();
 
         var launchEnv = BuildLaunchEnvironment(options, proxy.BaseUrl);

@@ -123,7 +123,7 @@ public sealed class ModelProbeService
             return Fail("Groq", model, sw, "Claude Code executable not found.");
         }
 
-        var proxy = new AnthropicCompatProxy(GroqAdapter.ApiBaseUrl, () => apiKey);
+        var proxy = new AnthropicCompatProxy(GroqAdapter.ApiBaseUrl, () => apiKey, forceModel: model);
         try
         {
             await proxy.StartAsync();
@@ -155,9 +155,19 @@ public sealed class ModelProbeService
 
         var resolvedModel = string.IsNullOrWhiteSpace(model) ? OpenCodeModelCatalog.DefaultModel : model;
         var options = new SessionLaunchOptions(projectPath ?? Environment.CurrentDirectory, resolvedModel, IsolateConfig: false, SessionResumeMode.New);
-        var env = new OpenCodeAdapter(_credentials, _claudeLocator).BuildLaunchEnvironment(options, apiKey);
-        var result = await RunClaudeProbeAsync(claudeExe, env, projectPath, ProbeTimeoutSeconds, ct);
-        return ToProbeResult("OpenCode", resolvedModel, result, sw);
+
+        var proxy = new AnthropicCompatProxy(OpenCodeAdapter.ApiBaseUrl, () => apiKey, forceModel: resolvedModel, anthropicPassthrough: true);
+        try
+        {
+            await proxy.StartAsync();
+            var env = new OpenCodeAdapter(_credentials, _claudeLocator).BuildLaunchEnvironment(options, proxy.BaseUrl);
+            var result = await RunClaudeProbeAsync(claudeExe, env, projectPath, ProbeTimeoutSeconds, ct);
+            return ToProbeResult("OpenCode", resolvedModel, result, sw);
+        }
+        finally
+        {
+            await proxy.DisposeAsync();
+        }
     }
 
     private async Task<ProbeResult> ProbeUnslothAsync(string model, string? projectPath, CancellationToken ct)

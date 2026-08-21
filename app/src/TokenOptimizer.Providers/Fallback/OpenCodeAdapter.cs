@@ -4,6 +4,7 @@ using TokenOptimizer.Core.Diagnostics;
 using TokenOptimizer.Core.Models;
 using TokenOptimizer.Core.Security;
 using TokenOptimizer.Providers.Claude;
+using TokenOptimizer.Providers.Compat;
 using TokenOptimizer.Providers.Manifests;
 
 namespace TokenOptimizer.Providers.Fallback;
@@ -12,11 +13,13 @@ namespace TokenOptimizer.Providers.Fallback;
 /// OpenCode Go - the OpenCode team's low-cost subscription gateway to
 /// popular open coding models (opencode.ai/docs/providers#opencode-go).
 /// Sign in once at https://opencode.ai/zen to get an API key; that's the
-/// only setup this adapter needs - no base URL to configure, no local
-/// proxy to run. Unlike Groq (OpenAI chat-completions schema, needs
-/// AnthropicCompatProxy to translate), the Go gateway already speaks the
-/// Anthropic Messages API, so Claude Code can point ANTHROPIC_BASE_URL at
-/// it directly, same shape as pointing at Anthropic's own api.anthropic.com.
+/// only setup this adapter needs. The Go gateway already speaks the
+/// Anthropic Messages API, so no schema translation is needed - but a
+/// local AnthropicCompatProxy (in anthropicPassthrough mode) still sits in
+/// front, because Claude Code CLI 2.1.237 silently rewrites any --model
+/// value it doesn't recognize as one of the account's allowed Anthropic
+/// models back to the account default before the request ever leaves the
+/// CLI; the proxy re-injects the real model id the caller asked for.
 ///
 /// Part of the automatic fallback chain (unlike Codex/Cursor/Groq), slotted
 /// right before the local llama.cpp model: see FallbackChainResolver.
@@ -24,7 +27,7 @@ namespace TokenOptimizer.Providers.Fallback;
 [SupportedOSPlatform("windows")] // ProxyCredentialStore is DPAPI-backed (Windows-only), not an OpenCode API constraint.
 public sealed class OpenCodeAdapter : IProviderAdapter
 {
-    private static readonly Uri ApiBaseUrl = new("https://opencode.ai/zen/go");
+    internal static readonly Uri ApiBaseUrl = new("https://opencode.ai/zen/go");
 
     private readonly ProxyCredentialStore _credentials;
     private readonly ClaudeExecutableLocator _claudeLocator;
@@ -57,14 +60,14 @@ public sealed class OpenCodeAdapter : IProviderAdapter
     public Task<ProviderResult> RegisterMcpToolAsync(McpToolManifest tool) =>
         Task.FromResult(ProviderResult.Fail("OpenCode does not register MCP tools - register against the Claude Code adapter."));
 
-    public ClaudeLaunchEnvironment BuildLaunchEnvironment(SessionLaunchOptions options, string apiKey)
+    public ClaudeLaunchEnvironment BuildLaunchEnvironment(SessionLaunchOptions options, string proxyBaseUrl)
     {
         var model = string.IsNullOrWhiteSpace(options.Model) ? OpenCodeModelCatalog.DefaultModel : options.Model;
         var builder = new ClaudeLaunchEnvironmentBuilder()
             .WithResumeMode(options.ResumeMode)
             .WithModel(model)
-            .WithAnthropicBaseUrl(ApiBaseUrl.ToString())
-            .WithAnthropicAuthToken(apiKey)
+            .WithAnthropicBaseUrl(proxyBaseUrl)
+            .WithAnthropicAuthToken("proxied-locally")
             .WithClaudeMemIsolation();
         if (options.IsolateConfig)
         {
@@ -82,7 +85,11 @@ public sealed class OpenCodeAdapter : IProviderAdapter
 
         await ExternalCommandRunner.RunAsync(claudeExe, "plugin marketplace update", timeoutSeconds: 20);
 
-        var launchEnv = BuildLaunchEnvironment(options, apiKey);
+        var model = string.IsNullOrWhiteSpace(options.Model) ? OpenCodeModelCatalog.DefaultModel : options.Model;
+        var proxy = new AnthropicCompatProxy(ApiBaseUrl, () => apiKey, forceModel: model, anthropicPassthrough: true);
+        await proxy.StartAsync();
+
+        var launchEnv = BuildLaunchEnvironment(options, proxy.BaseUrl);
         var psi = new ProcessStartInfo
         {
             FileName = claudeExe,
@@ -96,6 +103,8 @@ public sealed class OpenCodeAdapter : IProviderAdapter
         }
 
         var process = Process.Start(psi);
-        return new ProcessSessionHandle(Name, options.ProjectPath, process, watchForRateLimit: true);
+        var handle = new ProcessSessionHandle(Name, options.ProjectPath, process, watchForRateLimit: true);
+        _ = handle.RateLimitOutcome.ContinueWith(async _ => await proxy.DisposeAsync());
+        return handle;
     }
 }
