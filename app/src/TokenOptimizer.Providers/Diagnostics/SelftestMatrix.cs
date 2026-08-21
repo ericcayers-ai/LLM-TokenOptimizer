@@ -15,10 +15,12 @@ public static class SelftestMatrix
         ("Groq", "qwen/qwen3.6-27b"),
         ("Groq", "groq/compound"),
         ("Groq", "groq/compound-mini"),
-        ("OpenCode", "opencode-go"),
+        // opencode-go was a placeholder id; mimo-v2.5 verified live via GET https://opencode.ai/zen/go/v1/models on 2026-08-21.
+        ("OpenCode", "mimo-v2.5"),
         ("Unsloth (local model)", "unsloth/Qwen3.8-27B-GGUF:UD-IQ4_XS"),
         ("Unsloth (local model)", "mudler/KAT-Coder-V2.5-Dev-APEX-GGUF:I-QUALITY"),
-        ("Antigravity", "gemini-3-pro"),
-        ("Antigravity", "gemini-3-pro-high"),
+        // gemini-3-pro/-high do not exist; verified live via `agy models` on 2026-08-21.
+        ("Antigravity", "gemini-3.1-pro-high"),
+        ("Antigravity", "gemini-3.1-pro-low"),
     };
 }

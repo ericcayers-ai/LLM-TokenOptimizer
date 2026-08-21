@@ -120,7 +120,8 @@ public partial class MainViewModel : ViewModelBase
         // qwen/qwen3-32b) all 404'd or were decommissioned; these are the account's real models.
         ["Groq"] = new[] { "openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b", "groq/compound", "groq/compound-mini" },
         ["Codex"] = new[] { "gpt-5-codex", "gpt-5.1-codex", "gpt-5.1-codex-mini" },
-        ["Antigravity"] = new[] { "gemini-3-pro", "gemini-3-pro-high" },
+        // Verified 2026-08-21 via live `agy models` - gemini-3-pro/-high do not exist; these do.
+        ["Antigravity"] = new[] { "gemini-3.1-pro-high", "gemini-3.1-pro-low" },
         ["Cursor"] = new[] { "auto", "composer-1" },
         ["OpenCode"] = OpenCodeModelCatalog.ModelIds.ToArray(),
         // "Unsloth (local model)" is deliberately absent here - its models come from
