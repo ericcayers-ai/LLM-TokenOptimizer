@@ -127,12 +127,17 @@ public sealed class AgencyAgentsInstaller
         var nextManifest = new List<string>();
         var synced = 0;
 
+        // UI stores keys as "division/slug"; extract bare slugs for matching
+        var tickedSlugsSet = new HashSet<string>(
+            tickedSlugs.Select(k => k.Contains('/') ? k[(k.LastIndexOf('/') + 1)..] : k),
+            StringComparer.OrdinalIgnoreCase);
+
         foreach (var agent in agents)
         {
             var source = Path.Combine(repoDir, agent.Division, $"{agent.Slug}.md");
             var dest = Path.Combine(agentsDir, $"{agent.Slug}.md");
 
-            if (tickedSlugs.Contains(agent.Slug, StringComparer.OrdinalIgnoreCase))
+            if (tickedSlugsSet.Contains(agent.Slug))
             {
                 try
                 {
@@ -142,7 +147,7 @@ public sealed class AgencyAgentsInstaller
                 }
                 catch (IOException) { /* best effort */ }
             }
-            else if (previousManifest.Contains(agent.Slug, StringComparer.OrdinalIgnoreCase))
+            else if (previousManifest.Contains(agent.Slug))
             {
                 try { File.Delete(dest); } catch (IOException) { }
             }
