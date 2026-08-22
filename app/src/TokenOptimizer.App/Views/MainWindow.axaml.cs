@@ -3,7 +3,6 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.VisualTree;
 using TokenOptimizer.App.ViewModels;
-using TokenOptimizer.Core.Projects;
 
 namespace TokenOptimizer.App.Views;
 
@@ -70,13 +69,5 @@ public partial class MainWindow : Window
         if (targetItem?.DataContext is not FallbackChainOrderItemViewModel target || ReferenceEquals(target, dragged)) return;
 
         viewModel.ReorderCustomChain(dragged.SortIndex, target.SortIndex);
-    }
-
-    private void MasterFolderTreeNode_DoubleTapped(object? sender, TappedEventArgs e)
-    {
-        if (sender is not Control { DataContext: FolderTreeNode node }) return;
-        if (DataContext is not MainViewModel viewModel) return;
-
-        viewModel.LaunchAtPathCommand.Execute(node.FullPath);
     }
 }

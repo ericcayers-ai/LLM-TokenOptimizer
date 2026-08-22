@@ -15,4 +15,6 @@ public enum FallbackProvider
     Groq,
     DeepSeekHarness,
     OpenCode,
+    /// <summary>OpenCode Zen - a separate gateway/account from OpenCode Go: different sign-in, different API key, different base URL (opencode.ai/zen vs opencode.ai/zen/go).</summary>
+    OpenCodeZen,
 }

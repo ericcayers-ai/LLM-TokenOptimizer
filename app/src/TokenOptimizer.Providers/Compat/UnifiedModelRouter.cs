@@ -32,10 +32,32 @@ public enum RouteKind
 /// CLI is authenticated for its own models.
 ///
 /// GET /v1/models returns every routed model plus, when an auto-fallback
-/// delegate is supplied, a "__auto__" meta-model - that lets Claude Code's
-/// own /model picker list every ticked model the user picked (previously
-/// only POST /v1/messages was handled, so the picker silently fell back to
-/// whatever the upstream returned, often just the user's account default).
+/// delegate is supplied, a "__auto__" meta-model - that's what lets Claude
+/// Code's own /model picker list every ticked model (labeled "From gateway").
+/// Three things the caller (whoever launches the CLI pointed at this router)
+/// MUST also do or the picker still won't show anything beyond the account
+/// default:
+/// (1) set a non-empty ANTHROPIC_AUTH_TOKEN alongside ANTHROPIC_BASE_URL -
+/// Claude Code's internal discovery gate (minified name Vna()) requires both,
+/// plus getAPIProvider() resolving to "firstParty". Do NOT set
+/// CLAUDE_CODE_USE_GATEWAY=1 - that switches getAPIProvider() to the
+/// unrelated real-enterprise-SSO "gateway" mode, which makes Vna() bail
+/// (it explicitly requires "firstParty") so the discovery request never
+/// fires at all. Confirmed live via claude.exe's own debug log
+/// (--debug-file/-d): unset, it logs "[gatewayDiscovery] cached N models";
+/// set, discovery is skipped and only an unrelated internal bucket the
+/// picker never reads gets populated - this was the actual root cause of an
+/// earlier "picker still shows only Default" regression, not anything
+/// server-side;
+/// (2) also set CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 - the endpoint
+/// is separately opt-in; and
+/// (3) never pass a non-Claude-native id via --model/ANTHROPIC_MODEL at
+/// launch - Claude Code validates that value against the account's real
+/// entitlements before any request reaches this proxy, and rejects it with
+/// "restricted by your organization's settings", falling back to the
+/// account default. Only real Claude ids (or omitting --model entirely)
+/// are safe there; the rest of the ticked set is still reachable live via
+/// /model once discovery is on.
 /// </summary>
 public sealed class UnifiedModelRouter : IAsyncDisposable
 {
@@ -43,6 +65,28 @@ public sealed class UnifiedModelRouter : IAsyncDisposable
 
     /// <summary>Special model id - selecting it in Claude Code's /model picker routes each request through whatever the auto-fallback delegate returns (typically the next live provider in the Claude Code -> Antigravity -> OpenCode -> local chain).</summary>
     public const string AutoModelId = "__auto__";
+
+    /// <summary>
+    /// Claude Code's own gateway-model-discovery feature (opt-in via
+    /// CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 - see
+    /// ClaudeLaunchEnvironmentBuilder) silently drops any GET /v1/models
+    /// entry whose id doesn't contain "claude" or "anthropic" (case-
+    /// insensitive) anywhere - confirmed against Anthropic's own
+    /// model-config docs. Real ids like "groq/compound" or "big-pickle"
+    /// would be filtered out before they ever reach the picker, discovery
+    /// on or not. Every non-Claude-native id gets this prefix purely for
+    /// advertising/picker-display; Unadvertise reverses it on the way back
+    /// in so route lookups still use the real id.
+    /// </summary>
+    private const string GatewayIdPrefix = "claude-gateway-";
+
+    private static bool LooksClaudeNative(string id) =>
+        id.Contains("claude", StringComparison.OrdinalIgnoreCase) || id.Contains("anthropic", StringComparison.OrdinalIgnoreCase);
+
+    private static string Advertise(string realId) => LooksClaudeNative(realId) ? realId : $"{GatewayIdPrefix}{realId}";
+
+    private static string Unadvertise(string shownId) =>
+        shownId.StartsWith(GatewayIdPrefix, StringComparison.Ordinal) ? shownId[GatewayIdPrefix.Length..] : shownId;
 
     private readonly IReadOnlyDictionary<string, ModelRoute> _routes;
     private readonly Func<Task<ModelRoute?>>? _autoFallbackDelegate;
@@ -62,8 +106,8 @@ public sealed class UnifiedModelRouter : IAsyncDisposable
     {
         get
         {
-            var ids = _routes.Keys.ToList();
-            if (_autoFallbackDelegate is not null) ids.Add(AutoModelId);
+            var ids = _routes.Keys.Select(Advertise).ToList();
+            if (_autoFallbackDelegate is not null) ids.Add(Advertise(AutoModelId));
             return ids;
         }
     }
@@ -147,7 +191,7 @@ public sealed class UnifiedModelRouter : IAsyncDisposable
             using var reader = new StreamReader(ctx.Request.InputStream, Encoding.UTF8);
             var body = await reader.ReadToEndAsync(ct);
             var anthropicRequest = JsonNode.Parse(body)!.AsObject();
-            var model = anthropicRequest["model"]?.GetValue<string>() ?? "";
+            var model = Unadvertise(anthropicRequest["model"]?.GetValue<string>() ?? "");
 
             ModelRoute route;
             if (_routes.TryGetValue(model, out var directRoute))
@@ -230,13 +274,13 @@ public sealed class UnifiedModelRouter : IAsyncDisposable
     private async Task RespondWithModelsAsync(HttpListenerContext ctx, CancellationToken ct)
     {
         var data = new JsonArray();
-        foreach (var id in _routes.Keys.OrderBy(k => k, StringComparer.Ordinal))
+        foreach (var realId in _routes.Keys.OrderBy(k => k, StringComparer.Ordinal))
         {
             data.Add(new JsonObject
             {
-                ["id"] = id,
+                ["id"] = Advertise(realId),
                 ["type"] = "model",
-                ["display_name"] = id,
+                ["display_name"] = realId,
                 ["created_at"] = "2024-01-01T00:00:00Z",
             });
         }
@@ -244,7 +288,7 @@ public sealed class UnifiedModelRouter : IAsyncDisposable
         {
             data.Add(new JsonObject
             {
-                ["id"] = AutoModelId,
+                ["id"] = Advertise(AutoModelId),
                 ["type"] = "model",
                 ["display_name"] = "Auto (fallback chain) - picks the next available provider per request",
                 ["created_at"] = "2024-01-01T00:00:00Z",

@@ -43,7 +43,6 @@ public partial class MainViewModel : ViewModelBase
     private readonly AgencyAgentsInstaller _agencyAgents;
     private readonly WingetInstaller _wingetInstaller;
     private readonly CompanionToolingInstaller _companionTooling;
-    private readonly MasterFolderService _masterFolderService;
     private readonly ProjectClaudeMdService _claudeMdService = new();
     private readonly CompanionUninstaller _uninstaller;
     private readonly ProviderCliInstaller _providerCliInstaller = new();
@@ -69,7 +68,6 @@ public partial class MainViewModel : ViewModelBase
         _wingetInstaller = new WingetInstaller(_availability);
         _agencyAgents = new AgencyAgentsInstaller(_configStore, _availability);
         _companionTooling = new CompanionToolingInstaller(_configStore, _claudeLocator, _availability, _pythonLocator, _agencyAgents);
-        _masterFolderService = new MasterFolderService(_configStore, _projectHistory);
         _uninstaller = new CompanionUninstaller(_availability, _configStore);
 
         _providers = new IProviderAdapter[]
@@ -84,6 +82,38 @@ public partial class MainViewModel : ViewModelBase
         _ = CheckAntigravityLoginAsync();
         _ = CheckCursorLoginAsync();
         _ = AutoDetectRagEndpointAsync();
+        _ = RunDailyAutoUpdateIfNeededAsync();
+    }
+
+    /// <summary>
+    /// Re-verifies and repairs every companion tool once per calendar day at
+    /// startup, instead of only when the user clicks "Install Companion
+    /// Tooling" by hand. Each installer now checks real on-disk/CLI state
+    /// first (see CompanionToolingInstaller), so re-running the full step
+    /// list is cheap when everything's already current and only does real
+    /// work (or a graphify pip upgrade) when something's actually missing or
+    /// out of date. Runs quietly in the background - no busy spinner, no
+    /// progress bar - since it's not a user-initiated action.
+    /// </summary>
+    private async Task RunDailyAutoUpdateIfNeededAsync()
+    {
+        var config = await _configStore.LoadAsync();
+        var today = DateTime.Now.ToString("yyyy-MM-dd");
+        if (config.LastAutoUpdateCheckDate == today) return;
+
+        await _companionTooling.UpdateGraphifyIfNeededAsync();
+        var tickedNames = config.TickedCompanionTools;
+        foreach (var (name, install) in CompanionToolingSteps)
+        {
+            if (tickedNames is not null && !tickedNames.Contains(name, StringComparer.Ordinal)) continue;
+            var ok = await install();
+            Log(ok ? $"Auto-update: {name} OK" : $"Auto-update: {name} failed");
+        }
+
+        config = await _configStore.LoadAsync();
+        config.LastAutoUpdateCheckDate = today;
+        await _configStore.SaveAsync(config);
+        RecomputeSetupSteps();
     }
 
     public ObservableCollection<ProjectInfo> ProjectHistoryList { get; } = new();
@@ -92,17 +122,6 @@ public partial class MainViewModel : ViewModelBase
     public ObservableCollection<FallbackChainStep> FallbackChain { get; } = new();
     public ObservableCollection<FallbackChainOrderItemViewModel> CustomChainOrder { get; } = new();
     public ObservableCollection<string> LogLines { get; } = new();
-    public ObservableCollection<ProjectCandidateViewModel> MasterFolderCandidates { get; } = new();
-    public ObservableCollection<FolderTreeNode> MasterFolderTree { get; } = new();
-
-    [ObservableProperty]
-    public partial bool IsMasterFolderTreeOpen { get; set; }
-
-    partial void OnIsMasterFolderTreeOpenChanged(bool value) =>
-        MasterFolderTreeToggleLabel = value ? "Hide subfolders" : "Browse subfolders";
-
-    [ObservableProperty]
-    public partial string MasterFolderTreeToggleLabel { get; set; } = "Browse subfolders";
     public ObservableCollection<string> ModelOverrideOptions { get; } = new();
 
     /// <summary>
@@ -169,6 +188,9 @@ public partial class MainViewModel : ViewModelBase
         "OpenCode" => OpenCodeModelCatalog.Models.FirstOrDefault(m => m.Id == modelId) is { } opencodeModel
             ? $"{modelId} (OpenCode Go) - {opencodeModel.Description}"
             : $"{modelId} (OpenCode Go)",
+        "OpenCode Zen" => OpenCodeZenModelCatalog.Models.FirstOrDefault(m => m.Id == modelId) is { } zenModel
+            ? $"{modelId} (OpenCode Zen) - {zenModel.Description}"
+            : $"{modelId} (OpenCode Zen)",
         // Unsloth entries get their label built directly in BuildUnslothModelGroupsAsync (quant tag + size + family) - not routed through here.
         "Codex" => $"{modelId} (opens separately - OpenAI's own tool)",
         "Cursor" => $"{modelId} (opens separately - Cursor's own tool)",
@@ -182,8 +204,12 @@ public partial class MainViewModel : ViewModelBase
     /// <summary>Same models as ModelCatalog, grouped by provider with a collapsible header - what the Models card actually binds to.</summary>
     public ObservableCollection<ProviderModelGroupViewModel> ModelCatalogGroups { get; } = new();
 
+
     /// <summary>Every agency agent from the agency-agents repo, tick to sync into ~/.claude/agents on next launch.</summary>
     public ObservableCollection<AgencyAgentCatalogEntry> AgencyAgentCatalog { get; } = new();
+
+    /// <summary>Every companion-tool installer step, tick to include it in "Install Companion Tooling" and the daily auto-update pass. Populated once from CompanionToolingSteps - no network round-trip needed to list what's available.</summary>
+    public ObservableCollection<CompanionToolOptionViewModel> CompanionToolCatalog { get; } = new();
 
     private async Task RefreshModelCatalogAsync()
     {
@@ -210,6 +236,15 @@ public partial class MainViewModel : ViewModelBase
             }
             ModelCatalogGroups.Add(new ProviderModelGroupViewModel(provider.Name, options, bridgeable));
         }
+
+        // OpenCode Zen - a separate gateway/account from OpenCode Go (own
+        // sign-in, own API key, own base URL), not another _providers
+        // adapter instance. Curated to Zen's free tier only; see
+        // OpenCodeZenModelCatalog for why.
+        var zenOptions = OpenCodeZenModelCatalog.Models
+            .Select(m => AddModelOption("OpenCode Zen", m.Id, PlainLabelFor("OpenCode Zen", m.Id), bridgeable: true, ticked))
+            .ToList();
+        ModelCatalogGroups.Add(new ProviderModelGroupViewModel("OpenCode Zen", zenOptions, isBridgeable: true));
     }
 
     private async Task RefreshAgencyAgentCatalogAsync()
@@ -306,6 +341,7 @@ public partial class MainViewModel : ViewModelBase
         ["DeepSeek Harness"] = new(0.80, 0.50, ModelCostTier.Balanced),
         ["Cursor"] = new(0.75, 0.60, ModelCostTier.Balanced),
         ["OpenCode"] = new(0.70, 0.60, ModelCostTier.Balanced),
+        ["OpenCode Zen"] = new(0.55, 0.65, ModelCostTier.Cheap),
         ["Unsloth (local model)"] = new(0.50, 0.70, ModelCostTier.Cheap),
         ["Groq"] = new(0.55, 0.95, ModelCostTier.Cheap),
     };
@@ -509,10 +545,7 @@ public partial class MainViewModel : ViewModelBase
     public partial string OpenCodeApiKeyInput { get; set; } = string.Empty;
 
     [ObservableProperty]
-    public partial string MasterFolderPath { get; set; } = string.Empty;
-
-    [ObservableProperty]
-    public partial string NewProjectFolderName { get; set; } = string.Empty;
+    public partial string OpenCodeZenApiKeyInput { get; set; } = string.Empty;
 
     [ObservableProperty]
     public partial string AntigravityLoginStatusText { get; set; } = "Status unknown - click Check.";
@@ -535,7 +568,7 @@ public partial class MainViewModel : ViewModelBase
     /// <summary>Recomputes the Setup tab's numbered-step completion state - called after anything that could change it (project/master-folder added, dependency install, companion tooling install), so the tab reads as a guided flow without being a separate modal wizard.</summary>
     private void RecomputeSetupSteps()
     {
-        SetupStep1Done = ProjectHistoryList.Count > 0 || !string.IsNullOrWhiteSpace(MasterFolderPath);
+        SetupStep1Done = ProjectHistoryList.Count > 0;
         SetupStep2Done = Dependencies.Count > 0 && Dependencies.Where(d => d.Name != "Unsloth").All(d => d.IsAvailable);
         SetupStep3Done = CompanionToolingProgress >= 1;
 
@@ -613,13 +646,9 @@ public partial class MainViewModel : ViewModelBase
                 await RefreshAgencyAgentCatalogAsync();
             }
 
-            if (string.IsNullOrWhiteSpace(MasterFolderPath))
+            if (CompanionToolCatalog.Count == 0)
             {
-                MasterFolderPath = await _masterFolderService.GetMasterFolderAsync() ?? string.Empty;
-            }
-            if (!string.IsNullOrWhiteSpace(MasterFolderPath))
-            {
-                await RefreshMasterFolderCandidatesAsync();
+                RefreshCompanionToolCatalog(await _configStore.LoadAsync());
             }
 
             if (SelectedProject is { FullPath: { } projectPath } && File.Exists(SessionPresetStore.FilePathFor(projectPath)))
@@ -695,185 +724,6 @@ public partial class MainViewModel : ViewModelBase
     private Task<IProviderAdapter?> ResolveCustomChainProviderAsync() =>
         _fallbackResolver.ResolveCustomAsync(CustomChainOrder.Where(i => i.IsIncluded).OrderBy(i => i.SortIndex).Select(i => i.ProviderName).ToList());
 
-    [RelayCommand]
-    private async Task SetMasterFolderAsync()
-    {
-        if (!MasterFolderService.IsValidMasterFolder(MasterFolderPath, out var error))
-        {
-            Log($"Cannot use this master folder: {error}");
-            return;
-        }
-
-        await _masterFolderService.SetMasterFolderAsync(MasterFolderPath);
-        await RefreshMasterFolderCandidatesAsync();
-        Log($"Master folder set: {MasterFolderPath}");
-    }
-
-    [RelayCommand]
-    private async Task RefreshMasterFolderCandidatesAsync()
-    {
-        if (!MasterFolderService.IsValidMasterFolder(MasterFolderPath, out var error))
-        {
-            Log($"Master folder unavailable: {error}");
-            return;
-        }
-
-        var candidates = await _masterFolderService.ListCandidatesAsync(MasterFolderPath);
-        MasterFolderCandidates.Clear();
-        foreach (var candidate in candidates) MasterFolderCandidates.Add(new ProjectCandidateViewModel(candidate));
-    }
-
-    /// <summary>Toggles and (re)builds the recursive subdirectory tree shown when the master-folder label is clicked - separate from the flat MasterFolderCandidates list, which only shows immediate subfolders.</summary>
-    [RelayCommand]
-    private async Task ShowMasterFolderTreeAsync()
-    {
-        if (IsMasterFolderTreeOpen)
-        {
-            IsMasterFolderTreeOpen = false;
-            return;
-        }
-
-        if (!MasterFolderService.IsValidMasterFolder(MasterFolderPath, out var error))
-        {
-            Log($"Master folder unavailable: {error}");
-            return;
-        }
-
-        var root = await MasterFolderService.BuildSubdirectoryTreeAsync(MasterFolderPath);
-        MasterFolderTree.Clear();
-        foreach (var child in root.Children) MasterFolderTree.Add(child);
-        IsMasterFolderTreeOpen = true;
-    }
-
-    /// <summary>Double-click on a subdirectory tree node: launches a session directly against that path, under AutoLaunchProviderName if configured ("Auto (fallback chain)" or "Custom (fallback chain)"), otherwise the Auto fallback chain.</summary>
-    [RelayCommand]
-    private async Task LaunchAtPathAsync(string path)
-    {
-        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path)) return;
-
-        var config = await _configStore.LoadAsync();
-        var launchProviderName = string.IsNullOrWhiteSpace(config.AutoLaunchProviderName)
-            ? AutoFallbackProviderName
-            : config.AutoLaunchProviderName;
-
-        IProviderAdapter? provider = launchProviderName switch
-        {
-            AutoFallbackProviderName => await _fallbackResolver.ResolveAsync(),
-            CustomFallbackProviderName => await ResolveCustomChainProviderAsync(),
-            _ => await _fallbackResolver.ResolveAsync(),
-        };
-
-        if (provider is null)
-        {
-            Log($"No provider available to launch {path}.");
-            return;
-        }
-
-        try
-        {
-            if (provider == _claudeAdapter || provider == _groqAdapter)
-            {
-                await _companionTooling.EnsureSharedClaudeEnvironmentAsync(path);
-                await PrepareProjectDirectiveAsync(path, provider);
-            }
-
-            var options = new SessionLaunchOptions(
-                path,
-                ResolveEffectiveModel(),
-                IsolateClaudeConfig,
-                Enum.Parse<SessionResumeMode>(SelectedResumeModeName));
-            var handle = await provider.LaunchSessionAsync(options);
-            await _projectHistory.AddAsync(path);
-            TrackRateLimitOutcome(handle);
-            Log($"Launched {handle.ProviderName} for {path} (pid {handle.ProcessId?.ToString() ?? "n/a"}).");
-            IsMasterFolderTreeOpen = false;
-            await RefreshAllAsync();
-        }
-        catch (Exception ex)
-        {
-            Log($"Launch failed for {path}: {ex.Message}");
-        }
-    }
-
-    [RelayCommand]
-    private async Task CreateProjectFolderAsync()
-    {
-        if (!MasterFolderService.IsValidMasterFolder(MasterFolderPath, out var error))
-        {
-            Log($"Set a master folder first: {error}");
-            return;
-        }
-        if (string.IsNullOrWhiteSpace(NewProjectFolderName))
-        {
-            Log("Enter a folder name first.");
-            return;
-        }
-
-        var created = MasterFolderService.CreateProjectFolder(MasterFolderPath, NewProjectFolderName);
-        if (created is null)
-        {
-            Log($"Could not create folder: {NewProjectFolderName}");
-            return;
-        }
-
-        NewProjectFolderName = string.Empty;
-        Log($"Created: {created}");
-        await RefreshMasterFolderCandidatesAsync();
-    }
-
-    /// <summary>
-    /// Opens every checked candidate as its own independent session -
-    /// v5.0+'s "several project windows at once" model, ported from the
-    /// picker's numbered multi-select / 'a' (open all).
-    /// </summary>
-    [RelayCommand]
-    private async Task LaunchSelectedCandidatesAsync()
-    {
-        var selected = MasterFolderCandidates.Where(c => c.IsSelected).ToList();
-        if (selected.Count == 0)
-        {
-            Log("Check one or more projects in the master folder list first.");
-            return;
-        }
-
-        var provider = await ResolveLaunchProviderAsync();
-
-        if (provider is null)
-        {
-            Log("No provider available to launch with.");
-            return;
-        }
-
-        foreach (var candidate in selected)
-        {
-            try
-            {
-                if (provider == _claudeAdapter || provider == _groqAdapter)
-                {
-                    await _companionTooling.EnsureSharedClaudeEnvironmentAsync(candidate.FullPath);
-                    await PrepareProjectDirectiveAsync(candidate.FullPath, provider);
-                }
-
-                var options = new SessionLaunchOptions(
-                    candidate.FullPath,
-                    ResolveEffectiveModel(),
-                    IsolateClaudeConfig,
-                    Enum.Parse<SessionResumeMode>(SelectedResumeModeName));
-                var handle = await provider.LaunchSessionAsync(options);
-                await _projectHistory.AddAsync(candidate.FullPath);
-                TrackRateLimitOutcome(handle);
-                Log($"Launched {handle.ProviderName} for {candidate.Name} (pid {handle.ProcessId?.ToString() ?? "n/a"}).");
-                candidate.IsSelected = false;
-            }
-            catch (Exception ex)
-            {
-                Log($"Launch failed for {candidate.Name}: {ex.Message}");
-            }
-        }
-
-        await RefreshAllAsync();
-    }
-
     [ObservableProperty]
     public partial double CompanionToolingProgress { get; set; }
 
@@ -887,6 +737,56 @@ public partial class MainViewModel : ViewModelBase
     public partial bool IsDependencyInstalling { get; set; }
 
     /// <summary>Named async best-effort installers run in a fixed, numbered sequence so StatusText can show "N/total: name" live instead of only a final summary.</summary>
+    /// <summary>Concise, keyed off CompanionToolingSteps' own Name strings - a step with no entry here still shows up (with a blank description) rather than silently vanishing from the picker.</summary>
+    private static readonly IReadOnlyDictionary<string, string> CompanionToolDescriptions = new Dictionary<string, string>
+    {
+        ["Graphify"] = "Knowledge-graph indexer for fast codebase queries instead of raw grep.",
+        ["claude-mem"] = "Persistent cross-session memory - recalls past decisions and context automatically.",
+        ["headroom"] = "Live context-window usage bar in the Claude Code statusline.",
+        ["rtk"] = "Rewrites verbose Bash/CLI output through a token-compressing proxy.",
+        ["context7"] = "Version-specific library/API docs on demand, via MCP.",
+        ["context-mode"] = "Sandboxed research/execution tools that keep raw data out of the chat context.",
+        ["caveman"] = "Ultra-compressed terse communication mode.",
+        ["ponytail"] = "Lazy-senior-developer coding discipline: YAGNI, shortest working diff.",
+        ["claude-md-management"] = "Audits and maintains this project's CLAUDE.md file.",
+        ["impeccable"] = "Design-system skill for polished, consistent UI builds.",
+        ["task-observer"] = "Flags when an existing skill is out of date based on real usage.",
+        ["Unsloth CLI (local model)"] = "CLI for running local GGUF models via llama.cpp/Unsloth.",
+        ["OpenCode CLI"] = "CLI for the OpenCode Go/Zen model gateways.",
+        ["jcode CLI (Codex)"] = "Rust coding-agent harness fronting OpenAI Codex.",
+        ["Antigravity CLI"] = "CLI for the Antigravity fallback provider.",
+        ["Cursor CLI"] = "CLI for the Cursor Agent fallback provider.",
+        ["Antigravity plugin parity"] = "Copies this project's Claude Code skills/plugins into Antigravity's own config.",
+        ["DeepSeek Harness (dsh)"] = "CLI harness for the DeepSeek fallback provider.",
+        ["DeepSeek Harness plugin parity"] = "Copies this project's Claude Code skills/plugins into DeepSeek Harness's own config.",
+        ["ccusage (token/cost tracking)"] = "Local, offline token/cost usage reporting across every provider.",
+    };
+
+    /// <summary>Populates CompanionToolCatalog from CompanionToolingSteps - a name with no saved ticked-list yet (first run, or an install from before this picker existed) defaults to ticked, matching the old "install everything" behavior.</summary>
+    private void RefreshCompanionToolCatalog(AppConfig config)
+    {
+        var ticked = config.TickedCompanionTools;
+        CompanionToolCatalog.Clear();
+        foreach (var (name, _) in CompanionToolingSteps)
+        {
+            var isTicked = ticked is null || ticked.Contains(name, StringComparer.Ordinal);
+            var description = CompanionToolDescriptions.GetValueOrDefault(name, string.Empty);
+            var option = new CompanionToolOptionViewModel(name, description, isTicked);
+            option.PropertyChanged += async (_, e) =>
+            {
+                if (e.PropertyName != nameof(CompanionToolOptionViewModel.IsTicked)) return;
+                await _configStore.UpdateAsync(c => c.TickedCompanionTools = CompanionToolCatalog.Where(o => o.IsTicked).Select(o => o.Name).ToList());
+            };
+            CompanionToolCatalog.Add(option);
+        }
+    }
+
+    [RelayCommand]
+    private void SelectAllCompanionTools()
+    {
+        foreach (var option in CompanionToolCatalog) option.IsTicked = true;
+    }
+
     private (string Name, Func<Task<bool>> Install)[] CompanionToolingSteps => new (string, Func<Task<bool>>)[]
     {
         ("Graphify", _companionTooling.InstallGraphifyAsync),
@@ -919,7 +819,17 @@ public partial class MainViewModel : ViewModelBase
         CompanionToolingProgress = 0;
         try
         {
-            var steps = CompanionToolingSteps;
+            if (CompanionToolCatalog.Count == 0)
+            {
+                RefreshCompanionToolCatalog(await _configStore.LoadAsync());
+            }
+            var tickedNames = new HashSet<string>(CompanionToolCatalog.Where(o => o.IsTicked).Select(o => o.Name), StringComparer.Ordinal);
+            var steps = CompanionToolingSteps.Where(s => tickedNames.Contains(s.Name)).ToArray();
+            if (steps.Length == 0)
+            {
+                Log("No companion tools selected - tick at least one first.");
+                return;
+            }
             var total = steps.Length + (SelectedProject is not null ? 1 : 0);
             var stepNumber = 0;
 
@@ -1166,6 +1076,21 @@ public partial class MainViewModel : ViewModelBase
         _ = RefreshAllAsync();
     }
 
+    [RelayCommand]
+    private void SetOpenCodeZenCredential()
+    {
+        if (string.IsNullOrWhiteSpace(OpenCodeZenApiKeyInput))
+        {
+            Log("Enter an OpenCode Zen API key first (sign in at https://opencode.ai/auth to get one - separate from the OpenCode Go key above).");
+            return;
+        }
+
+        _credentials.SetCredential(FallbackProvider.OpenCodeZen, OpenCodeZenApiKeyInput);
+        OpenCodeZenApiKeyInput = string.Empty;
+        Log("OpenCode Zen credential stored (DPAPI-encrypted, this account only).");
+        _ = RefreshAllAsync();
+    }
+
     /// <summary>Actually opens the Antigravity CLI (no separate "login" subcommand - it prompts sign-in on first interactive run) rather than only flipping an internal opt-in flag with nothing visible happening. Does NOT mark the provider available itself - CheckAntigravityLoginAsync verifies that for real.</summary>
     [RelayCommand]
     private void LoginAntigravity()
@@ -1256,13 +1181,6 @@ public partial class MainViewModel : ViewModelBase
     }
 
     [RelayCommand]
-    private async Task BrowseMasterFolderAsync()
-    {
-        var picked = await FolderPickerService.PickFolderAsync("Select a master folder");
-        if (picked is not null) MasterFolderPath = picked;
-    }
-
-    [RelayCommand]
     private async Task AddProjectAsync()
     {
         if (string.IsNullOrWhiteSpace(NewProjectPath))
@@ -1349,7 +1267,7 @@ public partial class MainViewModel : ViewModelBase
 
                 await ClaudeCodeAdapter.RefreshPluginMarketplacesAsync(claudeExe);
 
-var preset = SessionPresetStore.ReadOrDefault(SelectedProject.FullPath);
+                var preset = SessionPresetStore.ReadOrDefault(SelectedProject.FullPath);
                 ProviderFitScore FitOf(string key) =>
                     ModelFitCatalog.ByModelKey.TryGetValue(key, out var modelFit)
                         ? modelFit
@@ -1361,7 +1279,17 @@ var preset = SessionPresetStore.ReadOrDefault(SelectedProject.FullPath);
                 await router.StartAsync();
 
                 var defaultModelId = orderedBridged[0].ModelId;
-                var args = new List<string> { $"--model {defaultModelId}" };
+                var args = new List<string>();
+                if (defaultModelId.StartsWith("claude-", StringComparison.OrdinalIgnoreCase))
+                {
+                    args.Add($"--model {defaultModelId}");
+                }
+                // Else: leave --model unset. Claude Code validates --model/ANTHROPIC_MODEL against the
+                // account's real entitlements before any request reaches this proxy - a non-Claude id
+                // there gets rejected ("restricted by your organization's settings") and silently
+                // coerced back to the account default, which is exactly the launch-time failure this
+                // guards against. The CLI just boots on its own default instead; the full ticked set
+                // (including this pick) is still reachable live via /model - see UnifiedModelRouter.
                 var resumeFlag = resumeMode switch { SessionResumeMode.Continue => "--continue", SessionResumeMode.Pick => "--resume", _ => null };
                 if (resumeFlag is not null) args.Add(resumeFlag);
 
@@ -1373,6 +1301,21 @@ var preset = SessionPresetStore.ReadOrDefault(SelectedProject.FullPath);
                     UseShellExecute = false,
                 };
                 psi.EnvironmentVariables["ANTHROPIC_BASE_URL"] = router.BaseUrl;
+                // Gateway model discovery (GET /v1/models -> /model picker, labeled "From gateway")
+                // fires from Claude Code's own Vna() gate, which requires ANTHROPIC_BASE_URL, a
+                // non-empty ANTHROPIC_AUTH_TOKEN, and CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 -
+                // AND getAPIProvider() still resolving to "firstParty". Do NOT set
+                // CLAUDE_CODE_USE_GATEWAY here: it forces getAPIProvider() to "firstParty"'s sibling
+                // "gateway" mode, which is an unrelated real enterprise-SSO auth path - Vna() checks
+                // `to()!=="firstParty"` and bails, so the discovery request never fires at all.
+                // Confirmed live: with CLAUDE_CODE_USE_GATEWAY unset, claude.exe's own debug log
+                // shows "[gatewayDiscovery] cached N models"; with it set to 1, discovery is skipped
+                // and only an unrelated "[Bootstrap] Gateway /v1/models" bucket gets populated that
+                // the /model picker never reads. The auth token value is never checked against
+                // anything real here - the router doesn't validate incoming auth - it only needs to
+                // be non-empty to satisfy Vna()'s gate.
+                psi.EnvironmentVariables["ANTHROPIC_AUTH_TOKEN"] = "tokenoptimizer-local-gateway";
+                psi.EnvironmentVariables["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1";
                 psi.EnvironmentVariables["CLAUDE_MEM_WORKER_PORT"] = CompanionToolingInstaller.IsolatedWorkerPort.ToString();
                 psi.EnvironmentVariables["CLAUDE_MEM_DATA_DIR"] = CompanionToolingInstaller.IsolatedDataDir;
                 if (IsolateClaudeConfig)
@@ -1447,6 +1390,9 @@ var preset = SessionPresetStore.ReadOrDefault(SelectedProject.FullPath);
                 return true;
             case "OpenCode":
                 route = new UnifiedModelRouter.ModelRoute(new Uri("https://opencode.ai/zen/go"), RouteKind.AnthropicPassthrough, () => _credentials.GetCredentialPlainText(FallbackProvider.OpenCode));
+                return true;
+            case "OpenCode Zen":
+                route = new UnifiedModelRouter.ModelRoute(new Uri("https://opencode.ai/zen/v1"), RouteKind.OpenAiTranslate, () => _credentials.GetCredentialPlainText(FallbackProvider.OpenCodeZen));
                 return true;
             default:
                 route = null!;

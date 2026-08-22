@@ -117,11 +117,24 @@ public sealed class CompanionToolingInstaller
     public async Task<bool> InstallClaudeMemAsync()
     {
         var config = await _configStore.LoadAsync();
-        if (config.ClaudeMemInstalled) return true;
-        if (!_availability.IsOnPath("npm", useCache: true)) return false;
 
         var cmemDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude-mem");
         var cmemSettings = Path.Combine(cmemDir, "settings.json");
+        var pluginPathPreCheck = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "plugins", "marketplaces", "thedotmack", "claude-mem");
+        var alreadyPresent = File.Exists(cmemSettings) ||
+            (Directory.Exists(pluginPathPreCheck) && Directory.EnumerateFiles(pluginPathPreCheck, "*", SearchOption.AllDirectories).Any());
+        if (alreadyPresent)
+        {
+            if (!config.ClaudeMemInstalled)
+            {
+                config.ClaudeMemInstalled = true;
+                await _configStore.SaveAsync(config);
+            }
+            return true;
+        }
+        if (!_availability.IsOnPath("npm", useCache: true)) return false;
+
         if (!File.Exists(cmemSettings))
         {
             try
@@ -146,9 +159,7 @@ public sealed class CompanionToolingInstaller
             timeoutSeconds: 45,
             extraEnvironment: new Dictionary<string, string> { ["CI"] = "true", ["NON_INTERACTIVE"] = "1" });
 
-        var pluginPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "plugins", "marketplaces", "thedotmack", "claude-mem");
-        var pluginHasContent = Directory.Exists(pluginPath) && Directory.EnumerateFiles(pluginPath, "*", SearchOption.AllDirectories).Any();
+        var pluginHasContent = Directory.Exists(pluginPathPreCheck) && Directory.EnumerateFiles(pluginPathPreCheck, "*", SearchOption.AllDirectories).Any();
 
         if (result.Success || pluginHasContent || File.Exists(cmemSettings))
         {
@@ -388,8 +399,22 @@ public sealed class CompanionToolingInstaller
 
     public async Task<bool> InstallHeadroomStatuslineAsync()
     {
+        // Check live state FIRST, not the sticky flag - a prior manual/outside-app
+        // install (or one where the flag write raced a crash) leaves the flag
+        // false even though statusline.sh + the hook are genuinely present and
+        // working, which used to force a full curl-reinstall on every single
+        // launch and made a transient network hiccup there read as "headroom:
+        // failed" despite headroom already working fine.
         var config = await _configStore.LoadAsync();
-        if (config.HeadroomInstalled && await TestHeadroomWorkingAsync()) return true;
+        if (await TestHeadroomWorkingAsync())
+        {
+            if (!config.HeadroomInstalled)
+            {
+                config.HeadroomInstalled = true;
+                await _configStore.SaveAsync(config);
+            }
+            return true;
+        }
 
         var pythonExe = await _pythonLocator.FindWorkingPythonAsync();
         if (pythonExe is null) return false;
@@ -531,6 +556,14 @@ public sealed class CompanionToolingInstaller
     {
         var exe = await _claudeLocator.FindAsync();
         if (exe is null) return false;
+
+        // Real-state check first: a sticky flag can be false (never set by this
+        // app, or reset by a config wipe) while the plugin is genuinely already
+        // registered - skip straight past the network-touching marketplace
+        // add/install calls in that case rather than re-running them on every
+        // "Install Companion Tooling" click.
+        var precheck = await ExternalCommandRunner.RunAsync(exe, "plugin list", timeoutSeconds: 15);
+        if (precheck.Success && precheck.Output.Contains(pluginId, StringComparison.OrdinalIgnoreCase)) return true;
 
         await ExternalCommandRunner.RunAsync(exe, $"plugin marketplace add {marketplaceLocator}", timeoutSeconds: 30);
         var installResult = await ExternalCommandRunner.RunAsync(exe, $"plugin install {pluginId}@{marketplaceName} --scope {scope}", timeoutSeconds: 60);
@@ -744,10 +777,21 @@ public sealed class CompanionToolingInstaller
     public async Task<bool> InstallRtkCliAsync()
     {
         var config = await _configStore.LoadAsync();
-        if (config.RtkCliInstalled) return true;
 
         var rtkDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "rtk");
         var rtkExe = Path.Combine(rtkDir, "rtk.exe");
+        var globalSettingsPathPreCheck = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "settings.json");
+        var hookAlreadyRegistered = File.Exists(globalSettingsPathPreCheck) &&
+            File.ReadAllText(globalSettingsPathPreCheck).Contains("rtk.exe hook claude", StringComparison.OrdinalIgnoreCase);
+        if (File.Exists(rtkExe) && hookAlreadyRegistered)
+        {
+            if (!config.RtkCliInstalled)
+            {
+                config.RtkCliInstalled = true;
+                await _configStore.SaveAsync(config);
+            }
+            return true;
+        }
 
         if (!File.Exists(rtkExe))
         {
@@ -801,11 +845,21 @@ public sealed class CompanionToolingInstaller
     public async Task<bool> RegisterContext7McpAsync()
     {
         var config = await _configStore.LoadAsync();
-        if (config.Context7McpInstalled) return true;
         if (!_availability.IsOnPath("claude", useCache: true) || !_availability.IsOnPath("npx", useCache: true)) return false;
 
         var exe = await _claudeLocator.FindAsync();
         if (exe is null) return false;
+
+        var existingList = await ExternalCommandRunner.RunAsync(exe, "mcp list", timeoutSeconds: 15);
+        if (existingList.Success && existingList.Output.Contains("context7", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!config.Context7McpInstalled)
+            {
+                config.Context7McpInstalled = true;
+                await _configStore.SaveAsync(config);
+            }
+            return true;
+        }
 
         var result = await ExternalCommandRunner.RunAsync(exe, "mcp add --scope user context7 -- npx -y @upstash/context7-mcp", timeoutSeconds: 30);
         if (!result.Success && !result.Output.Contains("already exists", StringComparison.OrdinalIgnoreCase) &&
@@ -885,9 +939,22 @@ public sealed class CompanionToolingInstaller
         lines.Add($"context-mode {(pluginListOutput is not null && pluginListOutput.Contains("context-mode", StringComparison.OrdinalIgnoreCase) ? "[OK]" : "[MISSING]")}");
         lines.Add($"ponytail {(pluginListOutput is not null && pluginListOutput.Contains("ponytail", StringComparison.OrdinalIgnoreCase) ? "[OK]" : "[MISSING]")}");
 
-        var rtkHook = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "hooks", "rtk-rewrite.sh");
+        // RTK's hook is a direct PreToolUse command entry inside settings.json
+        // (not a separate wrapper script) - checking for a rtk-rewrite.sh file
+        // that's never created would falsely report [OK] off the binary alone
+        // even if the hook entry were ever removed from settings.json.
         var rtkExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "rtk", "rtk.exe");
-        lines.Add($"rtk {(File.Exists(rtkHook) || File.Exists(rtkExe) ? "[OK]" : "[MISSING]")}");
+        var globalSettingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "settings.json");
+        var rtkHookRegistered = false;
+        try
+        {
+            if (File.Exists(globalSettingsPath))
+            {
+                rtkHookRegistered = File.ReadAllText(globalSettingsPath).Contains("rtk.exe hook claude", StringComparison.OrdinalIgnoreCase);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* best effort */ }
+        lines.Add($"rtk {(File.Exists(rtkExe) && rtkHookRegistered ? "[OK]" : "[MISSING]")}");
 
         if (exe is not null)
         {

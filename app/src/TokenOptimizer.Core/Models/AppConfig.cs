@@ -40,9 +40,6 @@ public sealed class AppConfig
     /// <summary>"ProviderName::ModelId" keys ticked in the Models card - what shows up in Claude Code's own /model list on next launch (see MainViewModel.LaunchTickedModelsAsync / UnifiedModelRouter).</summary>
     public List<string>? TickedModels { get; set; }
 
-    /// <summary>Provider (or "Auto (fallback chain)" / "Custom (fallback chain)") to launch under when a master-folder subdirectory is double-clicked in the tree browser. Null = use whatever SelectedProviderName currently is.</summary>
-    public string? AutoLaunchProviderName { get; set; }
-
     /// <summary>Last resolved local embeddings endpoint for auto-wired RAG retrieval (see MainViewModel.AutoDetectRagEndpointAsync) - probed automatically, no manual toggle.</summary>
     public string? LastDetectedRagEmbeddingsUrl { get; set; }
 
@@ -51,4 +48,10 @@ public sealed class AppConfig
 
     /// <summary>Agency-agent slug names ticked for sync into Claude Code's agents directory.</summary>
     public List<string>? TickedAgencyAgents { get; set; }
+
+    /// <summary>Local date (yyyy-MM-dd) the daily companion-tooling auto-update last ran - see MainViewModel.RunDailyAutoUpdateIfNeededAsync. Null/stale means it hasn't run today yet.</summary>
+    public string? LastAutoUpdateCheckDate { get; set; }
+
+    /// <summary>Companion-tool names ticked in the Setup tab's picker - null means "everything" (pre-existing installs before this list existed keep their all-tools behavior).</summary>
+    public List<string>? TickedCompanionTools { get; set; }
 }

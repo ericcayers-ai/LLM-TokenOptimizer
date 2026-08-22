@@ -54,9 +54,12 @@ public class UnifiedModelRouterTests : IDisposable
         var data = body!["data"] as JsonArray;
         Assert.NotNull(data);
         var ids = data!.Select(n => n?["id"]?.GetValue<string>()).ToHashSet();
+        // Non-Claude ids are disguised with a "claude-gateway-" prefix so Claude Code's
+        // /model picker (which silently drops any id not containing "claude"/"anthropic")
+        // still surfaces them - see UnifiedModelRouter.Advertise.
         Assert.Contains("claude-sonnet-5", ids);
-        Assert.Contains("groq/compound", ids);
-        Assert.Contains("mimo-v2.5", ids);
+        Assert.Contains("claude-gateway-groq/compound", ids);
+        Assert.Contains("claude-gateway-mimo-v2.5", ids);
     }
 
     [Fact]
@@ -79,7 +82,7 @@ public class UnifiedModelRouterTests : IDisposable
         var data = body!["data"] as JsonArray;
         var ids = data!.Select(n => n?["id"]?.GetValue<string>()).ToHashSet();
         Assert.Contains("claude-sonnet-5", ids);
-        Assert.Contains("__auto__", ids);
+        Assert.Contains("claude-gateway-__auto__", ids);
     }
 
     [Fact]

@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using TokenOptimizer.Core.Projects;
 
 namespace TokenOptimizer.Providers.Claude;
@@ -14,6 +16,12 @@ public sealed class IsolatedClaudeProfileService
 {
     private static readonly string[] SeedLeaves = ["settings.json", "CLAUDE.md", "commands", "agents", "skills"];
 
+    /// <summary>Default auto-compact ceiling for isolated profiles - matches what a non-isolated session already gets from the real ~/.claude/settings.json.</summary>
+    public const int DefaultAutoCompactTokenLimit = 350_000;
+
+    /// <summary>Lower ceiling for local (LlamaCpp/Unsloth) model sessions - smaller context windows and slower local inference make an earlier compaction the safer default.</summary>
+    public const int LocalModelAutoCompactTokenLimit = 200_000;
+
     /// <summary>Returns the isolated CLAUDE_CONFIG_DIR path for a project without creating it.</summary>
     public static string GetProfileDirPath(string projectDirectory)
     {
@@ -24,13 +32,13 @@ public sealed class IsolatedClaudeProfileService
     }
 
     /// <summary>Creates (if needed) and returns the isolated CLAUDE_CONFIG_DIR path for a project.</summary>
-    public static string GetOrCreateProfileDir(string projectDirectory)
+    public static string GetOrCreateProfileDir(string projectDirectory, int autoCompactTokenLimit = DefaultAutoCompactTokenLimit)
     {
         var source = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");
-        return GetOrCreateProfileDir(projectDirectory, source);
+        return GetOrCreateProfileDir(projectDirectory, source, autoCompactTokenLimit);
     }
 
-    internal static string GetOrCreateProfileDir(string projectDirectory, string sourceClaudeConfigDir)
+    internal static string GetOrCreateProfileDir(string projectDirectory, string sourceClaudeConfigDir, int autoCompactTokenLimit = DefaultAutoCompactTokenLimit)
     {
         var profileDir = GetProfileDirPath(projectDirectory);
         var created = !Directory.Exists(profileDir);
@@ -65,7 +73,38 @@ public sealed class IsolatedClaudeProfileService
                 Path.Combine(profileDir, "plugins", "installed_plugins.json"));
         }
 
+        // Kept in sync on every launch (not just at profile creation) so an
+        // isolated profile never drifts from whatever token limit this app
+        // currently applies - regardless of provider/model, and regardless
+        // of whether the profile predates this setting existing at all.
+        EnsureAutoCompactWindow(profileDir, autoCompactTokenLimit);
+
         return profileDir;
+    }
+
+    /// <summary>Merge-writes autoCompactWindow into the profile's settings.json without disturbing any other key already there.</summary>
+    private static void EnsureAutoCompactWindow(string profileDir, int tokenLimit)
+    {
+        var settingsPath = Path.Combine(profileDir, "settings.json");
+        try
+        {
+            JsonObject root;
+            if (File.Exists(settingsPath))
+            {
+                root = JsonNode.Parse(File.ReadAllText(settingsPath)) as JsonObject ?? new JsonObject();
+            }
+            else
+            {
+                root = new JsonObject();
+            }
+
+            var current = root["autoCompactWindow"] as JsonValue;
+            if (current is not null && current.TryGetValue<int>(out var currentLimit) && currentLimit == tokenLimit) return;
+
+            root["autoCompactWindow"] = tokenLimit;
+            File.WriteAllText(settingsPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { /* best effort - a missing/malformed settings.json just keeps Claude Code's own default */ }
     }
 
     private static void ReSyncFile(string sourceFile, string destFile)

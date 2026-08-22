@@ -47,7 +47,7 @@
                                     </StackPanel>
                                     <ListBox ItemsSource="{Binding ProjectHistoryList}"
                                              SelectedItem="{Binding SelectedProject}"
-                                             Height="180">
+                                             Height="360">
                                         <ListBox.ItemTemplate>
                                             <DataTemplate>
                                                 <StackPanel>
@@ -63,47 +63,7 @@
                                         <TextBox Grid.Column="0" PlaceholderText="C:\path\to\project" Text="{Binding NewProjectPath}" />
                                         <Button Grid.Column="1" Content="Browse..." Command="{Binding BrowseProjectFolderCommand}" Margin="4,0,0,0" />
                                     </Grid>
-                                    <Button Content="Add" Command="{Binding AddProjectCommand}" HorizontalAlignment="Stretch" />
-
-                                    <TextBlock Text="Master folder" Classes="SubHeader" />
-                                    <Grid ColumnDefinitions="*,Auto">
-                                        <TextBox Grid.Column="0" Text="{Binding MasterFolderPath}" PlaceholderText="C:\path\to\projects" />
-                                        <Button Grid.Column="1" Content="Browse..." Command="{Binding BrowseMasterFolderCommand}" Margin="4,0,0,0" />
-                                    </Grid>
-                                    <StackPanel Orientation="Horizontal" Spacing="8">
-                                        <Button Content="Set" Command="{Binding SetMasterFolderCommand}" />
-                                        <Button Content="Refresh" Command="{Binding RefreshMasterFolderCandidatesCommand}" />
-                                        <Button Content="{Binding MasterFolderTreeToggleLabel}" Command="{Binding ShowMasterFolderTreeCommand}" ToolTip.Tip="Show a tree of every subdirectory under this master folder - double-click one to launch a session there." />
-                                    </StackPanel>
-                                    <ListBox ItemsSource="{Binding MasterFolderCandidates}" Height="120">
-                                        <ListBox.ItemTemplate>
-                                            <DataTemplate>
-                                                <StackPanel Orientation="Horizontal" Spacing="6">
-                                                    <CheckBox IsChecked="{Binding IsSelected}" />
-                                                    <TextBlock Text="{Binding Name}" />
-                                                    <TextBlock Text="(seen)" FontSize="10" Foreground="{DynamicResource LabelSecondary}" IsVisible="{Binding SeenBefore}" />
-                                                </StackPanel>
-                                            </DataTemplate>
-                                        </ListBox.ItemTemplate>
-                                    </ListBox>
-
-                                    <Border IsVisible="{Binding IsMasterFolderTreeOpen}" BorderBrush="{DynamicResource SystemGray3}" BorderThickness="1" CornerRadius="6" Height="260" ClipToBounds="True">
-                                        <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" Padding="6">
-                                            <TreeView ItemsSource="{Binding MasterFolderTree}">
-                                                <TreeView.ItemTemplate>
-                                                    <TreeDataTemplate ItemsSource="{Binding Children}">
-                                                        <TextBlock Text="{Binding Name}"
-                                                                   DoubleTapped="MasterFolderTreeNode_DoubleTapped" />
-                                                    </TreeDataTemplate>
-                                                </TreeView.ItemTemplate>
-                                            </TreeView>
-                                        </ScrollViewer>
-                                    </Border>
-                                    <StackPanel Orientation="Horizontal" Spacing="8">
-                                        <TextBox Text="{Binding NewProjectFolderName}" PlaceholderText="new folder name" Width="150" />
-                                        <Button Content="Create" Command="{Binding CreateProjectFolderCommand}" />
-                                    </StackPanel>
-                                    <Button Content="Launch Checked" Command="{Binding LaunchSelectedCandidatesCommand}" HorizontalAlignment="Stretch" />
+                                    <Button Content="Add" Command="{Binding AddProjectCommand}" HorizontalAlignment="Stretch" Classes="primary" />
                                 </StackPanel>
                             </Border>
                         </StackPanel>
@@ -147,10 +107,30 @@
                                             <TextBlock Text="Companion tooling" Classes="SectionHeader" />
                                             <TextBlock Text="done" Foreground="{DynamicResource SystemGreen}" FontSize="11" VerticalAlignment="Center" IsVisible="{Binding SetupStep3Done}" />
                                         </StackPanel>
-                                        <Button Grid.Column="1" Content="Install Companion Tooling" Command="{Binding InstallCompanionToolingCommand}" Classes="primary" />
+                                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                                            <Button Content="Select all" Command="{Binding SelectAllCompanionToolsCommand}" />
+                                            <Button Content="Install Selected" Command="{Binding InstallCompanionToolingCommand}" Classes="primary" />
+                                        </StackPanel>
                                     </Grid>
-                                    <TextBlock Text="graphify, claude-mem, headroom, rtk, context7, context-mode, caveman, claude-md-management, impeccable, task-observer, and the Codex/Antigravity/Cursor fallback-chain CLIs."
-                                               TextWrapping="Wrap" Foreground="{DynamicResource LabelTertiary}" FontSize="11" />
+                                    <TextBlock Text="Tick whichever companion tools you want installed and kept up to date (a daily check runs automatically at startup for whatever's ticked here)."
+                                               TextWrapping="Wrap" Foreground="{DynamicResource LabelSecondary}" FontSize="11" />
+                                    <Border BorderBrush="{DynamicResource SystemGray3}" BorderThickness="1" CornerRadius="6" Height="260">
+                                        <ScrollViewer>
+                                            <ItemsControl ItemsSource="{Binding CompanionToolCatalog}" Margin="8,4">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <StackPanel Orientation="Horizontal" Spacing="6" Margin="0,3">
+                                                            <CheckBox IsChecked="{Binding IsTicked}" VerticalAlignment="Top" />
+                                                            <StackPanel>
+                                                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="12" />
+                                                                <TextBlock Text="{Binding Description}" Foreground="{DynamicResource LabelTertiary}" FontSize="11" TextWrapping="Wrap" />
+                                                            </StackPanel>
+                                                        </StackPanel>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </ScrollViewer>
+                                    </Border>
                                     <ProgressBar Value="{Binding CompanionToolingProgress}" Minimum="0" Maximum="1"
                                                  IsVisible="{Binding IsCompanionToolingInstalling}" Height="6" />
                                 </StackPanel>
@@ -266,9 +246,15 @@
                                 </StackPanel>
                                 <StackPanel Orientation="Horizontal" Spacing="8">
                                     <TextBox Text="{Binding OpenCodeApiKeyInput}" PlaceholderText="API key for OpenCode Go" Width="220" PasswordChar="*" />
-                                    <Button Content="Save OpenCode Key" Command="{Binding SetOpenCodeCredentialCommand}" />
+                                    <Button Content="Save OpenCode Go Key" Command="{Binding SetOpenCodeCredentialCommand}" />
                                 </StackPanel>
                                 <TextBlock Text="OpenCode Go models: mimo-v2.5 (default, balanced), glm-5 (cheap), minimax-m2.7, kimi-k2.5, qwen3.8-max, glm-5.2 (optional, expensive) - or type any model id it offers in the Model override field above."
+                                           Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <TextBox Text="{Binding OpenCodeZenApiKeyInput}" PlaceholderText="API key for OpenCode Zen (separate account from Go)" Width="220" PasswordChar="*" />
+                                    <Button Content="Save OpenCode Zen Key" Command="{Binding SetOpenCodeZenCredentialCommand}" />
+                                </StackPanel>
+                                <TextBlock Text="OpenCode Zen is a separate gateway from OpenCode Go - own sign-in (opencode.ai/auth), own key. Its free-tier models (big-pickle, mimo-v2.5-free, hy3-free, nemotron-3-ultra-free, nemotron-3.5-lightning-free, muse-spark-1.2-contributor-free, deepseek-v4-flash-free, x-preview-f-free, laguna-s-2.1-free) show up as their own group in the Models list above."
                                            Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
 
                                 <Border BorderBrush="{DynamicResource SystemGray3}" BorderThickness="1" CornerRadius="6" Padding="10">

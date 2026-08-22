@@ -144,7 +144,7 @@ public sealed class LlamaCppAdapter : IProviderAdapter
         }
         if (options.IsolateConfig)
         {
-            var profileDir = IsolatedClaudeProfileService.GetOrCreateProfileDir(options.ProjectPath);
+            var profileDir = IsolatedClaudeProfileService.GetOrCreateProfileDir(options.ProjectPath, IsolatedClaudeProfileService.LocalModelAutoCompactTokenLimit);
             psi.EnvironmentVariables["CLAUDE_CONFIG_DIR"] = profileDir;
         }
 
@@ -208,7 +208,7 @@ public sealed class LlamaCppAdapter : IProviderAdapter
         psi.EnvironmentVariables["ANTHROPIC_AUTH_TOKEN"] = "proxied-locally"; // the proxy injects the real upstream credential; the CLI never needs to see it.
         if (options.IsolateConfig)
         {
-            psi.EnvironmentVariables["CLAUDE_CONFIG_DIR"] = IsolatedClaudeProfileService.GetOrCreateProfileDir(options.ProjectPath);
+            psi.EnvironmentVariables["CLAUDE_CONFIG_DIR"] = IsolatedClaudeProfileService.GetOrCreateProfileDir(options.ProjectPath, IsolatedClaudeProfileService.LocalModelAutoCompactTokenLimit);
         }
 
         var process = Process.Start(psi)
