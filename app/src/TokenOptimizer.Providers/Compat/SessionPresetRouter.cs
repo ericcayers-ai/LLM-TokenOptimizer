@@ -160,4 +160,48 @@ public static class SessionPresetRanker
             .Concat(knownList.Except(pool))
             .ToList();
     }
+
+    /// <summary>
+    /// Per-model variant of Rank for a set of ticked models within one provider:
+    /// keys are "{providerName}::{modelId}" (the same Key shape
+    /// ProviderModelOptionViewModel exposes). Uses the per-model fit when the
+    /// catalog has one, otherwise falls back to that model's provider-level fit.
+    /// </summary>
+    public static IReadOnlyList<T> RankModels<T>(
+        IEnumerable<T> models,
+        Func<T, string> keyOf,
+        Func<string, ProviderFitScore> fitOf,
+        SessionPreset preset)
+    {
+        var modelsList = models.ToList();
+        if (modelsList.Count == 0) return modelsList;
+        var rankedKeys = Rank(modelsList.Select(keyOf), fitOf, preset);
+        return rankedKeys
+            .Select(key => modelsList.First(m => keyOf(m) == key))
+            .ToList();
+    }
+}
+
+/// <summary>
+/// Per-model fit scores keyed by "{providerName}::{modelId}" - the pattern to
+/// generalize from OpenCodeModelCatalog's per-model CostTier, now applied to
+/// Groq's and Claude's models so that when multiple models are ticked within one
+/// provider the launch order follows the resolved preset (via RankModels) instead
+/// of fixed catalog declaration order. Models without a curated entry fall back
+/// to their provider-level ProviderFit at ranking time.
+/// </summary>
+public static class ModelFitCatalog
+{
+    public static readonly IReadOnlyDictionary<string, ProviderFitScore> ByModelKey = new Dictionary<string, ProviderFitScore>(StringComparer.Ordinal)
+    {
+        ["Claude Code::claude-sonnet-5"] = new(0.95, 0.55, ModelCostTier.Premium),
+        ["Claude Code::claude-opus-5"] = new(0.95, 0.45, ModelCostTier.Premium),
+        ["Claude Code::claude-fable-5"] = new(0.85, 0.60, ModelCostTier.Premium),
+        ["Claude Code::claude-haiku-4-5-20251001"] = new(0.70, 0.90, ModelCostTier.Balanced),
+        ["Groq::openai/gpt-oss-120b"] = new(0.70, 0.80, ModelCostTier.Balanced),
+        ["Groq::openai/gpt-oss-20b"] = new(0.55, 0.90, ModelCostTier.Cheap),
+        ["Groq::qwen/qwen3.6-27b"] = new(0.75, 0.85, ModelCostTier.Balanced),
+        ["Groq::groq/compound"] = new(0.80, 0.95, ModelCostTier.Balanced),
+        ["Groq::groq/compound-mini"] = new(0.60, 0.95, ModelCostTier.Cheap),
+    };
 }

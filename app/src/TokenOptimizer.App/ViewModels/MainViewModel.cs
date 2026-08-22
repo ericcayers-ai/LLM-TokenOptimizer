@@ -1349,11 +1349,18 @@ public partial class MainViewModel : ViewModelBase
 
                 await ClaudeCodeAdapter.RefreshPluginMarketplacesAsync(claudeExe);
 
+var preset = SessionPresetStore.ReadOrDefault(SelectedProject.FullPath);
+                ProviderFitScore FitOf(string key) =>
+                    ModelFitCatalog.ByModelKey.TryGetValue(key, out var modelFit)
+                        ? modelFit
+                        : ProviderFit.TryGetValue(key.Split("::")[0], out var providerFit) ? providerFit : new ProviderFitScore(0.5, 0.5, ModelCostTier.Balanced);
+                var orderedBridged = SessionPresetRanker.RankModels(bridged, m => m.Key, FitOf, preset);
+
                 var routes = BuildModelRoutesForTickedModels(ticked);
                 var router = new UnifiedModelRouter(routes, autoFallbackDelegate: ResolveAutoFallbackRouteAsync);
                 await router.StartAsync();
 
-                var defaultModelId = bridged[0].ModelId;
+                var defaultModelId = orderedBridged[0].ModelId;
                 var args = new List<string> { $"--model {defaultModelId}" };
                 var resumeFlag = resumeMode switch { SessionResumeMode.Continue => "--continue", SessionResumeMode.Pick => "--resume", _ => null };
                 if (resumeFlag is not null) args.Add(resumeFlag);

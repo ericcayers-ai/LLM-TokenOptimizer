@@ -112,6 +112,56 @@ public class SessionPresetRouterTests
         Assert.Equal("Cheap Fast", ranked[^1]);
     }
 
+    /// <summary>Stage 5: within one provider's ticked set, a Quality preset must order the higher-ReasoningScore model first.</summary>
+    [Fact]
+    public void RankModels_QualityPreset_OrdersHigherReasoningModelFirstWithinProvider()
+    {
+        var models = new[] { "Groq::openai/gpt-oss-20b", "Groq::groq/compound" };
+
+        var ranked = SessionPresetRanker.RankModels(
+            models,
+            key => key,
+            key => ModelFitCatalog.ByModelKey[key],
+            new SessionPreset(SessionPresetIntent.Planning, SessionPresetTier.Quality));
+
+        Assert.Equal("Groq::groq/compound", ranked[0]);
+        Assert.Equal("Groq::openai/gpt-oss-20b", ranked[1]);
+    }
+
+    /// <summary>Stage 5: a Cost-effective preset must order the cheaper model first within the same provider.</summary>
+    [Fact]
+    public void RankModels_CostEffectivePreset_OrdersCheaperModelFirstWithinProvider()
+    {
+        var models = new[] { "Groq::groq/compound", "Groq::openai/gpt-oss-20b" };
+
+        var ranked = SessionPresetRanker.RankModels(
+            models,
+            key => key,
+            key => ModelFitCatalog.ByModelKey[key],
+            new SessionPreset(SessionPresetIntent.Execution, SessionPresetTier.CostEffective));
+
+        Assert.Equal("Groq::openai/gpt-oss-20b", ranked[0]);
+        Assert.Equal("Groq::groq/compound", ranked[1]);
+    }
+
+    /// <summary>Stage 5: a model without a curated per-model entry must fall back to its provider-level fit, not be dropped.</summary>
+    [Fact]
+    public void RankModels_UnknownModel_FallsBackToProviderFit()
+    {
+        var models = new[] { "OpenCode::mimo-v2.5", "OpenCode::glm-5" };
+
+        var ranked = SessionPresetRanker.RankModels(
+            models,
+            key => key,
+            key => ModelFitCatalog.ByModelKey.TryGetValue(key, out var fit)
+                ? fit
+                : new ProviderFitScore(0.70, 0.60, ModelCostTier.Balanced),
+            new SessionPreset(SessionPresetIntent.Planning, SessionPresetTier.Quality));
+
+        Assert.Equal(2, ranked.Count);
+        Assert.Equal("OpenCode::mimo-v2.5", ranked[0]);
+    }
+
     private static string CreateTempDir()
     {
         var dir = Path.Combine(Path.GetTempPath(), "session-preset-tests", Guid.NewGuid().ToString());
