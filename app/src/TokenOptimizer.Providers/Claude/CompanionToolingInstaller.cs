@@ -864,36 +864,36 @@ public sealed class CompanionToolingInstaller
 
     public async Task<IReadOnlyList<string>> DescribeActiveCompressionAsync()
     {
-        var config = await _configStore.LoadAsync();
+        // Live re-verification pass: reports the ACTUAL on-disk/CLI state of
+        // every compression/companion tool, deliberately NOT gated on the
+        // sticky install flags (a stale flag would otherwise hide a real
+        // install, or claim one that was removed - the flags drift when these
+        // tools are installed/removed outside this app's own flow). Runs
+        // `claude plugin list`/`claude mcp list` once each and checks every
+        // tool against that single output rather than shelling out per tool.
         var lines = new List<string>();
         var exe = await _claudeLocator.FindAsync();
 
-        if ((config.CavemanPluginInstalled || config.ContextModeMcpInstalled) && exe is not null)
+        string? pluginListOutput = null;
+        if (exe is not null)
         {
             var pluginList = await ExternalCommandRunner.RunAsync(exe, "plugin list", timeoutSeconds: 15);
-            if (config.CavemanPluginInstalled)
-            {
-                var active = pluginList.Success && pluginList.Output.Contains("caveman", StringComparison.OrdinalIgnoreCase);
-                lines.Add($"caveman {(active ? "[OK]" : "[MISSING]")}");
-            }
-            if (config.ContextModeMcpInstalled)
-            {
-                var active = pluginList.Success && pluginList.Output.Contains("context-mode", StringComparison.OrdinalIgnoreCase);
-                lines.Add($"context-mode {(active ? "[OK]" : "[MISSING]")}");
-            }
+            if (pluginList.Success) pluginListOutput = pluginList.Output;
         }
 
-        if (config.RtkCliInstalled)
-        {
-            var rtkHook = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "hooks", "rtk-rewrite.sh");
-            lines.Add($"rtk {(File.Exists(rtkHook) ? "[OK]" : "[MISSING]")}");
-        }
+        lines.Add($"caveman {(pluginListOutput is not null && pluginListOutput.Contains("caveman", StringComparison.OrdinalIgnoreCase) ? "[OK]" : "[MISSING]")}");
+        lines.Add($"context-mode {(pluginListOutput is not null && pluginListOutput.Contains("context-mode", StringComparison.OrdinalIgnoreCase) ? "[OK]" : "[MISSING]")}");
+        lines.Add($"ponytail {(pluginListOutput is not null && pluginListOutput.Contains("ponytail", StringComparison.OrdinalIgnoreCase) ? "[OK]" : "[MISSING]")}");
 
-        if (config.Context7McpInstalled && exe is not null)
+        var rtkHook = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "hooks", "rtk-rewrite.sh");
+        var rtkExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "rtk", "rtk.exe");
+        lines.Add($"rtk {(File.Exists(rtkHook) || File.Exists(rtkExe) ? "[OK]" : "[MISSING]")}");
+
+        if (exe is not null)
         {
             var mcpList = await ExternalCommandRunner.RunAsync(exe, "mcp list", timeoutSeconds: 15);
-            var active = mcpList.Success && System.Text.RegularExpressions.Regex.IsMatch(mcpList.Output, "context7.*Connected");
-            lines.Add($"context7 {(active ? "[OK]" : "[MISSING]")}");
+            var context7Active = mcpList.Success && System.Text.RegularExpressions.Regex.IsMatch(mcpList.Output, "context7.*Connected");
+            lines.Add($"context7 {(context7Active ? "[OK]" : "[MISSING]")}");
         }
 
         return lines;
