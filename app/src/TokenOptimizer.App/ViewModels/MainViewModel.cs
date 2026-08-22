@@ -599,8 +599,25 @@ public partial class MainViewModel : ViewModelBase
             : $"{doneCount} of 3 setup steps done.";
     }
 
+    /// <summary>In-flight cache for RefreshAllAsync - three+ callers (the constructor's fire-and-forget chains plus every user-triggered refresh) can overlap, and each one clearing/repopulating ModelCatalogGroups independently doubled provider groups on cold launch. A semaphore would serialize 3x redundant HF network round-trips; caching the in-flight Task lets every caller share one real execution.</summary>
+    private Task? _refreshAllInFlight;
+
+    /// <summary>Guard is a plain synchronous field check/assign - no await happens while holding it, so there is no async-lock deadlock risk.</summary>
+    private readonly object _refreshAllGate = new();
+
     [RelayCommand]
-    private async Task RefreshAllAsync()
+    public Task RefreshAllAsync()
+    {
+        lock (_refreshAllGate)
+        {
+            if (_refreshAllInFlight is { IsCompleted: false })
+                return _refreshAllInFlight;
+            _refreshAllInFlight = RefreshAllCoreAsync();
+            return _refreshAllInFlight;
+        }
+    }
+
+    private async Task RefreshAllCoreAsync()
     {
         IsBusy = true;
         StatusText = "Refreshing...";
