@@ -396,11 +396,7 @@ public partial class MainViewModel : ViewModelBase
     {
         _ = RefreshModelOverrideOptionsAsync(value);
         _ = RefreshDashboardAsync();
-        SelectedProviderDescription = ProviderDescriptions.TryGetValue(value, out var description) ? description : string.Empty;
     }
-
-    [ObservableProperty]
-    public partial string SelectedProviderDescription { get; set; } = string.Empty;
 
     /// <summary>The two ways a launch can pick its backend - an automatic fallback chain (default) or a user-drag-reordered custom chain.</summary>
     public ObservableCollection<string> LaunchModeNames { get; } = new(new[] { AutoFallbackProviderName, CustomFallbackProviderName });
@@ -424,28 +420,6 @@ public partial class MainViewModel : ViewModelBase
         AutoFallbackProviderName => _fallbackResolver.ResolveAsync(),
         CustomFallbackProviderName => ResolveCustomChainProviderAsync(),
         _ => _fallbackResolver.ResolveAsync(),
-    };
-
-    /// <summary>
-    /// One-line "what is this and how does it work" per dropdown entry, shown
-    /// live under the Provider picker - the raw names (esp. "DeepSeek Harness")
-    /// don't self-explain to a first-time user. Two families: providers that
-    /// launch Claude Code itself pointed at an alternate model/backend (same
-    /// terminal, same skills/plugins/memory), and providers that launch a
-    /// completely separate CLI/tool with its own session.
-    /// </summary>
-    private static readonly IReadOnlyDictionary<string, string> ProviderDescriptions = new Dictionary<string, string>
-    {
-        [AutoFallbackProviderName] = "Tries Claude Code, then Antigravity, then OpenCode, then the local model - first one available wins. Nothing to configure beyond credentials below. This is the default.",
-        [CustomFallbackProviderName] = "Same idea as Auto, but in the order you drag-reorder in the list above, and only across providers you've checked on.",
-        ["Claude Code"] = "Anthropic's own CLI, direct - no bridging, no fallback. The default.",
-        ["Antigravity"] = "Launches Claude Code itself, pointed at Antigravity through a local proxy. Same terminal, skills, plugins, and memory as Claude Code direct. Needs CLI login below.",
-        ["OpenCode"] = "Launches Claude Code itself, pointed at the OpenCode Go model gateway through a local proxy. Same terminal, skills, plugins, and memory as Claude Code direct. Needs an API key below (sign in at opencode.ai/zen).",
-        ["Unsloth (local model)"] = "Launches Claude Code itself, pointed at a model running locally on this machine (no internet, no API key). Always ready once Unsloth and a model are installed - use Install Companion Tooling below if it isn't found. Same terminal, skills, plugins, and memory as Claude Code direct.",
-        ["Groq"] = "Launches Claude Code itself, pointed at Groq through a local proxy. Same terminal, skills, plugins, and memory as Claude Code direct. Needs an API key below. Manual-only - not part of the Auto fallback chain.",
-        ["Codex"] = "Routes through jcode to OpenAI's Codex CLI, its own session and terminal. Needs jcode login below (run `jcode login --provider openai`). Manual-only - not part of Auto.",
-        ["Cursor"] = "A separate tool: the Cursor CLI, its own session and terminal. Needs CLI login below. Manual-only - not part of Auto.",
-        ["DeepSeek Harness"] = "A separate tool: deepseek-ai's own agent runtime (dev preview) - opens its own local web UI in your browser, not a terminal session. Manual-only - not part of Auto.",
     };
 
     /// <summary>Selecting the provider IS the category (Avalonia has no built-in grouped-combo control worth the complexity here) - Auto/Custom show the union of everything since the resolved provider decides which entry actually applies.</summary>
@@ -1349,96 +1323,6 @@ public partial class MainViewModel : ViewModelBase
         catch (Exception ex)
         {
             Log($"Handoff export failed: {ex.Message}");
-        }
-    }
-
-    [RelayCommand]
-    private async Task LaunchSessionAsync()
-    {
-        if (SelectedProject is null)
-        {
-            Log("Select a project first.");
-            return;
-        }
-
-        IsBusy = true;
-        StatusText = $"Launching {SelectedLaunchMode}...";
-        try
-        {
-            using var instanceLock = InstanceLock.TryAcquire(SelectedProject.FullPath);
-            if (instanceLock is null)
-            {
-                Log("Another setup is already running for this project - launching anyway (setup skipped).");
-            }
-
-            IProviderAdapter? provider;
-            if (SelectedLaunchMode == AutoFallbackProviderName)
-            {
-                provider = await _fallbackResolver.ResolveAsync();
-                if (provider is null)
-                {
-                    Log("No backend in the fallback chain is currently available (Claude, Antigravity, Codex, Cursor, and local model all unavailable).");
-                    StatusText = "Ready.";
-                    return;
-                }
-                Log($"Fallback chain resolved to: {provider.Name}");
-            }
-            else if (SelectedLaunchMode == CustomFallbackProviderName)
-            {
-                provider = await ResolveCustomChainProviderAsync();
-                if (provider is null)
-                {
-                    Log("No backend in the custom fallback chain is currently available.");
-                    StatusText = "Ready.";
-                    return;
-                }
-                Log($"Custom fallback chain resolved to: {provider.Name}");
-            }
-            else
-            {
-                // Defensive: SelectedLaunchMode should only ever be Auto or Custom now.
-                provider = await _fallbackResolver.ResolveAsync();
-                if (provider is null)
-                {
-                    Log("No backend in the fallback chain is currently available.");
-                    StatusText = "Ready.";
-                    return;
-                }
-                Log($"Fallback chain resolved to: {provider.Name}");
-            }
-
-            if (provider == _claudeAdapter || provider == _llamaCppAdapter || provider == _groqAdapter || provider == _openCodeAdapter)
-            {
-                // Same ~/.claude environment either way (Claude Code direct,
-                // or Claude Code pointed at a local llama.cpp model, or at
-                // Groq/OpenCode through the local proxy shim) - keep it in
-                // sync before every launch so switching between them is
-                // zero-friction: same skills, plugins, MCP tools, and
-                // claude-mem memory, automatically, every time.
-                await _companionTooling.EnsureSharedClaudeEnvironmentAsync(SelectedProject.FullPath);
-                await PrepareProjectDirectiveAsync(SelectedProject.FullPath, provider);
-            }
-
-            var options = new SessionLaunchOptions(
-                SelectedProject.FullPath,
-                ResolveEffectiveModel(),
-                IsolateClaudeConfig,
-                Enum.Parse<SessionResumeMode>(SelectedResumeModeName));
-
-            var handle = await provider.LaunchSessionAsync(options);
-            await _projectHistory.AddAsync(SelectedProject.FullPath);
-            Log($"Launched {handle.ProviderName} for {handle.ProjectPath} (pid {handle.ProcessId?.ToString() ?? "n/a"}).");
-            TrackRateLimitOutcome(handle);
-            StatusText = "Ready.";
-        }
-        catch (Exception ex)
-        {
-            Log($"Launch failed: {ex.Message}");
-            StatusText = "Ready.";
-        }
-        finally
-        {
-            IsBusy = false;
         }
     }
 

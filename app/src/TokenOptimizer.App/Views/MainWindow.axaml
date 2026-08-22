@@ -207,49 +207,12 @@
                                         </DataTemplate>
                                     </ItemsControl.ItemTemplate>
                                 </ItemsControl>
-                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                <StackPanel Orientation="Horizontal" Spacing="12">
                                     <Button Content="Launch" Command="{Binding LaunchTickedModelsCommand}" IsEnabled="{Binding HasTickedModels}" Classes="primary" />
                                     <ComboBox ItemsSource="{Binding ResumeModeNames}" SelectedItem="{Binding SelectedResumeModeName}" Width="110" ToolTip.Tip="Resume mode" />
+                                    <CheckBox Content="Isolate Claude config for this project (separate CLAUDE_CONFIG_DIR)" IsChecked="{Binding IsolateClaudeConfig}" VerticalAlignment="Center" />
                                 </StackPanel>
                                 <TextBlock Text="Tick at least one model above to enable Launch." Foreground="{DynamicResource LabelSecondary}" FontSize="11" IsVisible="{Binding !HasTickedModels}" />
-                            </StackPanel>
-                        </Border>
-
-                        <Border Classes="Card">
-                            <StackPanel Spacing="10">
-                                <TextBlock Text="Session Launch (single provider, single model)" Classes="SectionHeader" />
-                                <StackPanel Orientation="Horizontal" Spacing="12">
-                                    <StackPanel Spacing="4" Width="220">
-                                        <TextBlock Text="Provider" />
-                                        <ComboBox ItemsSource="{Binding ProviderNames}"
-                                                  SelectedItem="{Binding SelectedProviderName}"
-                                                  HorizontalAlignment="Stretch" />
-                                    </StackPanel>
-                                    <StackPanel Spacing="4" Width="220">
-                                        <TextBlock Text="Model" />
-                                        <ComboBox ItemsSource="{Binding ModelOverrideOptions}"
-                                                  Text="{Binding ModelOverride}"
-                                                  IsEditable="True"
-                                                  PlaceholderText="e.g. sonnet, opus, qwen/qwen3-coder-30b"
-                                                  HorizontalAlignment="Stretch"
-                                                  ToolTip.Tip="Options change with the selected Provider - pick one, or type any model name/id." />
-                                    </StackPanel>
-                                    <StackPanel Spacing="4" Width="130">
-                                        <TextBlock Text="Resume mode" />
-                                        <ComboBox ItemsSource="{Binding ResumeModeNames}"
-                                                  SelectedItem="{Binding SelectedResumeModeName}"
-                                                  HorizontalAlignment="Stretch" />
-                                    </StackPanel>
-                                    <StackPanel Spacing="4" VerticalAlignment="Bottom">
-                                        <Button Content="Launch Session" Command="{Binding LaunchSessionCommand}" Classes="primary" />
-                                    </StackPanel>
-                                    <StackPanel Spacing="4" VerticalAlignment="Bottom">
-                                        <Button Content="Export Handoff" Command="{Binding ExportHandoffCommand}" />
-                                    </StackPanel>
-                                </StackPanel>
-                                <TextBlock Text="{Binding SelectedProviderDescription}" Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
-                                <CheckBox Content="Isolate Claude config for this project (separate CLAUDE_CONFIG_DIR)" IsChecked="{Binding IsolateClaudeConfig}" />
-                                <TextBlock Text="RAG retrieval auto-wires itself when a local model server (Unsloth Studio, Ollama) is detected running - nothing to configure here." Foreground="{DynamicResource LabelTertiary}" FontSize="11" TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>
 
@@ -262,7 +225,7 @@
                                         <ComboBox ItemsSource="{Binding LaunchModeNames}" SelectedItem="{Binding SelectedLaunchMode}" HorizontalAlignment="Stretch" />
                                     </StackPanel>
                                 </Grid>
-                                <TextBlock Text="Set to Auto or Custom here to launch under a fallback chain instead of the single provider above - independent of the Provider dropdown." Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
+                                <TextBlock Text="Set to Auto or Custom here to launch under a fallback chain. Auto tries every provider in priority order; Custom uses the order you drag-reorder below." Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
                                 <ItemsControl ItemsSource="{Binding FallbackChain}">
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
@@ -283,7 +246,7 @@
                                 <Grid ColumnDefinitions="*,Auto">
                                     <StackPanel Spacing="2">
                                         <TextBlock Text="Custom fallback chain" Classes="SectionHeader" />
-                                        <TextBlock Text="Drag to reorder, uncheck to exclude. Select &quot;Custom (fallback chain)&quot; as the Provider above to use this order." Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
+                                        <TextBlock Text="Drag to reorder, uncheck to exclude. Select &quot;Custom (fallback chain)&quot; as the Launch mode above to use this order." Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
                                     </StackPanel>
                                     <Button Grid.Column="1" Content="Save Order" Command="{Binding SaveCustomFallbackOrderCommand}" VerticalAlignment="Top" />
                                 </Grid>
@@ -313,7 +276,7 @@
                         <Border Classes="Card">
                             <StackPanel Spacing="8">
                                 <TextBlock Text="Fallback credentials" Classes="SectionHeader" />
-                                <TextBlock Text="API keys for the providers above that need one. See the description under the Provider picker for what each one does." Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
+                                <TextBlock Text="API keys for the fallback providers that need one." Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
                                 <StackPanel Orientation="Horizontal" Spacing="8">
                                     <TextBox Text="{Binding CodexApiKeyInput}" PlaceholderText="Opt-in marker for Codex (jcode manages auth)" Width="220" PasswordChar="*" />
                                     <Button Content="Save Codex Key" Command="{Binding SetCodexCredentialCommand}" />
@@ -373,6 +336,14 @@
                                 <TextBlock Text="{Binding TokenUsageSummaryText}" Foreground="{DynamicResource LabelTertiary}" FontSize="12"
                                            ToolTip.Tip="Via ccusage - local, offline, reads Claude Code/Codex/etc session logs already on disk. No proxy, no upload." />
                                 <ProgressBar IsIndeterminate="True" Height="4" IsVisible="{Binding IsDashboardRefreshing}" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Classes="Card">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="Session handoff" Classes="SectionHeader" />
+                                <TextBlock Text="Exports the current project's handoff file regardless of which model launched last." Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
+                                <Button Content="Export Handoff" Command="{Binding ExportHandoffCommand}" HorizontalAlignment="Left" />
                             </StackPanel>
                         </Border>
 
