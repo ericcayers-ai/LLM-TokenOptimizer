@@ -297,12 +297,8 @@ public partial class MainViewModel : ViewModelBase
             config.TickedModels = ModelCatalog.Where(m => m.IsTicked).Select(m => m.Key).ToList();
         });
     }
-    private enum ModelCostTier { Cheap, Balanced, Premium }
-
-    /// <summary>Provider-level "priority tree" node: how well that provider's default model fits reasoning-heavy planning work vs. fast execution work, and roughly what it costs. Deliberately provider-granularity, not per-model - ApplyIntentPresetAsync uses this to both pick a single provider/model and to reorder the fallback chain, and the fallback chain is already provider-granularity.</summary>
-    private sealed record ModelFit(double ReasoningScore, double SpeedScore, ModelCostTier CostTier);
-
-    private static readonly IReadOnlyDictionary<string, ModelFit> ProviderFit = new Dictionary<string, ModelFit>
+    /// <summary>Provider-level "priority tree" node: how well that provider's default model fits reasoning-heavy planning work vs. fast execution work, and roughly what it costs. Deliberately provider-granularity, not per-model - the preset ranking uses this to both pick a single provider/model and to reorder the fallback chain, and the fallback chain is already provider-granularity.</summary>
+    private static readonly IReadOnlyDictionary<string, ProviderFitScore> ProviderFit = new Dictionary<string, ProviderFitScore>
     {
         ["Claude Code"] = new(0.95, 0.55, ModelCostTier.Premium),
         ["Antigravity"] = new(0.85, 0.55, ModelCostTier.Premium),
@@ -314,47 +310,23 @@ public partial class MainViewModel : ViewModelBase
         ["Groq"] = new(0.55, 0.95, ModelCostTier.Cheap),
     };
 
-    public ObservableCollection<string> SessionIntentNames { get; } = new(new[] { "Planning", "Execution" });
-    public ObservableCollection<string> PresetNames { get; } = new(new[] { "Cost-effective", "Balanced", "Quality" });
-
-    [ObservableProperty]
-    public partial string SelectedSessionIntent { get; set; } = "Execution";
-
-    [ObservableProperty]
-    public partial string SelectedPreset { get; set; } = "Balanced";
-
-    partial void OnSelectedSessionIntentChanged(string value) => _ = ApplyIntentPresetAsync();
-    partial void OnSelectedPresetChanged(string value) => _ = ApplyIntentPresetAsync();
-
     /// <summary>
-    /// Ranks every available provider by fit for the chosen session intent
-    /// (Planning favors reasoning strength, Execution favors speed) within
-    /// the chosen cost preset, then applies the result two ways: the top
-    /// pick becomes the default model-override selection, and the FULL
-    /// ranked order becomes the custom fallback chain order - so Auto/Custom
-    /// both try the best-fit providers first for whatever kind of session
-    /// this is, instead of a fixed order that doesn't know planning from
-    /// execution.
+    /// Ranks every known provider by fit for the current session preset (read
+    /// live from session-preset.json - Planning favors reasoning strength,
+    /// Execution favors speed) within the preset's cost tier, then applies the
+    /// result two ways: the top pick becomes the default model-override
+    /// selection, and the FULL ranked order becomes the custom fallback chain
+    /// order - so Auto/Custom both try the best-fit providers first for
+    /// whatever kind of session this is. This is the backend the automatic
+    /// preset routing (UserPromptSubmit hook + /preset command) feeds; the
+    /// manual Session-type card that used to trigger it was removed.
     /// </summary>
-    [RelayCommand]
     private async Task ApplyIntentPresetAsync()
     {
-        bool CostAllowed(ModelCostTier tier) => SelectedPreset switch
-        {
-            "Cost-effective" => tier == ModelCostTier.Cheap,
-            "Quality" => tier != ModelCostTier.Cheap,
-            _ => true,
-        };
+        var preset = SessionPresetStore.ReadOrDefault(SelectedProject?.FullPath ?? string.Empty);
 
-        var known = ProviderFit.Where(kv => _providers.Any(p => p.Name == kv.Key)).ToList();
-        var pool = known.Where(kv => CostAllowed(kv.Value.CostTier)).ToList();
-        if (pool.Count == 0) pool = known; // preset filtered out everything available - fall back to ranking all of it rather than picking nothing
-
-        var ranked = pool
-            .OrderByDescending(kv => SelectedSessionIntent == "Planning" ? kv.Value.ReasoningScore : kv.Value.SpeedScore)
-            .Select(kv => kv.Key)
-            .Concat(_providers.Select(p => p.Name).Except(pool.Select(kv => kv.Key)))
-            .ToList();
+        var known = ProviderFit.Where(kv => _providers.Any(p => p.Name == kv.Key)).Select(kv => kv.Key).ToList();
+        var ranked = SessionPresetRanker.Rank(known, name => ProviderFit[name], preset);
         if (ranked.Count == 0) return;
 
         SelectedProviderName = ranked[0];
@@ -369,7 +341,7 @@ public partial class MainViewModel : ViewModelBase
         }
         await SaveCustomFallbackOrderAsync();
 
-        Log($"Priority tree applied: {SelectedSessionIntent}/{SelectedPreset} -> {ranked[0]} first (fallback chain reordered to match).");
+        Log($"Preset applied: {SessionPresetStore.IntentName(preset.Intent)}/{SessionPresetStore.TierName(preset.Tier)} -> {ranked[0]} first (fallback chain reordered to match).");
     }
 
     public ObservableCollection<string> ActiveSkills { get; } = new();
@@ -648,6 +620,11 @@ public partial class MainViewModel : ViewModelBase
             if (!string.IsNullOrWhiteSpace(MasterFolderPath))
             {
                 await RefreshMasterFolderCandidatesAsync();
+            }
+
+            if (SelectedProject is { FullPath: { } projectPath } && File.Exists(SessionPresetStore.FilePathFor(projectPath)))
+            {
+                await ApplyIntentPresetAsync();
             }
 
             StatusText = "Ready.";
@@ -1470,17 +1447,33 @@ public partial class MainViewModel : ViewModelBase
         }
     }
 
-    /// <summary>Resolves the "auto" model and non-bridgeable model selections to the next available bridgeable provider in the auto fallback chain (Claude Code, then OpenCode Go). Unsloth and Antigravity are skipped because they require runtime server startup that can't happen inside a per-request router delegate.</summary>
+    /// <summary>Resolves the "auto" model and non-bridgeable model selections to the next available bridgeable provider in the auto fallback chain (Claude Code, OpenCode Go). Unsloth and Antigravity are skipped because they require runtime server startup that can't happen inside a per-request router delegate. Which of the available bridgeable providers wins is biased live by the current session preset (session-preset.json) - Quality prefers the higher-ReasoningScore provider, Cost-effective the cheaper/faster one, per the same ranking math ApplyIntentPresetAsync uses.</summary>
     private async Task<UnifiedModelRouter.ModelRoute?> ResolveAutoFallbackRouteAsync()
     {
+        var candidates = new List<string>();
         if (!await _rateLimits.IsRateLimitedAsync(FallbackProvider.Claude) && await _claudeAdapter.IsAvailableAsync())
         {
-            return new UnifiedModelRouter.ModelRoute(new Uri("https://api.anthropic.com"), RouteKind.AnthropicPassthrough);
+            candidates.Add("Claude Code");
         }
-
         if (!await _rateLimits.IsRateLimitedAsync(FallbackProvider.OpenCode) && await _openCodeAdapter.IsAvailableAsync())
         {
-            return new UnifiedModelRouter.ModelRoute(new Uri("https://opencode.ai/zen/go"), RouteKind.AnthropicPassthrough, () => _credentials.GetCredentialPlainText(FallbackProvider.OpenCode));
+            candidates.Add("OpenCode");
+        }
+        if (candidates.Count == 0) return null;
+
+        var preset = SessionPresetStore.ReadOrDefault(SelectedProject?.FullPath ?? string.Empty);
+        var ranked = SessionPresetRanker.Rank(candidates, name => ProviderFit[name], preset);
+
+        foreach (var name in ranked)
+        {
+            if (name == "Claude Code")
+            {
+                return new UnifiedModelRouter.ModelRoute(new Uri("https://api.anthropic.com"), RouteKind.AnthropicPassthrough);
+            }
+            if (name == "OpenCode")
+            {
+                return new UnifiedModelRouter.ModelRoute(new Uri("https://opencode.ai/zen/go"), RouteKind.AnthropicPassthrough, () => _credentials.GetCredentialPlainText(FallbackProvider.OpenCode));
+            }
         }
 
         return null;

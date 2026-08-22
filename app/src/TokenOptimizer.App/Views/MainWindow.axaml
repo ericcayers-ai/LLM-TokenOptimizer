@@ -167,27 +167,6 @@
                     <StackPanel Spacing="12" Margin="24">
                         <Border Classes="Card">
                             <StackPanel Spacing="8">
-                                <TextBlock Text="Session type" Classes="SectionHeader" />
-                                <TextBlock Text="Pick what this session is for and a cost preset - the priority tree below ranks every provider for that combination, sets it as the single-provider pick, and reorders the fallback chain to match."
-                                           Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
-                                <StackPanel Orientation="Horizontal" Spacing="12">
-                                    <StackPanel Spacing="4" Width="160">
-                                        <TextBlock Text="Decision type" />
-                                        <ComboBox ItemsSource="{Binding SessionIntentNames}" SelectedItem="{Binding SelectedSessionIntent}" HorizontalAlignment="Stretch" />
-                                    </StackPanel>
-                                    <StackPanel Spacing="4" Width="160">
-                                        <TextBlock Text="Preset" />
-                                        <ComboBox ItemsSource="{Binding PresetNames}" SelectedItem="{Binding SelectedPreset}" HorizontalAlignment="Stretch" />
-                                    </StackPanel>
-                                    <StackPanel Spacing="4" VerticalAlignment="Bottom">
-                                        <Button Content="Re-apply" Command="{Binding ApplyIntentPresetCommand}" ToolTip.Tip="Re-run the priority tree now (it also re-runs automatically whenever you change either dropdown above)." />
-                                    </StackPanel>
-                                </StackPanel>
-                            </StackPanel>
-                        </Border>
-
-                        <Border Classes="Card">
-                            <StackPanel Spacing="8">
                                 <TextBlock Text="Models" Classes="SectionHeader" />
                                 <TextBlock Text="Tick whichever models you want available. Claude direct, Groq, and OpenCode Go all show up together in one Claude Code window's own model picker. Codex, Cursor, and Antigravity open their own separate window - they're marked below. Click a provider's name to collapse its list."
                                            Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
@@ -336,6 +315,14 @@
                                 <TextBlock Text="{Binding TokenUsageSummaryText}" Foreground="{DynamicResource LabelTertiary}" FontSize="12"
                                            ToolTip.Tip="Via ccusage - local, offline, reads Claude Code/Codex/etc session logs already on disk. No proxy, no upload." />
                                 <ProgressBar IsIndeterminate="True" Height="4" IsVisible="{Binding IsDashboardRefreshing}" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Classes="Card">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="Auto preset routing" Classes="SectionHeader" />
+                                <TextBlock Text="A project-scoped hook watches what you actually type in the CLI session (a /plan or /build command, or phrasing like &quot;architecture&quot;, &quot;research&quot;, &quot;long-horizon agentic workflow&quot;, or &quot;fix this bug&quot;) and writes session-preset.json for this project. The Auto model in the fallback chain re-ranks providers live, per request, to match - no dropdowns, no re-apply button. Override it any time inside Claude Code with /preset quality|balanced|cost-effective."
+                                           Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>
 
