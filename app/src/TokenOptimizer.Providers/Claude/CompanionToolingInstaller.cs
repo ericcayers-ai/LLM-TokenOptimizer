@@ -25,6 +25,15 @@ public sealed class CompanionToolingInstaller
     /// <summary>Single-source-of-truth lookup into <see cref="ToolCatalog"/>.</summary>
     private static CompanionTool CatalogTool(string id) =>
         ToolCatalog.Tools.Single(t => t.Id == id);
+
+    /// <summary>Catalog lookup that refuses doc-grade entries: only tools flagged HostInstallIsExecutable may have their HostInstallCommand executed verbatim.</summary>
+    private static CompanionTool ExecutableCatalogTool(string id)
+    {
+        var tool = CatalogTool(id);
+        if (!tool.HostInstallIsExecutable)
+            throw new InvalidOperationException($"Tool '{id}' is not flagged {nameof(CompanionTool.HostInstallIsExecutable)}; its catalog entry is descriptive, not runnable.");
+        return tool;
+    }
     /// <summary>
     /// claude-mem's worker is ONE process shared by every Claude Code session
     /// pointed at the default data dir/port - including the standalone Claude
@@ -867,7 +876,7 @@ public sealed class CompanionToolingInstaller
             return true;
         }
 
-        var result = await ExternalCommandRunner.RunAsync(exe, CatalogTool("context7").HostInstallCommand, timeoutSeconds: 30);
+        var result = await ExternalCommandRunner.RunAsync(exe, ExecutableCatalogTool("context7").HostInstallCommand, timeoutSeconds: 30);
         if (!result.Success && !result.Output.Contains("already exists", StringComparison.OrdinalIgnoreCase) &&
             !result.Output.Contains("already added", StringComparison.OrdinalIgnoreCase))
         {

@@ -47,7 +47,8 @@ public static class ToolCatalog
             Id: "context7",
             HostInstallCommand: """mcp add --scope user context7 -- npx -y @upstash/context7-mcp""",
             ImageInstallFragment: """RUN claude mcp add --scope user context7 -- npx -y @upstash/context7-mcp""",
-            ClaudeWiringFragment: """user-scope MCP server context7 -> npx -y @upstash/context7-mcp ('claude mcp add --scope user')"""),
+            ClaudeWiringFragment: """user-scope MCP server context7 -> npx -y @upstash/context7-mcp ('claude mcp add --scope user')""",
+            HostInstallIsExecutable: true),
 
         new CompanionTool(
             Id: "graft",

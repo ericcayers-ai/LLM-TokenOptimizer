@@ -32,4 +32,25 @@ public class ToolCatalogTests
         var graft = Assert.Single(ToolCatalog.Tools, t => t.Id == "graft");
         Assert.Contains("NanoNets/Graft", graft.ImageInstallFragment);
     }
+
+    [Fact]
+    public void HostInstallIsExecutable_FlaggedTodayOnlyForContext7()
+    {
+        Assert.Equal("context7", Assert.Single(ToolCatalog.Tools, t => t.HostInstallIsExecutable).Id);
+    }
+
+    [Fact]
+    public void HostInstallExecutable_CommandsAreProseFreeSingleCommands()
+    {
+        // Anything flagged executable is run verbatim by CompanionToolingInstaller,
+        // so prose annotations ("(falls back to --user)", "after pre-seeding") must
+        // stay out of those values - they belong in unflagged descriptive entries.
+        Assert.All(ToolCatalog.Tools, tool =>
+        {
+            if (!tool.HostInstallIsExecutable) return;
+            Assert.DoesNotContain("(", tool.HostInstallCommand);
+            Assert.DoesNotContain("falls back", tool.HostInstallCommand);
+            Assert.DoesNotContain("after", tool.HostInstallCommand);
+        });
+    }
 }

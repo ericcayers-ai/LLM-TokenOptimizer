@@ -24,8 +24,15 @@ namespace TokenOptimizer.Sandbox;
 /// What ends up in a .claude config dir to wire this tool (hooks,
 /// statusline, MCP registration, plugin registration).
 /// </param>
+/// <param name="HostInstallIsExecutable">
+/// True only when HostInstallCommand is a prose-free, machine-runnable
+/// command sequence an installer may execute verbatim (context7 today);
+/// false means the value is doc-grade - it names the essential steps but
+/// embeds annotations ("(falls back to --user)") that must never be run.
+/// </param>
 public sealed record CompanionTool(
     string Id,
     string HostInstallCommand,
     string ImageInstallFragment,
-    string ClaudeWiringFragment);
+    string ClaudeWiringFragment,
+    bool HostInstallIsExecutable = false);
