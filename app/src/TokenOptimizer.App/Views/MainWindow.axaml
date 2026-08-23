@@ -300,6 +300,8 @@
                                 <TextBlock Text="Set the provider and fallback mode in the Session tab - it applies to the next launch." Foreground="{DynamicResource LabelSecondary}" FontSize="11" TextWrapping="Wrap" />
                                 <TextBlock Text="{Binding TokenUsageSummaryText}" Foreground="{DynamicResource LabelTertiary}" FontSize="12"
                                            ToolTip.Tip="Via ccusage - local, offline, reads Claude Code/Codex/etc session logs already on disk. No proxy, no upload." />
+                                <TextBlock Text="{Binding SandboxStatusText}" Foreground="{DynamicResource LabelTertiary}" FontSize="12"
+                                           ToolTip.Tip="OpenSandbox substrate state - the same preflight gate that gates interactive launches." />
                                 <ProgressBar IsIndeterminate="True" Height="4" IsVisible="{Binding IsDashboardRefreshing}" />
                             </StackPanel>
                         </Border>

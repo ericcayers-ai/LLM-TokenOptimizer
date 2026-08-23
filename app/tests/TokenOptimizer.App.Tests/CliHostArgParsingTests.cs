@@ -2,6 +2,7 @@ using System.Runtime.Versioning;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using TokenOptimizer.App.Cli;
+using TokenOptimizer.Sandbox;
 
 namespace TokenOptimizer.App.Tests;
 
@@ -164,6 +165,70 @@ public sealed class CliHostArgParsingTests : IDisposable
         var json = ParseStdout();
         Assert.False(json["ok"]!.GetValue<bool>());
         Assert.Contains("UNINSTALL", json["error"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task SandboxStatus_ValidInvoke_PrintsAllSixKeysInStableOrder()
+    {
+        var settings = new SandboxSettings();
+        var manager = new StubServerManager(DockerUpRunner(), settings) { Healthy = false };
+
+        var exit = await CliHost.RunAsync(["sandbox-status"], sandboxManager: manager);
+
+        Assert.Equal(0, exit);
+        var json = ParseStdout();
+        Assert.True(json["dockerUp"]!.GetValue<bool>());
+        Assert.False(json["serverUp"]!.GetValue<bool>());
+        Assert.Equal(settings.Domain, json["domain"]!.GetValue<string>());
+        Assert.Equal(settings.AgentImage, json["agentImage"]!.GetValue<string>());
+        Assert.False(json["ok"]!.GetValue<bool>());
+        Assert.Contains("opensandbox-server", json["missing"]!.AsArray().Select(n => n!.GetValue<string>()));
+
+        var raw = _stdout.ToString().Trim();
+        var indexes = new[] { "dockerUp", "serverUp", "domain", "agentImage", "ok", "missing" }
+            .Select(key => raw.IndexOf($"\"{key}\"", StringComparison.Ordinal)).ToList();
+        Assert.DoesNotContain(-1, indexes);
+        Assert.True(indexes.Zip(indexes.Skip(1)).All(pair => pair.First < pair.Second),
+            $"Expected stable field order dockerUp,serverUp,domain,agentImage,ok,missing - got: {raw}");
+    }
+
+    [Fact]
+    public async Task SandboxStatus_AllUp_ReportsReadyWithNoMissing()
+    {
+        var manager = new StubServerManager(DockerUpRunner(), new SandboxSettings()) { Healthy = true };
+
+        var exit = await CliHost.RunAsync(["sandbox-status"], sandboxManager: manager);
+
+        Assert.Equal(0, exit);
+        var json = ParseStdout();
+        Assert.True(json["dockerUp"]!.GetValue<bool>());
+        Assert.True(json["serverUp"]!.GetValue<bool>());
+        Assert.True(json["ok"]!.GetValue<bool>());
+        Assert.Empty(json["missing"]!.AsArray());
+    }
+
+    private static FakeRunner DockerUpRunner() => new() { ["docker"] = new ProcResult(0, "OK", "") };
+
+    /// <summary>Same seam pattern as SetupWizardViewModelTests.FlippingManager: real GetStatusAsync flow, health probe stubbed so no network/docker is touched.</summary>
+    private sealed class StubServerManager(IProcessRunner runner, SandboxSettings settings)
+        : ServerLifecycleManager(runner, settings)
+    {
+        public bool Healthy { get; init; }
+
+        protected override Task<bool> ProbeHealthAsync(Uri healthUri, CancellationToken ct) => Task.FromResult(Healthy);
+    }
+
+    private sealed class FakeRunner : IProcessRunner
+    {
+        public Dictionary<string, ProcResult> Results { get; } = new();
+        public ProcResult this[string exe] { get => Results[exe]; init => Results[exe] = value; }
+
+        public Task<ProcResult> RunAsync(string exe, IReadOnlyList<string> args,
+            IDictionary<string, string>? env = null, CancellationToken ct = default)
+        {
+            var key = Path.GetFileNameWithoutExtension(exe);
+            return Task.FromResult(Results.TryGetValue(key, out var r) ? r : new ProcResult(1, "", "not stubbed"));
+        }
     }
 
     private JsonNode ParseStdout()

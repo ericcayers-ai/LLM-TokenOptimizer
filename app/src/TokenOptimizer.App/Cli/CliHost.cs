@@ -11,6 +11,7 @@ using TokenOptimizer.Providers.Claude;
 using TokenOptimizer.Providers.Diagnostics;
 using TokenOptimizer.Providers.Fallback;
 using TokenOptimizer.Providers.Rag;
+using TokenOptimizer.Sandbox;
 
 namespace TokenOptimizer.App.Cli;
 
@@ -37,14 +38,15 @@ public static class CliHost
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
 
-    public static async Task<int> RunAsync(string[] args, ModelProbeService? probeService = null)
+    public static async Task<int> RunAsync(string[] args, ModelProbeService? probeService = null,
+        ServerLifecycleManager? sandboxManager = null)
     {
         if (args.Length == 0)
         {
             return Fail("No command given. Try: status, providers, launch, install-dependencies, "
                 + "install-companion-tooling, reset-config, uninstall, master-folder-set, master-folder-list, "
                 + "create-project, history, add-project, "
-                + "set-credential, opt-in, export-handoff, mcp-rag-server.");
+                + "set-credential, opt-in, export-handoff, sandbox-status, mcp-rag-server.");
         }
 
         var command = args[0];
@@ -337,6 +339,49 @@ public static class CliHost
                     var claudeConfigDir = SessionHandoffExporter.GetEffectiveClaudeConfigDir(project, isolate);
                     var handoffFile = SessionHandoffExporter.Export(project, claudeConfigDir);
                     return await Ok(new { handoffFile });
+                }
+
+                case "sandbox-status":
+                {
+                    // Raw single-line JSON on stdout - deliberately NOT the {ok,data}
+                    // envelope: these six fields are the whole payload for the VS Code
+                    // extension's Sandbox panel, and ok/missing carry their own
+                    // preflight meaning inside it.
+                    var settings = (await configStore.LoadAsync()).Sandbox;
+                    var manager = sandboxManager ?? new ServerLifecycleManager(new ProcessRunner(), settings);
+
+                    ServerStatus status;
+                    try
+                    {
+                        status = await manager.GetStatusAsync();
+                    }
+                    catch (Exception ex)
+                    {
+                        // Probe tooling itself unusable (e.g. docker not installed) -
+                        // still print the six-key contract instead of the Fail envelope.
+                        status = new ServerStatus(false, false, null, ex.Message);
+                    }
+
+                    PreflightResult preflight;
+                    try
+                    {
+                        preflight = await new PreflightGate(manager).CheckAsync();
+                    }
+                    catch (Exception)
+                    {
+                        preflight = new PreflightResult(false, new[] { "docker" }, Array.Empty<SetupStep>());
+                    }
+
+                    Console.WriteLine(JsonSerializer.Serialize(new
+                    {
+                        dockerUp = status.DockerUp,
+                        serverUp = status.ServerUp,
+                        domain = settings.Domain,
+                        agentImage = settings.AgentImage,
+                        ok = preflight.Ok,
+                        missing = preflight.Missing,
+                    }, JsonOptions));
+                    return 0;
                 }
 
                 case "test-model":

@@ -50,6 +50,7 @@ public partial class MainViewModel : ViewModelBase
     private readonly IReadOnlyList<IProviderAdapter> _providers;
     private SandboxSessionLauncher? _sandboxLauncher;
     private PreflightGate? _preflightGate;
+    private ServerLifecycleManager? _sandboxManager;
     private SetupWizardViewModel? _setupWizard;
 
     public MainViewModel()
@@ -394,6 +395,10 @@ public partial class MainViewModel : ViewModelBase
 
     [ObservableProperty]
     public partial string TokenUsageSummaryText { get; set; } = "ccusage not installed - run Install Companion Tooling to add it.";
+
+    /// <summary>Sandbox substrate state for the Dashboard card - refreshed by RefreshDashboardAsync via the same gate the launch path uses.</summary>
+    [ObservableProperty]
+    public partial string SandboxStatusText { get; set; } = "Sandbox: unknown";
 
     [ObservableProperty]
     public partial bool IsDashboardRefreshing { get; set; }
@@ -1028,6 +1033,15 @@ public partial class MainViewModel : ViewModelBase
             TokenUsageSummaryText = usage is null
                 ? "ccusage not installed - run Install Companion Tooling to add it."
                 : $"Today: {usage.TodayTokens:N0} tokens, ${usage.TodayCostUsd:F2} - All-time: {usage.AllTimeTokens:N0} tokens, ${usage.AllTimeCostUsd:F2}";
+
+            await PreflightAsync(); // ensures _sandboxManager shares the gate's config-loaded settings
+            var sandbox = await _sandboxManager!.GetStatusAsync();
+            var sandboxState = sandbox.DockerUp && sandbox.ServerUp
+                ? "ready"
+                : !sandbox.DockerUp
+                    ? "docker down"
+                    : sandbox.ServerUp ? "server down" : $"unavailable ({sandbox.Error})";
+            SandboxStatusText = $"Sandbox: {sandboxState}";
         }
         finally
         {
@@ -1231,9 +1245,21 @@ public partial class MainViewModel : ViewModelBase
     /// <summary>Populated when a launch was blocked by failed sandbox preflight - surfaced here instead of launching so a future view can bind it without new UI logic.</summary>
     public SetupWizardViewModel? SetupWizard => _setupWizard;
 
-    /// <summary>Lazily built sandbox preflight gate (real server manager) - checked before any launch path runs.</summary>
-    private PreflightGate Preflight() =>
-        _preflightGate ??= new PreflightGate(new ServerLifecycleManager(new ProcessRunner(), new SandboxSettings()));
+    /// <summary>
+    /// Lazily built sandbox preflight gate + its server manager, over the
+    /// Sandbox section of config.json. One shared pair for the launch
+    /// preflight AND the dashboard status card - both report the same world,
+    /// and neither can drift onto different settings than SandboxLauncherAsync
+    /// uses (the gate/launcher settings drift a prior review flagged).
+    /// </summary>
+    private async Task<PreflightGate> PreflightAsync()
+    {
+        if (_preflightGate is not null) return _preflightGate;
+        var settings = (await _configStore.LoadAsync()).Sandbox;
+        _sandboxManager = new ServerLifecycleManager(new ProcessRunner(), settings);
+        _preflightGate = new PreflightGate(_sandboxManager);
+        return _preflightGate;
+    }
 
     /// <summary>Lazily built launcher over the OpenSandbox runtime using the Sandbox section of config.json.</summary>
     private async Task<SandboxSessionLauncher> SandboxLauncherAsync()
@@ -1251,10 +1277,11 @@ public partial class MainViewModel : ViewModelBase
     /// </summary>
     private async Task<bool> EnsureSandboxReadyAsync()
     {
-        var preflight = await Preflight().CheckAsync();
+        var gate = await PreflightAsync();
+        var preflight = await gate.CheckAsync();
         if (preflight.Ok) return true;
 
-        _setupWizard = new SetupWizardViewModel(Preflight());
+        _setupWizard = new SetupWizardViewModel(gate);
         OnPropertyChanged(nameof(SetupWizard));
         Log($"Sandbox prerequisites missing ({string.Join(", ", preflight.Missing)}) - run setup first; launch cancelled.");
         return false;
