@@ -122,6 +122,57 @@ public class ServerLifecycleManagerTests
         }
     }
 
+    [Fact]
+    public async Task GetStatus_DockerProbeThrows_ReturnsDockerDownWithClearErrorInsteadOfCrashing()
+    {
+        var mgr = new TestableManager(new ThrowingRunner(), Settings(), probeUp: false);
+
+        var status = await mgr.GetStatusAsync();
+
+        Assert.False(status.DockerUp);
+        Assert.False(status.ServerUp);
+        Assert.Null(status.Domain);
+        // A missing docker CLI must surface as a gate-able status, not an
+        // unhandled Win32Exception - the setup wizard needs to run.
+        Assert.StartsWith("docker CLI not found:", status.Error);
+    }
+
+    [Fact]
+    public async Task EnsureRunning_DockerProbeThrows_ReturnsNotUpWithClearError()
+    {
+        var mgr = new TestableManager(new ThrowingRunner(), Settings(), probeUp: false);
+
+        var status = await mgr.EnsureRunningAsync(CancellationToken.None);
+
+        Assert.False(status.DockerUp);
+        Assert.False(status.ServerUp);
+        Assert.StartsWith("docker CLI not found:", status.Error);
+    }
+
+    [Fact]
+    public async Task EnsureRunning_InitConfigThrows_ReturnsServerDownWithUvxError()
+    {
+        var configPath = Path.Combine(Path.GetTempPath(), "tokopt-sbxcfg-" + Guid.NewGuid().ToString("N") + ".toml");
+        try
+        {
+            var runner = new ThrowingRunner { ThrowForExe = "uvx" };
+            var mgr = new TestableManager(runner, Settings(), probeUp: false)
+            {
+                ConfigPathOverride = configPath,
+            };
+
+            var status = await mgr.EnsureRunningAsync(CancellationToken.None);
+
+            Assert.True(status.DockerUp);
+            Assert.False(status.ServerUp);
+            Assert.StartsWith("uvx CLI not found:", status.Error);
+        }
+        finally
+        {
+            if (File.Exists(configPath)) File.Delete(configPath);
+        }
+    }
+
     private static SandboxSettings Settings() => new() { Domain = "localhost:8080", Protocol = "http" };
 
     private sealed class FakeRunner : IProcessRunner
@@ -139,6 +190,20 @@ public class ServerLifecycleManagerTests
                 File.WriteAllText(args[2], "# simulated opensandbox-server config\n");
             var key = Path.GetFileNameWithoutExtension(exe);
             return Task.FromResult(Results.TryGetValue(key, out var r) ? r : new ProcResult(0, "", ""));
+        }
+    }
+
+    /// <summary>Process.Start throwing (docker/uvx absent from PATH) is the one failure mode FakeRunner can't simulate - this throws for every exe, or only ThrowForExe when set.</summary>
+    private sealed class ThrowingRunner : IProcessRunner
+    {
+        public string? ThrowForExe { get; init; }
+
+        public Task<ProcResult> RunAsync(string exe, IReadOnlyList<string> args,
+            IDictionary<string, string>? env = null, CancellationToken ct = default)
+        {
+            if (ThrowForExe is null || Path.GetFileNameWithoutExtension(exe) == ThrowForExe)
+                throw new System.ComponentModel.Win32Exception(2, "The system cannot find the file specified");
+            return Task.FromResult(new ProcResult(0, "", ""));
         }
     }
 

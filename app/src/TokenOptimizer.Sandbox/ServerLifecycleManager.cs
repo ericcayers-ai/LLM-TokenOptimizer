@@ -29,9 +29,9 @@ public class ServerLifecycleManager
 
     public async Task<ServerStatus> GetStatusAsync()
     {
-        var docker = await _runner.RunAsync("docker", new[] { "info" });
-        if (docker.ExitCode != 0)
-            return new ServerStatus(false, false, null, "Docker is not running: " + FirstLine(docker.StdErr));
+        var docker = await ProbeDockerAsync();
+        if (docker is not null)
+            return docker;
 
         var probe = await ProbeHealthAsync(HealthUri, CancellationToken.None);
         return probe
@@ -41,9 +41,9 @@ public class ServerLifecycleManager
 
     public async Task<ServerStatus> EnsureRunningAsync(CancellationToken ct)
     {
-        var docker = await _runner.RunAsync("docker", new[] { "info" });
-        if (docker.ExitCode != 0)
-            return new ServerStatus(false, false, null, "Docker is not running: " + FirstLine(docker.StdErr));
+        var docker = await ProbeDockerAsync();
+        if (docker is not null)
+            return docker;
 
         if (await ProbeHealthAsync(HealthUri, ct))
             return new ServerStatus(true, true, HealthUri, null);
@@ -51,8 +51,19 @@ public class ServerLifecycleManager
         var configPath = ResolveConfigPath();
         if (!File.Exists(configPath))
         {
-            var init = await _runner.RunAsync("uvx",
-                new[] { "opensandbox-server", "init-config", configPath, "--example", "docker" });
+            ProcResult init;
+            try
+            {
+                init = await _runner.RunAsync("uvx",
+                    new[] { "opensandbox-server", "init-config", configPath, "--example", "docker" });
+            }
+            catch (Exception ex)
+            {
+                // A missing uvx (Win32Exception/FileNotFound from Process.Start) must
+                // degrade to a status the preflight gate can act on, not crash.
+                return new ServerStatus(true, false, HealthUri, "uvx CLI not found: " + ex.Message);
+            }
+
             if (init.ExitCode != 0)
                 return new ServerStatus(true, false, HealthUri, "init-config failed: " + FirstLine(init.StdErr));
         }
@@ -102,6 +113,30 @@ public class ServerLifecycleManager
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// Runs the `docker info` gate probe. Returns a failed ServerStatus when
+    /// docker is down OR absent from PATH (Process.Start then throws
+    /// Win32Exception/FileNotFound) - never lets that exception escape, so
+    /// PreflightGate can list "docker" as missing and route to the wizard.
+    /// Null means docker answered.
+    /// </summary>
+    private async Task<ServerStatus?> ProbeDockerAsync()
+    {
+        ProcResult docker;
+        try
+        {
+            docker = await _runner.RunAsync("docker", new[] { "info" });
+        }
+        catch (Exception ex)
+        {
+            return new ServerStatus(false, false, null, "docker CLI not found: " + ex.Message);
+        }
+
+        return docker.ExitCode != 0
+            ? new ServerStatus(false, false, null, "Docker is not running: " + FirstLine(docker.StdErr))
+            : null;
     }
 
     private static string? FirstLine(string text)
