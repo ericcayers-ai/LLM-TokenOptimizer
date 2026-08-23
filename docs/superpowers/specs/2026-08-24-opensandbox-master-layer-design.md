@@ -41,12 +41,12 @@ preflight → ensure server → pick project → create sandbox (`tokenoptimizer
 
 ## Upstream adoption map
 
-**Wired:** server (Docker runtime), C# SDK, osb CLI diagnostics, code-interpreter/aio image bases, execd+ingress implicitly.
-**Unwired (Linux/multi-tenant concerns, documented future work):** Kubernetes runtime, gVisor/Kata/Firecracker isolation, ingress routing strategies, egress policy UI, credential vault (host `ProxyCredentialStore` remains).
+**Wired:** server (Docker runtime), C# SDK, code-interpreter/aio image bases, execd+ingress implicitly.
+**Unwired (Linux/multi-tenant concerns, documented future work):** Kubernetes runtime, gVisor/Kata/Firecracker isolation, ingress routing strategies, egress policy UI, credential vault (host `ProxyCredentialStore` remains), osb CLI diagnostics.
 
 ## Error handling
 
-Docker down → wizard + retry · server crash → watchdog restart with backoff, reattach by sandbox ID where possible · image build failure → surfaced logs · sandbox OOM/timeout → kill/recreate, session preserved via existing handoff exporter · backend failover ≠ sandbox failover (all backends run in-sandbox).
+Docker down → wizard + retry · server crash → gate re-checks before each launch (no background watchdog — restart with backoff is a descheduled follow-up) · image build failure → surfaced logs · sandbox OOM/timeout → kill/recreate, session preserved via existing handoff exporter · backend failover ≠ sandbox failover (all backends run in-sandbox).
 
 ## Verification strategy
 
