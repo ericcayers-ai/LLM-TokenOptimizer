@@ -153,9 +153,9 @@ public sealed class OpenSandboxSdkRuntime : ISandboxRuntime
 
     private void EnsureAlive(string id)
     {
-        if (!_live.ContainsKey(id))
-            throw new InvalidOperationException($"Unknown sandbox '{id}'.");
         if (_dead.TryGetValue(id, out var dead) && dead)
             throw new InvalidOperationException($"Sandbox '{id}' is dead.");
+        if (!_live.ContainsKey(id))
+            throw new InvalidOperationException($"Unknown sandbox '{id}'.");
     }
 }

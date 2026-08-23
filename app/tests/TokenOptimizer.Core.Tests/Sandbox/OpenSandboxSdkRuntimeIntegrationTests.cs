@@ -59,7 +59,7 @@ public class OpenSandboxSdkRuntimeIntegrationTests
                 UseShellExecute = false,
             })!;
             proc.WaitForExit(15000);
-            return proc.ExitCode == 0;
+            return proc.HasExited && proc.ExitCode == 0;
         }
         catch
         {

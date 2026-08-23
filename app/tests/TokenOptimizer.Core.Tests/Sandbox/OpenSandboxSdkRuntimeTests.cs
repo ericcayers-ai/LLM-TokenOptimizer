@@ -138,8 +138,10 @@ public class OpenSandboxSdkRuntimeTests
     {
         var runtime = new OpenSandboxSdkRuntime(LocalSettings());
 
-        await Assert.ThrowsAsync<InvalidOperationException>(
+        var readEx = await Assert.ThrowsAsync<InvalidOperationException>(
             () => runtime.ReadFileAsync("sbx-nope", "/tmp/x"));
+        Assert.Contains("Unknown sandbox", readEx.Message);
+        Assert.DoesNotContain("is dead", readEx.Message);
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => runtime.WriteFileAsync("sbx-nope", "/tmp/x", "y"));
         await Assert.ThrowsAsync<InvalidOperationException>(async () =>
@@ -149,14 +151,22 @@ public class OpenSandboxSdkRuntimeTests
     }
 
     [Fact]
-    public async Task KillUnknownId_IsAcceptedLikeFake_AndLaterOpsStayUnknown()
+    public async Task OpsOnKilledId_ThrowInvalidOperationExceptionContainingIsDead()
     {
         var runtime = new OpenSandboxSdkRuntime(LocalSettings());
 
-        await runtime.KillAsync("sbx-never-created");
+        await runtime.KillAsync("sbx-killed-offline");
 
+        var readEx = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => runtime.ReadFileAsync("sbx-killed-offline", "/tmp/x"));
+        Assert.Contains("is dead", readEx.Message);
+        Assert.DoesNotContain("Unknown sandbox", readEx.Message);
         await Assert.ThrowsAsync<InvalidOperationException>(
-            () => runtime.ReadFileAsync("sbx-never-created", "/tmp/x"));
+            () => runtime.WriteFileAsync("sbx-killed-offline", "/tmp/x", "y"));
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        {
+            await foreach (var _ in runtime.ExecAsync("sbx-killed-offline", new[] { "true" })) { }
+        });
     }
 
     private static SandboxSettings LocalSettings() =>
