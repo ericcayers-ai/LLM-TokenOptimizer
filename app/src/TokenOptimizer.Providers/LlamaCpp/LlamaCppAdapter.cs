@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using TokenOptimizer.Core.Config;
@@ -6,7 +5,9 @@ using TokenOptimizer.Core.Diagnostics;
 using TokenOptimizer.Core.Models;
 using TokenOptimizer.Providers.Claude;
 using TokenOptimizer.Providers.Compat;
+using TokenOptimizer.Providers.Fallback;
 using TokenOptimizer.Providers.Manifests;
+using TokenOptimizer.Sandbox;
 
 namespace TokenOptimizer.Providers.LlamaCpp;
 
@@ -31,12 +32,15 @@ public sealed class LlamaCppAdapter : IProviderAdapter
 {
     private readonly LlamaCppPresetStore _presets;
     private readonly ClaudeExecutableLocator? _claudeLocator;
+    private SandboxSessionLauncher? _sandboxLauncher;
     private string? _unslothPath;
 
-    public LlamaCppAdapter(LlamaCppPresetStore? presets = null, ClaudeExecutableLocator? claudeLocator = null)
+    public LlamaCppAdapter(LlamaCppPresetStore? presets = null, ClaudeExecutableLocator? claudeLocator = null,
+        SandboxSessionLauncher? sandboxLauncher = null)
     {
         _presets = presets ?? new LlamaCppPresetStore();
         _claudeLocator = claudeLocator;
+        _sandboxLauncher = sandboxLauncher;
     }
 
     public string Name => "Unsloth (local model)";
@@ -131,27 +135,18 @@ public sealed class LlamaCppAdapter : IProviderAdapter
 
         var arguments = BuildArguments(modelSpec, launchOptions, claudeArgs);
 
-        var psi = new ProcessStartInfo
-        {
-            FileName = unsloth,
-            Arguments = arguments,
-            WorkingDirectory = options.ProjectPath,
-            UseShellExecute = false,
-        };
-        if (!string.IsNullOrWhiteSpace(launchOptions.StudioUrl))
-        {
-            psi.EnvironmentVariables["UNSLOTH_STUDIO_URL"] = launchOptions.StudioUrl;
-        }
-        if (options.IsolateConfig)
-        {
-            var profileDir = IsolatedClaudeProfileService.GetOrCreateProfileDir(options.ProjectPath, IsolatedClaudeProfileService.LocalModelAutoCompactTokenLimit);
-            psi.EnvironmentVariables["CLAUDE_CONFIG_DIR"] = profileDir;
-        }
-
-        var process = Process.Start(psi)
-                      ?? throw new InvalidOperationException("Failed to start unsloth.");
-        return new ProcessSessionHandle(Name, options.ProjectPath, process, watchForRateLimit: true);
+        // The whole `unsloth start claude` CLI session (server + agent) runs
+        // in the sandbox against the /workspace mount. Note: the host-side
+        // env vars this path used to set (UNSLOTH_STUDIO_URL, and a host
+        // CLAUDE_CONFIG_DIR profile path under IsolateConfig) cannot cross
+        // the SandboxSessionLauncher boundary yet - env plumbing is pending
+        // upstream work, see task report.
+        return await SandboxLauncher().LaunchAsync(Name, SandboxSessionLauncher.ToLinuxCommand(unsloth, arguments), options);
     }
+
+    /// <summary>Lazily built default launcher (real OpenSandbox runtime + configured settings) when no launcher was injected.</summary>
+    private SandboxSessionLauncher SandboxLauncher() =>
+        _sandboxLauncher ??= new SandboxSessionLauncher(new OpenSandboxSdkRuntime(new SandboxSettings()), new SandboxSettings());
 
     /// <summary>
     /// The rolling-context-window path (default): boot Unsloth's local
@@ -197,23 +192,15 @@ public sealed class LlamaCppAdapter : IProviderAdapter
             claudeArgList.Add(launchOptions.SystemPromptAppend.Contains(' ') ? $"\"{launchOptions.SystemPromptAppend}\"" : launchOptions.SystemPromptAppend);
         }
 
-        var psi = new ProcessStartInfo
-        {
-            FileName = claudeExe,
-            Arguments = string.Join(' ', claudeArgList),
-            WorkingDirectory = options.ProjectPath,
-            UseShellExecute = false,
-        };
-        psi.EnvironmentVariables["ANTHROPIC_BASE_URL"] = proxy.BaseUrl;
-        psi.EnvironmentVariables["ANTHROPIC_AUTH_TOKEN"] = "proxied-locally"; // the proxy injects the real upstream credential; the CLI never needs to see it.
-        if (options.IsolateConfig)
-        {
-            psi.EnvironmentVariables["CLAUDE_CONFIG_DIR"] = IsolatedClaudeProfileService.GetOrCreateProfileDir(options.ProjectPath, IsolatedClaudeProfileService.LocalModelAutoCompactTokenLimit);
-        }
-
-        var process = Process.Start(psi)
-                      ?? throw new InvalidOperationException("Failed to start Claude Code.");
-        var handle = new ProcessSessionHandle(Name, options.ProjectPath, process, watchForRateLimit: true);
+        // The unsloth server boot above stays on the host (local server
+        // spawn); the Claude Code session it feeds runs in the sandbox.
+        // Note: the host env vars this path used to set (ANTHROPIC_BASE_URL
+        // pointing at the host loopback proxy, ANTHROPIC_AUTH_TOKEN, and a
+        // host CLAUDE_CONFIG_DIR profile under IsolateConfig) cannot cross
+        // the SandboxSessionLauncher boundary yet - env plumbing is pending
+        // upstream work, see task report.
+        var handle = (SandboxSessionHandle)await SandboxLauncher().LaunchAsync(
+            Name, SandboxSessionLauncher.ToLinuxCommand(claudeExe, string.Join(' ', claudeArgList)), options);
         _ = handle.RateLimitOutcome.ContinueWith(async _ => await proxy.DisposeAsync());
         return handle;
     }

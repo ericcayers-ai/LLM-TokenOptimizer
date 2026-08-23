@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.Versioning;
 using TokenOptimizer.Core.Diagnostics;
 using TokenOptimizer.Core.Models;
@@ -6,6 +5,7 @@ using TokenOptimizer.Core.Security;
 using TokenOptimizer.Providers.Claude;
 using TokenOptimizer.Providers.Compat;
 using TokenOptimizer.Providers.Manifests;
+using TokenOptimizer.Sandbox;
 
 namespace TokenOptimizer.Providers.Fallback;
 
@@ -33,11 +33,14 @@ public sealed class GroqAdapter : IProviderAdapter
 
     private readonly ProxyCredentialStore _credentials;
     private readonly ClaudeExecutableLocator _claudeLocator;
+    private SandboxSessionLauncher? _sandboxLauncher;
 
-    public GroqAdapter(ProxyCredentialStore credentials, ClaudeExecutableLocator claudeLocator)
+    public GroqAdapter(ProxyCredentialStore credentials, ClaudeExecutableLocator claudeLocator,
+        SandboxSessionLauncher? sandboxLauncher = null)
     {
         _credentials = credentials;
         _claudeLocator = claudeLocator;
+        _sandboxLauncher = sandboxLauncher;
     }
 
     public string Name => "Groq";
@@ -99,21 +102,18 @@ public sealed class GroqAdapter : IProviderAdapter
         await proxy.StartAsync();
 
         var launchEnv = BuildLaunchEnvironment(options, proxy.BaseUrl);
-        var psi = new ProcessStartInfo
-        {
-            FileName = claudeExe,
-            Arguments = launchEnv.Arguments,
-            WorkingDirectory = options.ProjectPath,
-            UseShellExecute = false,
-        };
-        foreach (var kv in launchEnv.Env)
-        {
-            psi.EnvironmentVariables[kv.Key] = kv.Value;
-        }
 
-        var process = Process.Start(psi);
-        var handle = new ProcessSessionHandle(Name, options.ProjectPath, process, watchForRateLimit: true);
+        // The session itself runs in the sandbox; the proxy stays on the host.
+        // Note: launchEnv.Env (ANTHROPIC_BASE_URL/AUTH_TOKEN etc.) cannot cross
+        // the SandboxSessionLauncher boundary yet - env plumbing is pending
+        // upstream work, see task report.
+        var handle = (SandboxSessionHandle)await SandboxLauncher().LaunchAsync(
+            Name, SandboxSessionLauncher.ToLinuxCommand(claudeExe, launchEnv.Arguments), options);
         _ = handle.RateLimitOutcome.ContinueWith(async _ => await proxy.DisposeAsync());
         return handle;
     }
+
+    /// <summary>Lazily built default launcher (real OpenSandbox runtime + configured settings) when no launcher was injected.</summary>
+    private SandboxSessionLauncher SandboxLauncher() =>
+        _sandboxLauncher ??= new SandboxSessionLauncher(new OpenSandboxSdkRuntime(new SandboxSettings()), new SandboxSettings());
 }

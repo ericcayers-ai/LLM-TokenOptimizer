@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using TokenOptimizer.Core.Diagnostics;
+using TokenOptimizer.Providers.Fallback;
 using TokenOptimizer.Providers.Manifests;
+using TokenOptimizer.Sandbox;
 
 namespace TokenOptimizer.Providers.Claude;
 
@@ -17,11 +19,14 @@ public sealed class ClaudeCodeAdapter : IProviderAdapter
 {
     private readonly ClaudeExecutableLocator _locator;
     private readonly CommandAvailability _availability;
+    private SandboxSessionLauncher? _sandboxLauncher;
 
-    public ClaudeCodeAdapter(ClaudeExecutableLocator locator, CommandAvailability availability)
+    public ClaudeCodeAdapter(ClaudeExecutableLocator locator, CommandAvailability availability,
+        SandboxSessionLauncher? sandboxLauncher = null)
     {
         _locator = locator;
         _availability = availability;
+        _sandboxLauncher = sandboxLauncher;
     }
 
     public string Name => "Claude Code";
@@ -131,21 +136,12 @@ public sealed class ClaudeCodeAdapter : IProviderAdapter
         await RefreshPluginMarketplacesAsync(exe);
 
         var launchEnv = BuildLaunchEnvironment(options);
-        var psi = new ProcessStartInfo
-        {
-            FileName = exe,
-            Arguments = launchEnv.Arguments,
-            WorkingDirectory = options.ProjectPath,
-            UseShellExecute = false,
-        };
-        foreach (var kv in launchEnv.Env)
-        {
-            psi.EnvironmentVariables[kv.Key] = kv.Value;
-        }
-
-        var process = Process.Start(psi);
-        return new ProcessSessionHandle(Name, options.ProjectPath, process, watchForRateLimit: true);
+        return await SandboxLauncher().LaunchAsync(Name, SandboxSessionLauncher.ToLinuxCommand(exe, launchEnv.Arguments), options);
     }
+
+    /// <summary>Lazily built default launcher (real OpenSandbox runtime + configured settings) when no launcher was injected.</summary>
+    private SandboxSessionLauncher SandboxLauncher() =>
+        _sandboxLauncher ??= new SandboxSessionLauncher(new OpenSandboxSdkRuntime(new SandboxSettings()), new SandboxSettings());
 
     private static string GetClaudeHome() =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");

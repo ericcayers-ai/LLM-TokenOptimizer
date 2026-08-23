@@ -1,8 +1,8 @@
-using System.Diagnostics;
 using System.Runtime.Versioning;
 using TokenOptimizer.Core.Models;
 using TokenOptimizer.Core.Security;
 using TokenOptimizer.Providers.Manifests;
+using TokenOptimizer.Sandbox;
 
 namespace TokenOptimizer.Providers.Fallback;
 
@@ -20,10 +20,12 @@ namespace TokenOptimizer.Providers.Fallback;
 public sealed class AntigravityAdapter : IProviderAdapter
 {
     private readonly ProxyCredentialStore _credentials;
+    private SandboxSessionLauncher? _sandboxLauncher;
 
-    public AntigravityAdapter(ProxyCredentialStore credentials)
+    public AntigravityAdapter(ProxyCredentialStore credentials, SandboxSessionLauncher? sandboxLauncher = null)
     {
         _credentials = credentials;
+        _sandboxLauncher = sandboxLauncher;
     }
 
     public string Name => "Antigravity";
@@ -43,7 +45,7 @@ public sealed class AntigravityAdapter : IProviderAdapter
     public Task<ProviderResult> RegisterMcpToolAsync(McpToolManifest tool) =>
         Task.FromResult(ProviderResult.Fail("Antigravity MCP registration is not exposed via CLI - configure inside the app."));
 
-    public Task<ISessionHandle> LaunchSessionAsync(SessionLaunchOptions options)
+    public async Task<ISessionHandle> LaunchSessionAsync(SessionLaunchOptions options)
     {
         var exe = ExecutableLocators.FindAntigravity()
                   ?? throw new InvalidOperationException("Antigravity CLI (agy) not found - the desktop IDE is no longer used as a fallback.");
@@ -51,8 +53,11 @@ public sealed class AntigravityAdapter : IProviderAdapter
         var claudeConfigDir = SessionHandoffExporter.GetEffectiveClaudeConfigDir(options.ProjectPath, options.IsolateConfig);
         SessionHandoffExporter.Export(options.ProjectPath, claudeConfigDir);
 
-        var process = ProcessLaunchHelper.Start(exe, $"\"{options.ProjectPath}\"", options.ProjectPath);
-
-        return Task.FromResult<ISessionHandle>(new ProcessSessionHandle(Name, options.ProjectPath, process, watchForRateLimit: true));
+        // agy requires a path argument - inside the sandbox the mounted project IS /workspace.
+        return await SandboxLauncher().LaunchAsync(Name, SandboxSessionLauncher.ToLinuxCommand(exe, "\"/workspace\""), options);
     }
+
+    /// <summary>Lazily built default launcher (real OpenSandbox runtime + configured settings) when no launcher was injected.</summary>
+    private SandboxSessionLauncher SandboxLauncher() =>
+        _sandboxLauncher ??= new SandboxSessionLauncher(new OpenSandboxSdkRuntime(new SandboxSettings()), new SandboxSettings());
 }
