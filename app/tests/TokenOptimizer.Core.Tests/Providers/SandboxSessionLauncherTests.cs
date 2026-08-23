@@ -63,7 +63,7 @@ public class SandboxSessionLauncherTests
     }
 
     [Fact]
-    public async Task Launch_MergesProvidedEnvironmentIntoSpecEnv()
+    public async Task Launch_TranslatesHostLoopbackUrlEnv_ForContainerReachability()
     {
         var runtime = new RecordingRuntime();
         var launcher = new SandboxSessionLauncher(runtime, Settings());
@@ -76,8 +76,44 @@ public class SandboxSessionLauncherTests
             });
 
         var spec = runtime.SpecOf("sbx-000001");
-        Assert.Equal("http://127.0.0.1:8080/", spec.Env!["ANTHROPIC_BASE_URL"]);
+        // The host proxy is unreachable at 127.0.0.1 from inside the container.
+        Assert.Equal("http://host.docker.internal:8080/", spec.Env!["ANTHROPIC_BASE_URL"]);
         Assert.Equal("proxied-locally", spec.Env["ANTHROPIC_AUTH_TOKEN"]);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Launch_StripsWindowsConfigDirKeys_WhetherOrNotConfigIsIsolated(bool isolateConfig)
+    {
+        var runtime = new RecordingRuntime();
+        var launcher = new SandboxSessionLauncher(runtime, Settings());
+
+        await launcher.LaunchAsync("Claude Code", "claude", Options(isolateConfig),
+            new Dictionary<string, string>
+            {
+                ["CLAUDE_CONFIG_DIR"] = @"C:\code\demo\.claude-profiles\abc",
+                ["ANTHROPIC_AUTH_TOKEN"] = "kept",
+            });
+
+        var spec = runtime.SpecOf("sbx-000001");
+        // A Windows path can never resolve inside the Linux container: isolate
+        // has no mount to satisfy it; non-isolate already mounts /root/.claude.
+        Assert.False(spec.Env!.ContainsKey("CLAUDE_CONFIG_DIR"));
+        Assert.Equal("kept", spec.Env["ANTHROPIC_AUTH_TOKEN"]);
+    }
+
+    [Fact]
+    public async Task Launch_PortOnlyEnvValue_PassesThroughVerbatim()
+    {
+        var runtime = new RecordingRuntime();
+        var launcher = new SandboxSessionLauncher(runtime, Settings());
+
+        await launcher.LaunchAsync("Claude Code", "claude", Options(),
+            new Dictionary<string, string> { ["CLAUDE_MEM_WORKER_PORT"] = "37778" });
+
+        var spec = runtime.SpecOf("sbx-000001");
+        Assert.Equal("37778", spec.Env!["CLAUDE_MEM_WORKER_PORT"]);
     }
 
     [Fact]

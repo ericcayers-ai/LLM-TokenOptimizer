@@ -44,16 +44,13 @@ public sealed class SandboxSessionLauncher
             Image: _settings.AgentImage,
             Mounts: BuildMounts(options.ProjectPath, options.IsolateConfig),
             Timeout: TimeSpan.FromMinutes(_settings.IdleTimeoutMinutes),
-            Env: MergeEnvironment(environment));
+            Env: SandboxEnvTranslator.Translate(environment));
 
         var sandbox = await _runtime.CreateAsync(spec);
 
         var events = _runtime.ExecAsync(sandbox.Id, ["bash", "-lc", linuxCommand]);
         return new SandboxSessionHandle(providerName, options.ProjectPath, _runtime, sandbox.Id, events, watchForRateLimit: true);
     }
-
-    private static IReadOnlyDictionary<string, string>? MergeEnvironment(IReadOnlyDictionary<string, string>? environment) =>
-        environment is null || environment.Count == 0 ? null : environment;
 
     /// <summary>
     /// Maps a host executable path (+ optional arguments) to the in-container
