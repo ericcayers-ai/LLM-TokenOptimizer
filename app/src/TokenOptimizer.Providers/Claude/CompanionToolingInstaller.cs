@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using TokenOptimizer.Core.Config;
 using TokenOptimizer.Core.Diagnostics;
+using TokenOptimizer.Sandbox;
 
 namespace TokenOptimizer.Providers.Claude;
 
