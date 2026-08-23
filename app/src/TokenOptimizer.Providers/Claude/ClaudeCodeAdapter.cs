@@ -136,7 +136,7 @@ public sealed class ClaudeCodeAdapter : IProviderAdapter
         await RefreshPluginMarketplacesAsync(exe);
 
         var launchEnv = BuildLaunchEnvironment(options);
-        return await SandboxLauncher().LaunchAsync(Name, SandboxSessionLauncher.ToLinuxCommand(exe, launchEnv.Arguments), options);
+        return await SandboxLauncher().LaunchAsync(Name, SandboxSessionLauncher.ToLinuxCommand(exe, launchEnv.Arguments), options, launchEnv.Env);
     }
 
     /// <summary>Lazily built default launcher (real OpenSandbox runtime + configured settings) when no launcher was injected.</summary>
