@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\TokenOptimizer.Core\TokenOptimizer.Core.csproj" />
+    <ProjectReference Include="..\TokenOptimizer.Sandbox\TokenOptimizer.Sandbox.csproj" />
   </ItemGroup>
 
   <PropertyGroup>
