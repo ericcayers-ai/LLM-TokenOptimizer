@@ -1,5 +1,7 @@
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using TokenOptimizer.Core.Concurrency;
 using TokenOptimizer.Core.Config;
 using TokenOptimizer.Core.Diagnostics;
@@ -39,14 +41,14 @@ public static class CliHost
     };
 
     public static async Task<int> RunAsync(string[] args, ModelProbeService? probeService = null,
-        ServerLifecycleManager? sandboxManager = null)
+        ServerLifecycleManager? sandboxManager = null, ISandboxRuntime? sandboxRuntime = null)
     {
         if (args.Length == 0)
         {
             return Fail("No command given. Try: status, providers, launch, install-dependencies, "
                 + "install-companion-tooling, reset-config, uninstall, master-folder-set, master-folder-list, "
                 + "create-project, history, add-project, "
-                + "set-credential, opt-in, export-handoff, sandbox-status, mcp-rag-server.");
+                + "set-credential, opt-in, export-handoff, sandbox-status, image-export, smoke-run, mcp-rag-server.");
         }
 
         var command = args[0];
@@ -382,6 +384,86 @@ public static class CliHost
                         missing = preflight.Missing,
                     }, JsonOptions));
                     return 0;
+                }
+
+                case "image-export":
+                {
+                    if (!opts.TryGetValue("out", out var outDir) || string.IsNullOrWhiteSpace(outDir))
+                    {
+                        return Fail("--out <directory> is required.");
+                    }
+                    Directory.CreateDirectory(outDir);
+                    var catalog = new ImageCatalog(Providers.ToolCatalog.Tools);
+                    var dockerfile = Path.Combine(outDir, "Dockerfile");
+                    var entrypoint = Path.Combine(outDir, "entrypoint.sh");
+                    File.WriteAllText(dockerfile, catalog.GenerateDockerfile(AgentImageKind.AgentCompanion));
+                    File.WriteAllText(entrypoint, catalog.GenerateEntrypointScript());
+                    return await Ok(new { dir = Path.GetFullPath(outDir), dockerfile, entrypoint });
+                }
+
+                case "smoke-run":
+                {
+                    // Raw single-line JSON like sandbox-status: {pass, detail} IS the whole
+                    // contract for the e2e smoke script, exit code carries the verdict.
+                    var settings = (await configStore.LoadAsync()).Sandbox;
+                    var image = opts.TryGetValue("image", out var img) && !string.IsNullOrWhiteSpace(img)
+                        ? img : settings.AgentImage;
+                    var runtime = sandboxRuntime ?? new OpenSandboxSdkRuntime(settings);
+
+                    var pass = false;
+                    var detail = "";
+                    string? sandboxId = null;
+                    try
+                    {
+                        var handle = await runtime.CreateAsync(
+                            new SandboxSpec(image, Array.Empty<SandboxMount>(), Timeout: TimeSpan.FromMinutes(5)));
+                        sandboxId = handle.Id;
+
+                        var stdout = new StringBuilder();
+                        var stderr = new StringBuilder();
+                        var exitCode = 1;
+                        await foreach (var ev in runtime.ExecAsync(handle.Id, ["claude", "--version"]))
+                        {
+                            switch (ev)
+                            {
+                                case ExecOutput output when output.Stream == "stdout":
+                                    stdout.Append(output.Text);
+                                    break;
+                                case ExecOutput output:
+                                    stderr.Append(output.Text);
+                                    break;
+                                case ExecExit done:
+                                    exitCode = done.Code;
+                                    break;
+                            }
+                        }
+
+                        var text = stdout.ToString().Trim();
+                        var claudeNamed = text.Contains("claude", StringComparison.OrdinalIgnoreCase);
+                        var versionLike = Regex.IsMatch(text, @"\d+(\.\d+)+");
+                        pass = exitCode == 0 && (claudeNamed || versionLike);
+                        detail = pass
+                            ? $"claude --version ok in sandbox '{handle.Id}' (image {image}): {text}"
+                            : $"claude --version failed in sandbox '{handle.Id}' (image {image}): "
+                                + $"exit={exitCode} stdout='{text}'"
+                                + (stderr.Length > 0 ? $" stderr='{stderr.ToString().Trim()}'" : "");
+                    }
+                    catch (Exception ex)
+                    {
+                        pass = false;
+                        detail = $"sandbox smoke-run error (image {image}): {ex.Message}";
+                    }
+                    finally
+                    {
+                        if (sandboxId is not null)
+                        {
+                            try { await runtime.KillAsync(sandboxId); }
+                            catch { }
+                        }
+                    }
+
+                    Console.WriteLine(JsonSerializer.Serialize(new { pass, detail }, JsonOptions));
+                    return pass ? 0 : 1;
                 }
 
                 case "test-model":

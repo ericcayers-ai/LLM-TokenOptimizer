@@ -56,6 +56,7 @@ public sealed class CliHostArgParsingTests : IDisposable
     [InlineData("set-credential", "--provider")]
     [InlineData("opt-in", "--provider")]
     [InlineData("export-handoff", "--project")]
+    [InlineData("image-export", "--out")]
     public async Task MissingRequiredArg_NamesTheArg(string command, string argName)
     {
         var exit = await CliHost.RunAsync([command]);
@@ -209,6 +210,100 @@ public sealed class CliHostArgParsingTests : IDisposable
 
     private static FakeRunner DockerUpRunner() => new() { ["docker"] = new ProcResult(0, "OK", "") };
 
+    [Fact]
+    public async Task ImageExport_ValidInvoke_WritesCompanionFilesAndReturnsOkShape()
+    {
+        var outDir = Path.Combine(Path.GetTempPath(), "tokenoptimizer-e2e-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var exit = await CliHost.RunAsync(["image-export", "--out", outDir]);
+
+            Assert.Equal(0, exit);
+            var json = ParseStdout();
+            Assert.True(json["ok"]!.GetValue<bool>());
+            Assert.Equal(Path.GetFullPath(outDir), json["data"]!["dir"]!.GetValue<string>());
+
+            var dockerfile = File.ReadAllText(Path.Combine(outDir, "Dockerfile"));
+            Assert.Contains("FROM opensandbox/code-interpreter:v1.1.0", dockerfile, StringComparison.Ordinal);
+            Assert.Contains("/opt/tokenoptimizer/WIRING.txt", dockerfile, StringComparison.Ordinal);
+            Assert.Contains("ENTRYPOINT", dockerfile, StringComparison.Ordinal);
+
+            var entrypoint = File.ReadAllText(Path.Combine(outDir, "entrypoint.sh"));
+            Assert.StartsWith("#!/usr/bin/env bash", entrypoint, StringComparison.Ordinal);
+            Assert.Contains("graft init", entrypoint, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(outDir)) Directory.Delete(outDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SmokeRun_ClaudeVersionOutput_PassesAndKillsSandbox()
+    {
+        var runtime = new StubSandboxRuntime { StdoutText = "claude 1.2.3 (Claude Code)", ExitCode = 0 };
+
+        var exit = await CliHost.RunAsync(["smoke-run"], sandboxRuntime: runtime);
+
+        Assert.Equal(0, exit);
+        var json = ParseStdout();
+        Assert.True(json["pass"]!.GetValue<bool>());
+        Assert.Contains("sb-stub-1", json["detail"]!.GetValue<string>(), StringComparison.OrdinalIgnoreCase);
+        Assert.Single(runtime.CreatedImages);
+        Assert.Equal("tokenoptimizer/agent-companion:latest", runtime.CreatedImages[0]);
+        Assert.Equal(["sb-stub-1"], runtime.KilledIds);
+    }
+
+    [Fact]
+    public async Task SmokeRun_ImageOption_OverridesDefaultImage()
+    {
+        var runtime = new StubSandboxRuntime { StdoutText = "claude 1.2.3", ExitCode = 0 };
+
+        var exit = await CliHost.RunAsync(["smoke-run", "--image", "custom/image:e2e"], sandboxRuntime: runtime);
+
+        Assert.Equal(0, exit);
+        Assert.Equal("custom/image:e2e", runtime.CreatedImages[0]);
+    }
+
+    [Fact]
+    public async Task SmokeRun_VersionLikeOnlyOutput_Passes()
+    {
+        var runtime = new StubSandboxRuntime { StdoutText = "2.1.0\n", ExitCode = 0 };
+
+        var exit = await CliHost.RunAsync(["smoke-run"], sandboxRuntime: runtime);
+
+        Assert.Equal(0, exit);
+        Assert.True(ParseStdout()["pass"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task SmokeRun_NoClaudeOrVersionOutput_FailsAndStillKills()
+    {
+        var runtime = new StubSandboxRuntime { StdoutText = "hello world", ExitCode = 127 };
+
+        var exit = await CliHost.RunAsync(["smoke-run"], sandboxRuntime: runtime);
+
+        Assert.Equal(1, exit);
+        var json = ParseStdout();
+        Assert.False(json["pass"]!.GetValue<bool>());
+        Assert.NotEmpty(json["detail"]!.GetValue<string>());
+        Assert.Single(runtime.KilledIds);
+    }
+
+    [Fact]
+    public async Task SmokeRun_CreateFailure_ReportsPassFalseWithoutKill()
+    {
+        var runtime = new StubSandboxRuntime { CreateError = new InvalidOperationException("registry unreachable") };
+
+        var exit = await CliHost.RunAsync(["smoke-run"], sandboxRuntime: runtime);
+
+        Assert.Equal(1, exit);
+        var json = ParseStdout();
+        Assert.False(json["pass"]!.GetValue<bool>());
+        Assert.Contains("registry unreachable", json["detail"]!.GetValue<string>(), StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(runtime.KilledIds);
+    }
+
     /// <summary>Same seam pattern as SetupWizardViewModelTests.FlippingManager: real GetStatusAsync flow, health probe stubbed so no network/docker is touched.</summary>
     private sealed class StubServerManager(IProcessRunner runner, SandboxSettings settings)
         : ServerLifecycleManager(runner, settings)
@@ -228,6 +323,44 @@ public sealed class CliHostArgParsingTests : IDisposable
         {
             var key = Path.GetFileNameWithoutExtension(exe);
             return Task.FromResult(Results.TryGetValue(key, out var r) ? r : new ProcResult(1, "", "not stubbed"));
+        }
+    }
+
+    /// <summary>In-memory ISandboxRuntime: records create/kill calls, replays a canned claude --version exec stream. No network.</summary>
+    private sealed class StubSandboxRuntime : ISandboxRuntime
+    {
+        public List<string> CreatedImages { get; } = [];
+        public List<string> KilledIds { get; } = [];
+        public string StdoutText { get; init; } = "";
+        public int ExitCode { get; init; }
+        public Exception? CreateError { get; init; }
+
+        public Task<SandboxHandle> CreateAsync(SandboxSpec spec, CancellationToken ct = default)
+        {
+            if (CreateError is not null) throw CreateError;
+            CreatedImages.Add(spec.Image);
+            return Task.FromResult(new SandboxHandle("sb-stub-1"));
+        }
+
+        public async IAsyncEnumerable<ExecEvent> ExecAsync(string id, IReadOnlyList<string> argv,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+        {
+            Assert.Equal(["claude", "--version"], argv.ToArray());
+            yield return new ExecOutput("stdout", StdoutText);
+            await Task.Yield();
+            yield return new ExecExit(ExitCode);
+        }
+
+        public Task<string> ReadFileAsync(string id, string path, CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task WriteFileAsync(string id, string path, string content, CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task KillAsync(string id, CancellationToken ct = default)
+        {
+            KilledIds.Add(id);
+            return Task.CompletedTask;
         }
     }
 
