@@ -31,7 +31,11 @@ public sealed class SandboxSessionLauncher
     }
 
     /// <summary>Creates a sandbox with the project mounted at /workspace and runs linuxCommand inside it. Returns a SandboxSessionHandle streaming its output.</summary>
-    public async Task<ISessionHandle> LaunchAsync(string providerName, string linuxCommand, SessionLaunchOptions options)
+    public async Task<ISessionHandle> LaunchAsync(
+        string providerName,
+        string linuxCommand,
+        SessionLaunchOptions options,
+        IReadOnlyDictionary<string, string>? environment = null)
     {
         if (string.IsNullOrWhiteSpace(options?.ProjectPath))
             throw new InvalidOperationException("Sandbox launch requires a ProjectPath - there is nothing to mount at /workspace.");
@@ -39,13 +43,17 @@ public sealed class SandboxSessionLauncher
         var spec = new SandboxSpec(
             Image: _settings.AgentImage,
             Mounts: BuildMounts(options.ProjectPath, options.IsolateConfig),
-            Timeout: TimeSpan.FromMinutes(_settings.IdleTimeoutMinutes));
+            Timeout: TimeSpan.FromMinutes(_settings.IdleTimeoutMinutes),
+            Env: MergeEnvironment(environment));
 
         var sandbox = await _runtime.CreateAsync(spec);
 
         var events = _runtime.ExecAsync(sandbox.Id, ["bash", "-lc", linuxCommand]);
         return new SandboxSessionHandle(providerName, options.ProjectPath, _runtime, sandbox.Id, events, watchForRateLimit: true);
     }
+
+    private static IReadOnlyDictionary<string, string>? MergeEnvironment(IReadOnlyDictionary<string, string>? environment) =>
+        environment is null || environment.Count == 0 ? null : environment;
 
     /// <summary>
     /// Maps a host executable path (+ optional arguments) to the in-container
@@ -59,18 +67,20 @@ public sealed class SandboxSessionLauncher
         return string.IsNullOrWhiteSpace(arguments) ? cliName : $"{cliName} {arguments}";
     }
 
-    private static Dictionary<string, string> BuildMounts(string projectPath, bool isolateConfig)
+    private static IReadOnlyList<SandboxMount> BuildMounts(string projectPath, bool isolateConfig)
     {
-        var mounts = new Dictionary<string, string>(StringComparer.Ordinal)
+        var mounts = new List<SandboxMount>
         {
-            [WorkspaceMountPoint] = projectPath,
+            new(WorkspaceMountPoint, projectPath),
         };
 
         if (!isolateConfig)
         {
             var claudeHome = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");
-            mounts[ClaudeConfigMountPoint] = claudeHome;
+            // Stored auth/skills/plugins are credential material: mounted read-only
+            // so the container can read but never modify the host's Claude config.
+            mounts.Add(new SandboxMount(ClaudeConfigMountPoint, claudeHome, ReadOnly: true));
         }
 
         return mounts;

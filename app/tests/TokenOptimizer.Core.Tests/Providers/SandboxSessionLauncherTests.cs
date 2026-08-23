@@ -27,11 +27,13 @@ public class SandboxSessionLauncherTests
         var spec = runtime.SpecOf("sbx-000001");
         Assert.Equal("tokenoptimizer/agent-test:latest", spec.Image);
         Assert.Equal(TimeSpan.FromMinutes(42), spec.Timeout);
-        Assert.Equal(@"C:\code\demo", spec.Mounts["/workspace"]);
+        var workspace = Assert.Single(spec.Mounts, m => m.Target == "/workspace");
+        Assert.Equal(@"C:\code\demo", workspace.Source);
+        Assert.False(workspace.ReadOnly);
     }
 
     [Fact]
-    public async Task Launch_IsolateConfigFalse_MountsHostClaudeConfigReadOnlyTarget()
+    public async Task Launch_IsolateConfigFalse_MountsHostClaudeConfigReadOnly()
     {
         var runtime = new RecordingRuntime();
         var launcher = new SandboxSessionLauncher(runtime, Settings());
@@ -41,8 +43,10 @@ public class SandboxSessionLauncherTests
         var spec = runtime.SpecOf("sbx-000001");
         var expectedHome = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");
-        Assert.True(spec.Mounts.ContainsKey("/root/.claude"));
-        Assert.Equal(expectedHome, spec.Mounts["/root/.claude"]);
+        var credentialMount = Assert.Single(spec.Mounts, m => m.Target == "/root/.claude");
+        Assert.Equal(expectedHome, credentialMount.Source);
+        // Credential material must never be writable from inside the container.
+        Assert.True(credentialMount.ReadOnly);
     }
 
     [Fact]
@@ -54,8 +58,38 @@ public class SandboxSessionLauncherTests
         await launcher.LaunchAsync("Claude Code", "claude", Options(isolateConfig: true));
 
         var spec = runtime.SpecOf("sbx-000001");
-        Assert.False(spec.Mounts.ContainsKey("/root/.claude"));
-        Assert.True(spec.Mounts.ContainsKey("/workspace"));
+        Assert.DoesNotContain(spec.Mounts, m => m.Target == "/root/.claude");
+        Assert.Contains(spec.Mounts, m => m.Target == "/workspace");
+    }
+
+    [Fact]
+    public async Task Launch_MergesProvidedEnvironmentIntoSpecEnv()
+    {
+        var runtime = new RecordingRuntime();
+        var launcher = new SandboxSessionLauncher(runtime, Settings());
+
+        await launcher.LaunchAsync("Groq", "claude --continue", Options(),
+            new Dictionary<string, string>
+            {
+                ["ANTHROPIC_BASE_URL"] = "http://127.0.0.1:8080/",
+                ["ANTHROPIC_AUTH_TOKEN"] = "proxied-locally",
+            });
+
+        var spec = runtime.SpecOf("sbx-000001");
+        Assert.Equal("http://127.0.0.1:8080/", spec.Env!["ANTHROPIC_BASE_URL"]);
+        Assert.Equal("proxied-locally", spec.Env["ANTHROPIC_AUTH_TOKEN"]);
+    }
+
+    [Fact]
+    public async Task Launch_NoEnvironmentProvided_SpecEnvStaysEmpty()
+    {
+        var runtime = new RecordingRuntime();
+        var launcher = new SandboxSessionLauncher(runtime, Settings());
+
+        await launcher.LaunchAsync("Claude Code", "claude", Options());
+
+        var spec = runtime.SpecOf("sbx-000001");
+        Assert.True(spec.Env is null || spec.Env.Count == 0);
     }
 
     [Fact]

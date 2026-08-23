@@ -92,7 +92,7 @@ public sealed class OpenSandboxSdkRuntime : ISandboxRuntime
 
     internal static SandboxCreateOptions BuildCreateOptions(SandboxSpec spec, ConnectionConfig? config)
     {
-        IReadOnlyDictionary<string, string> mounts = spec.Mounts ?? new Dictionary<string, string>();
+        IReadOnlyList<SandboxMount> mounts = spec.Mounts ?? Array.Empty<SandboxMount>();
         return new SandboxCreateOptions
         {
             ConnectionConfig = config,
@@ -104,13 +104,13 @@ public sealed class OpenSandboxSdkRuntime : ISandboxRuntime
         };
     }
 
-    internal static Volume[] MapVolumes(IReadOnlyDictionary<string, string> mounts) =>
-        mounts.Select((kv, index) => new Volume
+    internal static Volume[] MapVolumes(IReadOnlyList<SandboxMount> mounts) =>
+        mounts.Select((mount, index) => new Volume
         {
             Name = $"mount-{index}",
-            Host = new Host { Path = kv.Value },
-            MountPath = kv.Key,
-            ReadOnly = false,
+            Host = new Host { Path = mount.Source },
+            MountPath = mount.Target,
+            ReadOnly = mount.ReadOnly,
         }).ToArray();
 
     internal static string BuildCommand(IReadOnlyList<string> argv)

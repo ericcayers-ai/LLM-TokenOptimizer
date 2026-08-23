@@ -9,9 +9,11 @@ public interface ISandboxRuntime
     Task KillAsync(string id, CancellationToken ct = default);
 }
 
+public sealed record SandboxMount(string Target, string Source, bool ReadOnly = false);
+
 public sealed record SandboxSpec(
     string Image,
-    IReadOnlyDictionary<string, string> Mounts,
+    IReadOnlyList<SandboxMount> Mounts,
     TimeSpan? Timeout = null,
     IReadOnlyDictionary<string, string>? Env = null);
 

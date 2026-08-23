@@ -12,7 +12,7 @@ public class OpenSandboxSdkRuntimeIntegrationTests
 
         var handle = await runtime.CreateAsync(new SandboxSpec(
             Image: "opensandbox/aio:latest",
-            Mounts: new Dictionary<string, string>()));
+            Mounts: Array.Empty<SandboxMount>()));
 
         try
         {

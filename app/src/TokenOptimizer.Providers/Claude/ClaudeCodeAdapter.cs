@@ -141,7 +141,7 @@ public sealed class ClaudeCodeAdapter : IProviderAdapter
 
     /// <summary>Lazily built default launcher (real OpenSandbox runtime + configured settings) when no launcher was injected.</summary>
     private SandboxSessionLauncher SandboxLauncher() =>
-        _sandboxLauncher ??= new SandboxSessionLauncher(new OpenSandboxSdkRuntime(new SandboxSettings()), new SandboxSettings());
+        _sandboxLauncher ??= SandboxLauncherFactory.CreateDefault();
 
     private static string GetClaudeHome() =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");

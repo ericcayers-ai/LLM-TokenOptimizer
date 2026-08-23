@@ -38,7 +38,7 @@ public class OpenSandboxSdkRuntimeTests
     {
         var spec = new SandboxSpec(
             Image: "opensandbox/aio:latest",
-            Mounts: new Dictionary<string, string> { ["/workspace"] = @"C:\proj" },
+            Mounts: new[] { new SandboxMount("/workspace", @"C:\proj") },
             Env: new Dictionary<string, string> { ["FOO"] = "bar" });
 
         var options = OpenSandboxSdkRuntime.BuildCreateOptions(spec, config: null);
@@ -54,11 +54,25 @@ public class OpenSandboxSdkRuntimeTests
     }
 
     [Fact]
+    public void BuildCreateOptions_ReadOnlyMount_MapsToReadOnlyVolume()
+    {
+        var spec = new SandboxSpec(
+            Image: "opensandbox/aio:latest",
+            Mounts: new[] { new SandboxMount("/root/.claude", @"C:\Users\x\.claude", ReadOnly: true) });
+
+        var options = OpenSandboxSdkRuntime.BuildCreateOptions(spec, config: null);
+
+        var volume = Assert.Single(options.Volumes!);
+        Assert.Equal("/root/.claude", volume.MountPath);
+        Assert.True(volume.ReadOnly);
+    }
+
+    [Fact]
     public void BuildCreateOptions_TimeoutMapsToTtlSeconds()
     {
         var spec = new SandboxSpec(
             Image: "opensandbox/aio:latest",
-            Mounts: new Dictionary<string, string>(),
+            Mounts: Array.Empty<SandboxMount>(),
             Timeout: TimeSpan.FromMinutes(5));
 
         var options = OpenSandboxSdkRuntime.BuildCreateOptions(spec, config: null);

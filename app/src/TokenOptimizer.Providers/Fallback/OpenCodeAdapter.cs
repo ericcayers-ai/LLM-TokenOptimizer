@@ -95,16 +95,13 @@ public sealed class OpenCodeAdapter : IProviderAdapter
         var launchEnv = BuildLaunchEnvironment(options, proxy.BaseUrl);
 
         // The session itself runs in the sandbox; the proxy stays on the host.
-        // Note: launchEnv.Env (ANTHROPIC_BASE_URL/AUTH_TOKEN etc.) cannot cross
-        // the SandboxSessionLauncher boundary yet - env plumbing is pending
-        // upstream work, see task report.
-        var handle = (SandboxSessionHandle)await SandboxLauncher().LaunchAsync(
-            Name, SandboxSessionLauncher.ToLinuxCommand(claudeExe, launchEnv.Arguments), options);
+        var handle = await SandboxLauncher().LaunchAsync(
+            Name, SandboxSessionLauncher.ToLinuxCommand(claudeExe, launchEnv.Arguments), options, launchEnv.Env);
         _ = handle.RateLimitOutcome.ContinueWith(async _ => await proxy.DisposeAsync());
         return handle;
     }
 
     /// <summary>Lazily built default launcher (real OpenSandbox runtime + configured settings) when no launcher was injected.</summary>
     private SandboxSessionLauncher SandboxLauncher() =>
-        _sandboxLauncher ??= new SandboxSessionLauncher(new OpenSandboxSdkRuntime(new SandboxSettings()), new SandboxSettings());
+        _sandboxLauncher ??= SandboxLauncherFactory.CreateDefault();
 }

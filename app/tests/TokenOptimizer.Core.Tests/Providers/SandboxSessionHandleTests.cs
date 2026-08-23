@@ -111,7 +111,7 @@ public class SandboxSessionHandleTests
 
     private static SandboxSpec Spec() => new(
         Image: "opensandbox/aio:latest",
-        Mounts: new Dictionary<string, string> { ["/workspace"] = @"C:\proj" });
+        Mounts: new[] { new SandboxMount("/workspace", @"C:\proj") });
 
     private static async IAsyncEnumerable<ExecEvent> Stream(params ExecEvent[] events)
     {

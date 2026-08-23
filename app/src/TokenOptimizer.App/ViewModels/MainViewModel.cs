@@ -1240,7 +1240,7 @@ public partial class MainViewModel : ViewModelBase
     {
         if (_sandboxLauncher is not null) return _sandboxLauncher;
         var settings = (await _configStore.LoadAsync()).Sandbox;
-        _sandboxLauncher = new SandboxSessionLauncher(new OpenSandboxSdkRuntime(settings), settings);
+        _sandboxLauncher = SandboxLauncherFactory.Create(settings);
         return _sandboxLauncher;
     }
 
@@ -1334,19 +1334,32 @@ public partial class MainViewModel : ViewModelBase
                 // The interactive Claude Code session runs inside the sandbox
                 // substrate now (project mounted at /workspace; host ~/.claude
                 // mounted read-only into /root/.claude unless config isolation
-                // is on). The UnifiedModelRouter keeps running on the host.
-                // Note: the gateway-discovery/claude-mem env vars this site used
-                // to set on the host process (ANTHROPIC_BASE_URL,
-                // ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY,
-                // CLAUDE_MEM_*) cannot cross the SandboxSessionLauncher boundary
-                // yet - env plumbing is pending upstream work, see task report.
+                // is on). The UnifiedModelRouter keeps running on the host;
+                // its endpoint reaches the session via the env vars below.
+                var environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["ANTHROPIC_BASE_URL"] = router.BaseUrl,
+                    // Gateway model discovery (GET /v1/models -> /model picker) fires from Claude Code's own gate,
+                    // which requires ANTHROPIC_BASE_URL, a non-empty ANTHROPIC_AUTH_TOKEN, and this flag - AND
+                    // getAPIProvider() still resolving to "firstParty". The token value itself is never checked -
+                    // the router only needs it non-empty to satisfy that gate.
+                    ["ANTHROPIC_AUTH_TOKEN"] = "tokenoptimizer-local-gateway",
+                    ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1",
+                    ["CLAUDE_MEM_WORKER_PORT"] = CompanionToolingInstaller.IsolatedWorkerPort.ToString(),
+                    ["CLAUDE_MEM_DATA_DIR"] = CompanionToolingInstaller.IsolatedDataDir,
+                };
+                if (IsolateClaudeConfig)
+                {
+                    environment["CLAUDE_CONFIG_DIR"] = IsolatedClaudeProfileService.GetOrCreateProfileDir(SelectedProject.FullPath);
+                }
+
                 var launchOptions = new SessionLaunchOptions(SelectedProject.FullPath, IsolateConfig: IsolateClaudeConfig, ResumeMode: resumeMode);
                 var launcher = await SandboxLauncherAsync();
-                // Same CLI-name mapping the adapters use: container images install CLIs on PATH.
-                var session = (SandboxSessionHandle)await launcher.LaunchAsync(
+                var session = await launcher.LaunchAsync(
                     "Claude Code",
-                    $"{Path.GetFileNameWithoutExtension(claudeExe)} {string.Join(' ', args)}".Trim(),
-                    launchOptions);
+                    SandboxSessionLauncher.ToLinuxCommand(claudeExe, string.Join(' ', args)),
+                    launchOptions,
+                    environment);
                 _ = session.RateLimitOutcome.ContinueWith(async _ => await router.DisposeAsync());
 
                 await _projectHistory.AddAsync(SelectedProject.FullPath);
@@ -1486,15 +1499,11 @@ public partial class MainViewModel : ViewModelBase
             _ => null,
         };
 
-        // Interactive sessions now come back as SandboxSessionHandle; host
+        // Interactive sessions come back as SandboxSessionHandle; host
         // ProcessSessionHandle remains for the flows that legitimately stay
-        // host-side (login/GUI, servers, installers).
-        Task<RateLimitOutcome>? outcomeTask = handle switch
-        {
-            SandboxSessionHandle sandboxHandle => sandboxHandle.RateLimitOutcome,
-            ProcessSessionHandle processHandle => processHandle.RateLimitOutcome,
-            _ => null,
-        };
+        // host-side (login/GUI, servers, installers). Both expose their
+        // rate-limit outcome through ISessionHandle.
+        Task<RateLimitOutcome>? outcomeTask = handle.RateLimitOutcome;
         if (provider is not { } trackedProvider || outcomeTask is null) return;
 
         _ = outcomeTask.ContinueWith(async task =>
