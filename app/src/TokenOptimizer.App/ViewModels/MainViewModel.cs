@@ -1040,7 +1040,11 @@ public partial class MainViewModel : ViewModelBase
                 ? "ready"
                 : !sandbox.DockerUp
                     ? "docker down"
-                    : sandbox.ServerUp ? "server down" : $"unavailable ({sandbox.Error})";
+                    : !sandbox.ServerUp
+                        ? "server down"
+                        : string.IsNullOrWhiteSpace(sandbox.Error)
+                            ? "unavailable (unknown error)"
+                            : $"unavailable ({sandbox.Error})";
             SandboxStatusText = $"Sandbox: {sandboxState}";
         }
         finally

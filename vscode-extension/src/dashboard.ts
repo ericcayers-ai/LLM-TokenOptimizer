@@ -272,7 +272,7 @@ function getHtml(): string {
     const upDown = v => v === true ? 'Up' : v === false ? 'Down' : 'unknown';
     const state = s.dockerUp && s.serverUp ? 'ready'
       : !s.dockerUp ? 'docker down'
-      : s.serverUp ? 'server down'
+      : !s.serverUp ? 'server down'
       : 'unavailable';
     sandboxEl.innerHTML =
       sandboxCell(upDown(s.dockerUp), 'Docker') +
