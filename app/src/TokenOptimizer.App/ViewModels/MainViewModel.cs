@@ -15,6 +15,7 @@ using TokenOptimizer.Providers;
 using TokenOptimizer.Providers.Claude;
 using TokenOptimizer.Providers.Compat;
 using TokenOptimizer.Providers.Fallback;
+using TokenOptimizer.Sandbox;
 
 namespace TokenOptimizer.App.ViewModels;
 
@@ -47,6 +48,10 @@ public partial class MainViewModel : ViewModelBase
     private readonly CompanionUninstaller _uninstaller;
     private readonly ProviderCliInstaller _providerCliInstaller = new();
     private readonly IReadOnlyList<IProviderAdapter> _providers;
+    private SandboxSessionLauncher? _sandboxLauncher;
+    private PreflightGate? _preflightGate;
+    private ServerLifecycleManager? _sandboxManager;
+    private SetupWizardViewModel? _setupWizard;
 
     public MainViewModel()
     {
@@ -390,6 +395,10 @@ public partial class MainViewModel : ViewModelBase
 
     [ObservableProperty]
     public partial string TokenUsageSummaryText { get; set; } = "ccusage not installed - run Install Companion Tooling to add it.";
+
+    /// <summary>Sandbox substrate state for the Dashboard card - refreshed by RefreshDashboardAsync via the same gate the launch path uses.</summary>
+    [ObservableProperty]
+    public partial string SandboxStatusText { get; set; } = "Sandbox: unknown";
 
     [ObservableProperty]
     public partial bool IsDashboardRefreshing { get; set; }
@@ -1024,6 +1033,19 @@ public partial class MainViewModel : ViewModelBase
             TokenUsageSummaryText = usage is null
                 ? "ccusage not installed - run Install Companion Tooling to add it."
                 : $"Today: {usage.TodayTokens:N0} tokens, ${usage.TodayCostUsd:F2} - All-time: {usage.AllTimeTokens:N0} tokens, ${usage.AllTimeCostUsd:F2}";
+
+            await PreflightAsync(); // ensures _sandboxManager shares the gate's config-loaded settings
+            var sandbox = await _sandboxManager!.GetStatusAsync();
+            var sandboxState = sandbox.DockerUp && sandbox.ServerUp
+                ? "ready"
+                : !sandbox.DockerUp
+                    ? "docker down"
+                    : !sandbox.ServerUp
+                        ? "server down"
+                        : string.IsNullOrWhiteSpace(sandbox.Error)
+                            ? "unavailable (unknown error)"
+                            : $"unavailable ({sandbox.Error})";
+            SandboxStatusText = $"Sandbox: {sandboxState}";
         }
         finally
         {
@@ -1224,6 +1246,51 @@ public partial class MainViewModel : ViewModelBase
     /// <summary>Any model ticked in the Models card - Launch is disabled otherwise.</summary>
     public bool HasTickedModels => ModelCatalog.Any(m => m.IsTicked);
 
+    /// <summary>Populated when a launch was blocked by failed sandbox preflight - surfaced here instead of launching so a future view can bind it without new UI logic.</summary>
+    public SetupWizardViewModel? SetupWizard => _setupWizard;
+
+    /// <summary>
+    /// Lazily built sandbox preflight gate + its server manager, over the
+    /// Sandbox section of config.json. One shared pair for the launch
+    /// preflight AND the dashboard status card - both report the same world,
+    /// and neither can drift onto different settings than SandboxLauncherAsync
+    /// uses (the gate/launcher settings drift a prior review flagged).
+    /// </summary>
+    private async Task<PreflightGate> PreflightAsync()
+    {
+        if (_preflightGate is not null) return _preflightGate;
+        var settings = (await _configStore.LoadAsync()).Sandbox;
+        _sandboxManager = new ServerLifecycleManager(new ProcessRunner(), settings);
+        _preflightGate = new PreflightGate(_sandboxManager);
+        return _preflightGate;
+    }
+
+    /// <summary>Lazily built launcher over the OpenSandbox runtime using the Sandbox section of config.json.</summary>
+    private async Task<SandboxSessionLauncher> SandboxLauncherAsync()
+    {
+        if (_sandboxLauncher is not null) return _sandboxLauncher;
+        var settings = (await _configStore.LoadAsync()).Sandbox;
+        _sandboxLauncher = SandboxLauncherFactory.Create(settings);
+        return _sandboxLauncher;
+    }
+
+    /// <summary>
+    /// Mandatory sandbox preflight: every interactive-session launch path runs
+    /// through the sandbox substrate now, so a missing Docker/OpenSandbox
+    /// server blocks launching and the setup wizard is surfaced instead.
+    /// </summary>
+    private async Task<bool> EnsureSandboxReadyAsync()
+    {
+        var gate = await PreflightAsync();
+        var preflight = await gate.CheckAsync();
+        if (preflight.Ok) return true;
+
+        _setupWizard = new SetupWizardViewModel(gate);
+        OnPropertyChanged(nameof(SetupWizard));
+        Log($"Sandbox prerequisites missing ({string.Join(", ", preflight.Missing)}) - run setup first; launch cancelled.");
+        return false;
+    }
+
     /// <summary>
     /// One click, everything ticked in the Models card shows up in Claude
     /// Code's own /model picker. Bridgeable models (Claude direct, Groq,
@@ -1242,6 +1309,8 @@ public partial class MainViewModel : ViewModelBase
 
         var ticked = ModelCatalog.Where(m => m.IsTicked).ToList();
         if (ticked.Count == 0) { Log("Tick at least one model above."); return; }
+
+        if (!await EnsureSandboxReadyAsync()) return;
 
         IsBusy = true;
         StatusText = "Launching...";
@@ -1293,42 +1362,40 @@ public partial class MainViewModel : ViewModelBase
                 var resumeFlag = resumeMode switch { SessionResumeMode.Continue => "--continue", SessionResumeMode.Pick => "--resume", _ => null };
                 if (resumeFlag is not null) args.Add(resumeFlag);
 
-                var psi = new System.Diagnostics.ProcessStartInfo
+                // The interactive Claude Code session runs inside the sandbox
+                // substrate now (project mounted at /workspace; host ~/.claude
+                // mounted read-only into /root/.claude unless config isolation
+                // is on). The UnifiedModelRouter keeps running on the host;
+                // its endpoint reaches the session via the env vars below.
+                var environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                 {
-                    FileName = claudeExe,
-                    Arguments = string.Join(' ', args),
-                    WorkingDirectory = SelectedProject.FullPath,
-                    UseShellExecute = false,
+                    ["ANTHROPIC_BASE_URL"] = router.BaseUrl,
+                    // Gateway model discovery (GET /v1/models -> /model picker) fires from Claude Code's own gate,
+                    // which requires ANTHROPIC_BASE_URL, a non-empty ANTHROPIC_AUTH_TOKEN, and this flag - AND
+                    // getAPIProvider() still resolving to "firstParty". The token value itself is never checked -
+                    // the router only needs it non-empty to satisfy that gate.
+                    ["ANTHROPIC_AUTH_TOKEN"] = "tokenoptimizer-local-gateway",
+                    ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1",
+                    ["CLAUDE_MEM_WORKER_PORT"] = CompanionToolingInstaller.IsolatedWorkerPort.ToString(),
+                    ["CLAUDE_MEM_DATA_DIR"] = CompanionToolingInstaller.IsolatedDataDir,
                 };
-                psi.EnvironmentVariables["ANTHROPIC_BASE_URL"] = router.BaseUrl;
-                // Gateway model discovery (GET /v1/models -> /model picker, labeled "From gateway")
-                // fires from Claude Code's own Vna() gate, which requires ANTHROPIC_BASE_URL, a
-                // non-empty ANTHROPIC_AUTH_TOKEN, and CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 -
-                // AND getAPIProvider() still resolving to "firstParty". Do NOT set
-                // CLAUDE_CODE_USE_GATEWAY here: it forces getAPIProvider() to "firstParty"'s sibling
-                // "gateway" mode, which is an unrelated real enterprise-SSO auth path - Vna() checks
-                // `to()!=="firstParty"` and bails, so the discovery request never fires at all.
-                // Confirmed live: with CLAUDE_CODE_USE_GATEWAY unset, claude.exe's own debug log
-                // shows "[gatewayDiscovery] cached N models"; with it set to 1, discovery is skipped
-                // and only an unrelated "[Bootstrap] Gateway /v1/models" bucket gets populated that
-                // the /model picker never reads. The auth token value is never checked against
-                // anything real here - the router doesn't validate incoming auth - it only needs to
-                // be non-empty to satisfy Vna()'s gate.
-                psi.EnvironmentVariables["ANTHROPIC_AUTH_TOKEN"] = "tokenoptimizer-local-gateway";
-                psi.EnvironmentVariables["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1";
-                psi.EnvironmentVariables["CLAUDE_MEM_WORKER_PORT"] = CompanionToolingInstaller.IsolatedWorkerPort.ToString();
-                psi.EnvironmentVariables["CLAUDE_MEM_DATA_DIR"] = CompanionToolingInstaller.IsolatedDataDir;
                 if (IsolateClaudeConfig)
                 {
-                    psi.EnvironmentVariables["CLAUDE_CONFIG_DIR"] = IsolatedClaudeProfileService.GetOrCreateProfileDir(SelectedProject.FullPath);
+                    environment["CLAUDE_CONFIG_DIR"] = IsolatedClaudeProfileService.GetOrCreateProfileDir(SelectedProject.FullPath);
                 }
 
-                var process = System.Diagnostics.Process.Start(psi);
-                var handle = new ProcessSessionHandle("Claude Code", SelectedProject.FullPath, process, watchForRateLimit: true);
-                _ = handle.RateLimitOutcome.ContinueWith(async _ => await router.DisposeAsync());
+                var launchOptions = new SessionLaunchOptions(SelectedProject.FullPath, IsolateConfig: IsolateClaudeConfig, ResumeMode: resumeMode);
+                var launcher = await SandboxLauncherAsync();
+                var session = await launcher.LaunchAsync(
+                    "Claude Code",
+                    SandboxSessionLauncher.ToLinuxCommand(claudeExe, string.Join(' ', args)),
+                    launchOptions,
+                    environment);
+                _ = session.RateLimitOutcome.ContinueWith(async _ => await router.DisposeAsync());
+
                 await _projectHistory.AddAsync(SelectedProject.FullPath);
-                Log($"Launched one Claude Code window (pid {handle.ProcessId?.ToString() ?? "n/a"}) with models available: {string.Join(", ", ticked.Select(m => m.ModelId))}");
-                TrackRateLimitOutcome(handle);
+                Log($"Launched one Claude Code sandbox session with models available: {string.Join(", ", ticked.Select(m => m.ModelId))}");
+                TrackRateLimitOutcome(session);
             }
 
             foreach (var group in standalone)
@@ -1462,9 +1529,15 @@ public partial class MainViewModel : ViewModelBase
             "OpenCode" => FallbackProvider.OpenCode,
             _ => null,
         };
-        if (provider is not { } trackedProvider || handle is not ProcessSessionHandle processHandle) return;
 
-        _ = processHandle.RateLimitOutcome.ContinueWith(async task =>
+        // Interactive sessions come back as SandboxSessionHandle; host
+        // ProcessSessionHandle remains for the flows that legitimately stay
+        // host-side (login/GUI, servers, installers). Both expose their
+        // rate-limit outcome through ISessionHandle.
+        Task<RateLimitOutcome>? outcomeTask = handle.RateLimitOutcome;
+        if (provider is not { } trackedProvider || outcomeTask is null) return;
+
+        _ = outcomeTask.ContinueWith(async task =>
         {
             var outcome = await task;
             if (!outcome.RateLimitDetected || outcome.ResumeAtUtc is not { } resumeAt) return;

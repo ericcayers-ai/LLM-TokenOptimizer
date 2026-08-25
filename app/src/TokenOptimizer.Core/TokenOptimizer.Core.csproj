@@ -10,5 +10,8 @@
     <PackageReference Include="Microsoft.Win32.Registry" Version="5.0.0" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.11" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\TokenOptimizer.Sandbox\TokenOptimizer.Sandbox.csproj" />
+  </ItemGroup>
 
 </Project>

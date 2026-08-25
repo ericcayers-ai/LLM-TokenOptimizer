@@ -374,7 +374,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand('llmTokenOptimizer.continueLocally', () =>
             transferSession(context, 'Unsloth (local model)', 'the local model')),
 
-        vscode.commands.registerCommand('llmTokenOptimizer.openDashboard', () => openDashboard(context)),
+        vscode.commands.registerCommand('llmTokenOptimizer.openDashboard', () => openDashboard(context, resolveAppExecutablePath(context))),
         vscode.commands.registerCommand('llmTokenOptimizer.openApp', () => launchApp(context)),
 
         // The ONE Command Palette entrypoint (see contributes.menus.commandPalette

@@ -20,13 +20,28 @@ import { execFile } from 'child_process';
 
 let panel: vscode.WebviewPanel | undefined;
 let pollTimer: NodeJS.Timeout | undefined;
+let sandboxTimer: NodeJS.Timeout | undefined;
 let fileWatcher: fs.FSWatcher | undefined;
 let lastByteOffset = 0;
 let currentTranscriptPath: string | undefined;
+// Resolved once by extension.ts (same candidate list as every other CLI call)
+// - undefined here just means the Sandbox card reports "unknown".
+let appExePath: string | undefined;
 
 interface ToolEvent {
     tool: string;
     detail: string;
+}
+
+// The raw single-line JSON printed by `TokenOptimizer.App.exe --cli sandbox-status`.
+// Parsed defensively: anything missing/malformed renders as "unknown".
+interface SandboxStatus {
+    dockerUp: boolean;
+    serverUp: boolean;
+    domain: string;
+    agentImage: string;
+    ok: boolean;
+    missing: string[];
 }
 
 function findRtkExe(): string | undefined {
@@ -115,6 +130,32 @@ function pollTokenSavings(): void {
     });
 }
 
+function pollSandboxStatus(): void {
+    if (!panel) { return; }
+    if (!appExePath) {
+        panel.webview.postMessage({ type: 'sandboxStatus' });
+        return;
+    }
+    // Slower than the other polls: sandbox-status runs live docker/health probes.
+    execFile(appExePath, ['--cli', 'sandbox-status'], { timeout: 20000 }, (err, stdout) => {
+        if (!panel) { return; }
+        let status: SandboxStatus | undefined;
+        if (!err && stdout.trim()) {
+            try {
+                const lastLine = stdout.trim().split('\n').pop() ?? '';
+                const parsed = JSON.parse(lastLine);
+                if (parsed && typeof parsed.dockerUp === 'boolean' && typeof parsed.serverUp === 'boolean'
+                    && typeof parsed.domain === 'string' && typeof parsed.agentImage === 'string') {
+                    status = parsed;
+                }
+            } catch {
+                // fall through - renders as "unknown"
+            }
+        }
+        panel.webview.postMessage({ type: 'sandboxStatus', status });
+    });
+}
+
 function startWatchingTranscript(projectPath: string): void {
     if (fileWatcher) { fileWatcher.close(); fileWatcher = undefined; }
     const transcript = findLatestTranscript(projectPath);
@@ -129,9 +170,10 @@ function startWatchingTranscript(projectPath: string): void {
     }
 }
 
-export function openDashboard(context: vscode.ExtensionContext): void {
+export function openDashboard(context: vscode.ExtensionContext, resolvedAppExePath?: string): void {
     const folders = vscode.workspace.workspaceFolders;
     const projectPath = folders && folders.length > 0 ? folders[0].uri.fsPath : undefined;
+    appExePath = resolvedAppExePath;
 
     if (panel) {
         panel.reveal(vscode.ViewColumn.Beside);
@@ -150,6 +192,7 @@ export function openDashboard(context: vscode.ExtensionContext): void {
     panel.onDidDispose(() => {
         panel = undefined;
         if (pollTimer) { clearInterval(pollTimer); pollTimer = undefined; }
+        if (sandboxTimer) { clearInterval(sandboxTimer); sandboxTimer = undefined; }
         if (fileWatcher) { fileWatcher.close(); fileWatcher = undefined; }
     });
 
@@ -159,6 +202,7 @@ export function openDashboard(context: vscode.ExtensionContext): void {
         startWatchingTranscript(projectPath);
     }
     pollTokenSavings();
+    pollSandboxStatus();
     pollTimer = setInterval(() => {
         pollTokenSavings();
         // Re-resolve the latest transcript each poll too, in case a new
@@ -168,6 +212,8 @@ export function openDashboard(context: vscode.ExtensionContext): void {
             if (latest && latest !== currentTranscriptPath) { startWatchingTranscript(projectPath); }
         }
     }, 5000);
+    // Sandbox probes hit docker + a health endpoint - poll less aggressively.
+    sandboxTimer = setInterval(pollSandboxStatus, 15000);
 }
 
 function getHtml(): string {
@@ -182,6 +228,7 @@ function getHtml(): string {
   .stat-row { display: flex; gap: 24px; flex-wrap: wrap; }
   .stat { min-width: 120px; }
   .stat .value { font-size: 22px; font-weight: 600; }
+  .stat .value.small { font-size: 13px; }
   .stat .label { font-size: 11px; opacity: 0.7; }
   #feed { max-height: 420px; overflow-y: auto; font-family: var(--vscode-editor-font-family); font-size: 12px; }
   .feed-item { padding: 4px 0; border-bottom: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.15)); display: flex; gap: 8px; align-items: baseline; }
@@ -202,10 +249,37 @@ function getHtml(): string {
     <div id="feed"><span class="empty">Watching this project's Claude Code session...</span></div>
   </div>
 
+  <h2>Sandbox</h2>
+  <div class="card">
+    <div id="sandbox-body" class="stat-row"><span class="empty">Checking sandbox status...</span></div>
+  </div>
+
 <script>
   const feedEl = document.getElementById('feed');
   const savingsEl = document.getElementById('savings-body');
+  const sandboxEl = document.getElementById('sandbox-body');
   let feedItems = [];
+
+  function sandboxCell(value, label) {
+    return '<div class="stat"><div class="value small">' + value + '</div><div class="label">' + label + '</div></div>';
+  }
+
+  function renderSandbox(s) {
+    if (!s) {
+      sandboxEl.innerHTML = '<span class="empty">unknown</span>';
+      return;
+    }
+    const upDown = v => v === true ? 'Up' : v === false ? 'Down' : 'unknown';
+    const state = s.dockerUp && s.serverUp ? 'ready'
+      : !s.dockerUp ? 'docker down'
+      : !s.serverUp ? 'server down'
+      : 'unavailable';
+    sandboxEl.innerHTML =
+      sandboxCell(upDown(s.dockerUp), 'Docker') +
+      sandboxCell(upDown(s.serverUp), 'Server') +
+      sandboxCell(String(s.agentImage || 'unknown'), 'Image') +
+      sandboxCell(state, 'State');
+  }
 
   window.addEventListener('message', event => {
     const msg = event.data;
@@ -221,6 +295,8 @@ function getHtml(): string {
         '<div class="stat"><div class="value">' + s.total_saved.toLocaleString() + '</div><div class="label">tokens saved</div></div>' +
         '<div class="stat"><div class="value">' + s.avg_savings_pct.toFixed(1) + '%</div><div class="label">avg savings</div></div>' +
         '<div class="stat"><div class="value">' + s.total_commands.toLocaleString() + '</div><div class="label">commands tracked</div></div>';
+    } else if (msg.type === 'sandboxStatus') {
+      renderSandbox(msg.status);
     } else if (msg.type === 'skillEvents') {
       for (const e of msg.events) { feedItems.unshift(Object.assign({}, e, { ts: msg.ts })); }
       feedItems = feedItems.slice(0, 100);

@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using TokenOptimizer.Core.Config;
@@ -6,7 +5,9 @@ using TokenOptimizer.Core.Diagnostics;
 using TokenOptimizer.Core.Models;
 using TokenOptimizer.Providers.Claude;
 using TokenOptimizer.Providers.Compat;
+using TokenOptimizer.Providers.Fallback;
 using TokenOptimizer.Providers.Manifests;
+using TokenOptimizer.Sandbox;
 
 namespace TokenOptimizer.Providers.LlamaCpp;
 
@@ -31,12 +32,15 @@ public sealed class LlamaCppAdapter : IProviderAdapter
 {
     private readonly LlamaCppPresetStore _presets;
     private readonly ClaudeExecutableLocator? _claudeLocator;
+    private SandboxSessionLauncher? _sandboxLauncher;
     private string? _unslothPath;
 
-    public LlamaCppAdapter(LlamaCppPresetStore? presets = null, ClaudeExecutableLocator? claudeLocator = null)
+    public LlamaCppAdapter(LlamaCppPresetStore? presets = null, ClaudeExecutableLocator? claudeLocator = null,
+        SandboxSessionLauncher? sandboxLauncher = null)
     {
         _presets = presets ?? new LlamaCppPresetStore();
         _claudeLocator = claudeLocator;
+        _sandboxLauncher = sandboxLauncher;
     }
 
     public string Name => "Unsloth (local model)";
@@ -105,9 +109,6 @@ public sealed class LlamaCppAdapter : IProviderAdapter
     /// </summary>
     public async Task<ISessionHandle> LaunchSessionAsync(SessionLaunchOptions options)
     {
-        var unsloth = ResolveUnslothPath()
-                      ?? throw new InvalidOperationException("unsloth CLI not found - install it (see unsloth.ai/docs/integrations/unsloth-start) and ensure it's on PATH.");
-
         var (family, quant) = ResolveRequestedModel(options.Model);
         var modelSpec = $"{family.RepoId}:{quant}";
 
@@ -126,32 +127,37 @@ public sealed class LlamaCppAdapter : IProviderAdapter
 
         if (launchOptions.RollingContextWindowEnabled)
         {
-            return await LaunchWithRollingContextAsync(unsloth, modelSpec, launchOptions, options, claudeArgs);
+            return await LaunchWithRollingContextAsync(RequireUnslothCli(), modelSpec, launchOptions, options, claudeArgs);
         }
 
-        var arguments = BuildArguments(modelSpec, launchOptions, claudeArgs);
-
-        var psi = new ProcessStartInfo
+        // Non-rolling path: `unsloth start claude` must download and load the
+        // GGUF inside the container, which has no model-cache/GPU wiring yet -
+        // not viable today, so gated behind an explicit opt-in env var.
+        if (!InContainerModelLoadAllowed)
         {
-            FileName = unsloth,
-            Arguments = arguments,
-            WorkingDirectory = options.ProjectPath,
-            UseShellExecute = false,
-        };
-        if (!string.IsNullOrWhiteSpace(launchOptions.StudioUrl))
-        {
-            psi.EnvironmentVariables["UNSLOTH_STUDIO_URL"] = launchOptions.StudioUrl;
-        }
-        if (options.IsolateConfig)
-        {
-            var profileDir = IsolatedClaudeProfileService.GetOrCreateProfileDir(options.ProjectPath, IsolatedClaudeProfileService.LocalModelAutoCompactTokenLimit);
-            psi.EnvironmentVariables["CLAUDE_CONFIG_DIR"] = profileDir;
+            throw new InvalidOperationException(
+                $"In-container model load for 'unsloth start claude' ({modelSpec}) is not supported yet. " +
+                $"Save a preset with RollingContextWindowEnabled=true (the default), or set " +
+                $"{AllowInContainerModelLoadEnvVar}=1 to force it anyway.");
         }
 
-        var process = Process.Start(psi)
-                      ?? throw new InvalidOperationException("Failed to start unsloth.");
-        return new ProcessSessionHandle(Name, options.ProjectPath, process, watchForRateLimit: true);
+        return await SandboxLauncher().LaunchAsync(
+            Name, SandboxSessionLauncher.ToLinuxCommand(RequireUnslothCli(), BuildArguments(modelSpec, launchOptions, claudeArgs)), options);
     }
+
+    internal const string AllowInContainerModelLoadEnvVar = "TOKENOPTIMIZER_ALLOW_IN_CONTAINER_LLAMA";
+
+    /// <summary>Opt-in escape hatch for the gated non-rolling in-container model-load path.</summary>
+    internal static bool InContainerModelLoadAllowed =>
+        Environment.GetEnvironmentVariable(AllowInContainerModelLoadEnvVar) == "1";
+
+    private string RequireUnslothCli() =>
+        ResolveUnslothPath()
+        ?? throw new InvalidOperationException("unsloth CLI not found - install it (see unsloth.ai/docs/integrations/unsloth-start) and ensure it's on PATH.");
+
+    /// <summary>Lazily built default launcher (real OpenSandbox runtime + configured settings) when no launcher was injected.</summary>
+    private SandboxSessionLauncher SandboxLauncher() =>
+        _sandboxLauncher ??= SandboxLauncherFactory.CreateDefault();
 
     /// <summary>
     /// The rolling-context-window path (default): boot Unsloth's local
@@ -197,23 +203,21 @@ public sealed class LlamaCppAdapter : IProviderAdapter
             claudeArgList.Add(launchOptions.SystemPromptAppend.Contains(' ') ? $"\"{launchOptions.SystemPromptAppend}\"" : launchOptions.SystemPromptAppend);
         }
 
-        var psi = new ProcessStartInfo
+        // The unsloth server boot above stays on the host (local server
+        // spawn); the Claude Code session it feeds runs in the sandbox.
+        var environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            FileName = claudeExe,
-            Arguments = string.Join(' ', claudeArgList),
-            WorkingDirectory = options.ProjectPath,
-            UseShellExecute = false,
+            ["ANTHROPIC_BASE_URL"] = proxy.BaseUrl,
+            ["ANTHROPIC_AUTH_TOKEN"] = "proxied-locally", // the proxy injects the real upstream credential; the CLI never needs to see it.
         };
-        psi.EnvironmentVariables["ANTHROPIC_BASE_URL"] = proxy.BaseUrl;
-        psi.EnvironmentVariables["ANTHROPIC_AUTH_TOKEN"] = "proxied-locally"; // the proxy injects the real upstream credential; the CLI never needs to see it.
         if (options.IsolateConfig)
         {
-            psi.EnvironmentVariables["CLAUDE_CONFIG_DIR"] = IsolatedClaudeProfileService.GetOrCreateProfileDir(options.ProjectPath, IsolatedClaudeProfileService.LocalModelAutoCompactTokenLimit);
+            environment["CLAUDE_CONFIG_DIR"] =
+                IsolatedClaudeProfileService.GetOrCreateProfileDir(options.ProjectPath, IsolatedClaudeProfileService.LocalModelAutoCompactTokenLimit);
         }
 
-        var process = Process.Start(psi)
-                      ?? throw new InvalidOperationException("Failed to start Claude Code.");
-        var handle = new ProcessSessionHandle(Name, options.ProjectPath, process, watchForRateLimit: true);
+        var handle = await SandboxLauncher().LaunchAsync(
+            Name, SandboxSessionLauncher.ToLinuxCommand(claudeExe, string.Join(' ', claudeArgList)), options, environment);
         _ = handle.RateLimitOutcome.ContinueWith(async _ => await proxy.DisposeAsync());
         return handle;
     }

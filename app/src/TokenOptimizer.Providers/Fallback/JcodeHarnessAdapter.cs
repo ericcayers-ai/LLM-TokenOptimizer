@@ -1,8 +1,8 @@
-using System.Diagnostics;
 using System.Runtime.Versioning;
 using TokenOptimizer.Core.Models;
 using TokenOptimizer.Core.Security;
 using TokenOptimizer.Providers.Manifests;
+using TokenOptimizer.Sandbox;
 
 namespace TokenOptimizer.Providers.Fallback;
 
@@ -23,13 +23,16 @@ public sealed class JcodeHarnessAdapter : IProviderAdapter
     private readonly FallbackProvider _gatingKey;
     private readonly string _jcodeProviderId;
     private readonly string _displayName;
+    private SandboxSessionLauncher? _sandboxLauncher;
 
-    public JcodeHarnessAdapter(ProxyCredentialStore credentials, FallbackProvider gatingKey, string jcodeProviderId, string displayName)
+    public JcodeHarnessAdapter(ProxyCredentialStore credentials, FallbackProvider gatingKey, string jcodeProviderId, string displayName,
+        SandboxSessionLauncher? sandboxLauncher = null)
     {
         _credentials = credentials;
         _gatingKey = gatingKey;
         _jcodeProviderId = jcodeProviderId;
         _displayName = displayName;
+        _sandboxLauncher = sandboxLauncher;
     }
 
     public string Name => _displayName;
@@ -66,7 +69,7 @@ public sealed class JcodeHarnessAdapter : IProviderAdapter
         return args;
     }
 
-    public Task<ISessionHandle> LaunchSessionAsync(SessionLaunchOptions options)
+    public async Task<ISessionHandle> LaunchSessionAsync(SessionLaunchOptions options)
     {
         var exe = ExecutableLocators.FindJcode()
                   ?? throw new InvalidOperationException("jcode executable not found - install with `irm https://jcode.sh/install.ps1 | iex`.");
@@ -74,9 +77,12 @@ public sealed class JcodeHarnessAdapter : IProviderAdapter
         var claudeConfigDir = SessionHandoffExporter.GetEffectiveClaudeConfigDir(options.ProjectPath, options.IsolateConfig);
         SessionHandoffExporter.Export(options.ProjectPath, claudeConfigDir);
 
+        // No path argument: jcode operates on the working directory, which is the /workspace mount inside the container.
         var arguments = BuildArguments(_jcodeProviderId, options.Model, options.ResumeMode);
-        var process = ProcessLaunchHelper.Start(exe, arguments, options.ProjectPath);
-
-        return Task.FromResult<ISessionHandle>(new ProcessSessionHandle(Name, options.ProjectPath, process, watchForRateLimit: true));
+        return await SandboxLauncher().LaunchAsync(Name, SandboxSessionLauncher.ToLinuxCommand(exe, arguments), options);
     }
+
+    /// <summary>Lazily built default launcher (real OpenSandbox runtime + configured settings) when no launcher was injected.</summary>
+    private SandboxSessionLauncher SandboxLauncher() =>
+        _sandboxLauncher ??= SandboxLauncherFactory.CreateDefault();
 }

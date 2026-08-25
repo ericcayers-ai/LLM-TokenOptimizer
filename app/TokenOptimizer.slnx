@@ -3,6 +3,7 @@
     <Project Path="src/TokenOptimizer.App/TokenOptimizer.App.csproj" />
     <Project Path="src/TokenOptimizer.Core/TokenOptimizer.Core.csproj" />
     <Project Path="src/TokenOptimizer.Providers/TokenOptimizer.Providers.csproj" />
+    <Project Path="src/TokenOptimizer.Sandbox/TokenOptimizer.Sandbox.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/TokenOptimizer.Core.Tests/TokenOptimizer.Core.Tests.csproj" />

@@ -21,6 +21,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\TokenOptimizer.Core\TokenOptimizer.Core.csproj" />
     <ProjectReference Include="..\..\src\TokenOptimizer.Providers\TokenOptimizer.Providers.csproj" />
+    <ProjectReference Include="..\..\src\TokenOptimizer.Sandbox\TokenOptimizer.Sandbox.csproj" />
   </ItemGroup>
 
 </Project>

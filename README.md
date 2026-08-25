@@ -24,6 +24,7 @@ Point TokenOptimizer at a project and it:
 - Launches **Claude Code** with real token-saving tooling wired in on first run: **Caveman** for terser model output, **RTK** for compressed terminal/tool output, plus `claude-mem`, `headroom`, and a few other companion plugins.
 - Falls back automatically when Claude Code itself is unavailable - Antigravity, then OpenCode Go, then a locally-run model via the Unsloth CLI - so a rate limit or an outage doesn't stop your session.
 - Adds Groq and Codex/Cursor as manual, one-click alternatives when you want to switch deliberately instead of automatically.
+- Runs sessions inside **OpenSandbox containers** (mandatory) - the preflight gate checks Docker Desktop and starts the opensandbox-server for you, so every session is isolated with its companion tooling baked into the image. Docker Desktop is required.
 
 Everything above is one Avalonia desktop app (`app/`). A companion VS Code extension gives you the same launcher and a live dashboard from inside the editor.
 
@@ -37,6 +38,7 @@ Prerequisites:
 
 - **.NET 10 SDK** - [dotnet.microsoft.com](https://dotnet.microsoft.com/download)
 - **Node.js + npm** - only needed to build the VS Code extension or the MSI, not for `dotnet build`
+- **Docker Desktop** - needed at runtime: sessions run inside OpenSandbox containers, so the app's preflight gate expects a running Docker engine ([docker.com](https://www.docker.com/products/docker-desktop/))
 
 ```powershell
 cd app
@@ -69,6 +71,7 @@ WiX is pinned to **5.0.2** on purpose - v6+ requires a paid-tier EULA for some u
 | Piece | What it is | Where |
 |---|---|---|
 | **TokenOptimizer.App** | The product itself - an Avalonia desktop app with provider adapters for Claude Code, Antigravity, Groq, OpenCode Go, Codex/Cursor handoff, and locally-run Unsloth models, all behind one fallback-chain resolver. | `app/src/TokenOptimizer.App` |
+| **TokenOptimizer.Sandbox** | The master layer - preflight gate, opensandbox-server lifecycle, sandbox creation/streaming, image catalog baking in companion tools incl. graft. | `app/src/TokenOptimizer.Sandbox` |
 | **VS Code extension** | Sidebar/chat-participant that launches `TokenOptimizer.App.exe`. | `vscode-extension/` |
 
 ## Fallback chain

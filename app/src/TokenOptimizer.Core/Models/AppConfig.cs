@@ -1,7 +1,12 @@
 namespace TokenOptimizer.Core.Models;
 
+using TokenOptimizer.Sandbox;
+
 public sealed class AppConfig
 {
+    /// <summary>OpenSandbox substrate connection/image settings - see TokenOptimizer.Sandbox.SandboxSettings.</summary>
+    public SandboxSettings Sandbox { get; set; } = new();
+
     public string? MasterFolder { get; set; }
     public List<string> ProjectHistory { get; set; } = new();
     public string? ClaudePath { get; set; }

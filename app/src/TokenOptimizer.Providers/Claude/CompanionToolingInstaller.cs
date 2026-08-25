@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using TokenOptimizer.Core.Config;
 using TokenOptimizer.Core.Diagnostics;
+using TokenOptimizer.Sandbox;
 
 namespace TokenOptimizer.Providers.Claude;
 
@@ -16,9 +17,23 @@ namespace TokenOptimizer.Providers.Claude;
 /// own sticky-true flag to AppConfig, matching the original script's
 /// "install-time flags are trusted forever" design (see TestCompressionMethodsActiveAsync
 /// for the read-only re-verification pass that runs right before launch).
+/// Tool identities (install commands, image fragments, wiring) live in
+/// <see cref="ToolCatalog"/> - this class owns only the install orchestration.
 /// </summary>
 public sealed class CompanionToolingInstaller
 {
+    /// <summary>Single-source-of-truth lookup into <see cref="ToolCatalog"/>.</summary>
+    private static CompanionTool CatalogTool(string id) =>
+        ToolCatalog.Tools.Single(t => t.Id == id);
+
+    /// <summary>Catalog lookup that refuses doc-grade entries: only tools flagged HostInstallIsExecutable may have their HostInstallCommand executed verbatim.</summary>
+    private static CompanionTool ExecutableCatalogTool(string id)
+    {
+        var tool = CatalogTool(id);
+        if (!tool.HostInstallIsExecutable)
+            throw new InvalidOperationException($"Tool '{id}' is not flagged {nameof(CompanionTool.HostInstallIsExecutable)}; its catalog entry is descriptive, not runnable.");
+        return tool;
+    }
     /// <summary>
     /// claude-mem's worker is ONE process shared by every Claude Code session
     /// pointed at the default data dir/port - including the standalone Claude
@@ -861,7 +876,7 @@ public sealed class CompanionToolingInstaller
             return true;
         }
 
-        var result = await ExternalCommandRunner.RunAsync(exe, "mcp add --scope user context7 -- npx -y @upstash/context7-mcp", timeoutSeconds: 30);
+        var result = await ExternalCommandRunner.RunAsync(exe, ExecutableCatalogTool("context7").HostInstallCommand, timeoutSeconds: 30);
         if (!result.Success && !result.Output.Contains("already exists", StringComparison.OrdinalIgnoreCase) &&
             !result.Output.Contains("already added", StringComparison.OrdinalIgnoreCase))
         {

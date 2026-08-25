@@ -1,3 +1,5 @@
+using TokenOptimizer.Core.RateLimit;
+
 namespace TokenOptimizer.Providers;
 
 public interface ISessionHandle
@@ -7,4 +9,7 @@ public interface ISessionHandle
     int? ProcessId { get; }
     bool IsRunning { get; }
     DateTimeOffset StartedAt { get; }
+
+    /// <summary>Resolves once the session exits: whether a usage-limit banner was observed and (if so) when to resume. Never faults.</summary>
+    Task<RateLimitOutcome> RateLimitOutcome { get; }
 }
