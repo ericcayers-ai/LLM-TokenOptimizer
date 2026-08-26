@@ -237,4 +237,59 @@ Both times the user reported "still only one model showing," the screenshot's Cl
 - `dotnet build app/TokenOptimizer.slnx` then `dotnet test app/TokenOptimizer.slnx --no-build` must both stay clean (0 errors, and the established 169/169 tests passing) after any change. If a test needs updating because new intended behavior genuinely changed, that's fine — but understand *why* before changing an assertion, don't just make it pass.
 - Don't add unrequested abstractions, fallback shims, or defensive code for scenarios that can't happen. Keep any temporary debug logging added per section 6 clearly temporary (or remove it once the real bug is found and fixed) — don't leave permanent verbose logging in hot request paths as a side effect of debugging.
 - Never commit without the user explicitly asking.
-- If, after real investigation, this turns out to be a hard platform wall (e.g., Anthropic added a server-side check that only genuine enterprise-gateway-authenticated accounts get any `additional_model_options` at all, regardless of what the local `/v1/models` proxy returns — this cannot be ruled out from the client-side bundle alone, since the "Cloud gateway" mode might also involve a server-side handshake/verification against Anthropic's own backend that a fake local JWT cannot satisfy) — say so plainly and explain the evidence, rather than continuing to guess at client-side tweaks indefinitely. If it is a hard wall, the fallback plan is: drop the goal of populating Claude Code's own `/model` picker, and instead let the TokenOptimizer app itself be the only place a user switches models (already partially true — the app already builds a working default `--model` launch arg and the router already does correct per-request routing/fallback regardless of what shows in the picker). That's an acceptable, simpler outcome if the gateway-discovery path is confirmed to be genuinely unreachable — don't chase it forever without checking in.
+- ## 9. RESOLVED (2026-08-26, claude.exe 2.1.238): pipeline verified end-to-end
+
+Empirical verification against a fake loopback gateway (`HTTPServer` on 127.0.0.1 serving
+`GET /v1/models` with `claude-gateway-*` ids), a real `-p` probe session, and
+`--debug --debug-file <path>` (this flag pair exists in `claude.exe --help` and emits the
+internal `[Bootstrap]` logger directly - section 6c's question answered):
+
+```
+[Bootstrap] Gateway /v1/models -> 2 custom options
+[Bootstrap] Cache updated, persisting to disk
+```
+
+and afterwards `~/.claude.json` contains `additionalModelOptionsCache` with exactly those
+two options. The whole chain works as designed in this version.
+
+### What the open questions actually were
+
+- **Filter 2 / `jIt` (section 4): exonerated.** Found the `$3` module initializer:
+  `jIt = oae(cd.fable5)` - it is the *fable5 family config object* (the current default
+  model's family), not a magic string. `sZ(id)` returns a whole family-config object or
+  `null`; our disguised ids never equal any catalogued Claude id, so `sZ()` returns `null`
+  and every `claude-gateway-*` id passes filter 2. No hidden rejection there.
+- **Plain-HTTP localhost gate (`l7o`): passes** for `127.0.0.1`, confirmed by the live
+  fetch succeeding without any https upgrade.
+- **Where the picker list comes from (section 6d): the persisted cache, not the live
+  fetch.** Flow: `gSt()` -> `ngw()` (gateway branch) -> `igw()` fetch -> result written to
+  `clientState.additionalModelOptionsCache` in `~/.claude.json`. The `/model` picker
+  builder (`aYb()`) merges `vXe()` = sanitized read of that cached array whenever provider
+  mode is `"firstParty"` or `"gateway"` (the merge is NOT gated on first-party-only).
+  Consequences: (a) if bootstrap never ran with discovery enabled, the cache stays empty
+  forever and the picker shows only Default - exactly the historical symptom; (b) entries
+  land once the CLI's startup bootstrap completes - a `/model` opened before that shows
+  nothing yet; (c) the cache survives across sessions, so one good launch fixes later ones.
+- **Section 5 was right**: earlier "still broken" evidence was stale-window screenshots,
+  plus expecting ticked models in a window whose process had bootstrapped before the env
+  fix or before the router was reachable.
+
+### Additional lever found while tracing the picker
+
+`ANTHROPIC_CUSTOM_MODEL_OPTION` (+ optional `ANTHROPIC_CUSTOM_MODEL_OPTION_NAME` /
+`ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION`) injects an entry into the same picker list
+unconditionally - no gateway mode, no fetch, no cache. Useful as a guaranteed-visible
+hint even when bootstrap timing hides the fetched list.
+
+### Guidance for TokenOptimizer (MainViewModel launch env)
+
+Keep `CLAUDE_CODE_USE_GATEWAY=1` + `ANTHROPIC_AUTH_TOKEN` +
+`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` exactly as they are. Optionally surface a
+note in the app UI that the CLI's own `/model` list populates right after launch (bootstrap
+fetch) and persists per-machine in `%USERPROFILE%\.claude.json`. To always show at least
+one branded entry, set `ANTHROPIC_CUSTOM_MODEL_OPTION` to the default ticked model id.
+
+Debugging recipe for future sessions: launch claude.exe with `--debug --debug-file
+<abs path>` and grep it for `[Bootstrap]`; do not re-spelunk the binary for logger gates.
+
+If, after real investigation, this turns out to be a hard platform wall (e.g., Anthropic added a server-side check that only genuine enterprise-gateway-authenticated accounts get any `additional_model_options` at all, regardless of what the local `/v1/models` proxy returns — this cannot be ruled out from the client-side bundle alone, since the "Cloud gateway" mode might also involve a server-side handshake/verification against Anthropic's own backend that a fake local JWT cannot satisfy) — say so plainly and explain the evidence, rather than continuing to guess at client-side tweaks indefinitely. If it is a hard wall, the fallback plan is: drop the goal of populating Claude Code's own `/model` picker, and instead let the TokenOptimizer app itself be the only place a user switches models (already partially true — the app already builds a working default `--model` launch arg and the router already does correct per-request routing/fallback regardless of what shows in the picker). That's an acceptable, simpler outcome if the gateway-discovery path is confirmed to be genuinely unreachable — don't chase it forever without checking in.
