@@ -79,6 +79,7 @@ public static class CliHost
         var claudeLocator = new ClaudeExecutableLocator(configStore, availability);
         var claudeAdapter = new ClaudeCodeAdapter(claudeLocator, availability);
         var llamaCppAdapter = new TokenOptimizer.Providers.LlamaCpp.LlamaCppAdapter();
+        var freeTokenAdapter = new TokenOptimizer.Providers.FreeToken.FreeTokenAdapter(claudeLocator: claudeLocator);
         var credentials = new ProxyCredentialStore(Environment.GetEnvironmentVariable("TOKENOPTIMIZER_CREDENTIAL_DIR"));
         var antigravityAdapter = new AntigravityAdapter(credentials);
         var codexAdapter = new JcodeHarnessAdapter(credentials, FallbackProvider.Codex, "openai", "Codex");
@@ -100,7 +101,7 @@ public static class CliHost
 
         var providers = new IProviderAdapter[]
         {
-            claudeAdapter, antigravityAdapter, openCodeAdapter, llamaCppAdapter, codexAdapter, cursorAdapter, groqAdapter, deepSeekHarnessAdapter,
+            claudeAdapter, antigravityAdapter, openCodeAdapter, llamaCppAdapter, freeTokenAdapter, codexAdapter, cursorAdapter, groqAdapter, deepSeekHarnessAdapter,
         };
 
         try

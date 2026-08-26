@@ -24,6 +24,7 @@ Point TokenOptimizer at a project and it:
 - Launches **Claude Code** with real token-saving tooling wired in on first run: **Caveman** for terser model output, **RTK** for compressed terminal/tool output, plus `claude-mem`, `headroom`, and a few other companion plugins.
 - Falls back automatically when Claude Code itself is unavailable - Antigravity, then OpenCode Go, then a locally-run model via the Unsloth CLI - so a rate limit or an outage doesn't stop your session.
 - Adds Groq and Codex/Cursor as manual, one-click alternatives when you want to switch deliberately instead of automatically.
+- Serves frontier **MoE models locally via FreeToken** (`FreeToken (local MoE)` provider): the desktop engine from [flashml.ai](https://www.flashml.ai/) speaks Anthropic's API natively on `127.0.0.1:1919`, so Claude Code can run against a local Qwen3.6-35B-A3B / GLM-5.2-class model with no proxy or translation layer. See `freetoken_local/README.md` for the companion Python handler and live self-test.
 - Runs sessions inside **OpenSandbox containers** (mandatory) - the preflight gate checks Docker Desktop and starts the opensandbox-server for you, so every session is isolated with its companion tooling baked into the image. Docker Desktop is required.
 
 Everything above is one Avalonia desktop app (`app/`). A companion VS Code extension gives you the same launcher and a live dashboard from inside the editor.

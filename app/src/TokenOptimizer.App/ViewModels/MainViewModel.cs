@@ -31,6 +31,7 @@ public partial class MainViewModel : ViewModelBase
     private readonly ClaudeExecutableLocator _claudeLocator;
     private readonly ClaudeCodeAdapter _claudeAdapter;
     private readonly TokenOptimizer.Providers.LlamaCpp.LlamaCppAdapter _llamaCppAdapter;
+    private readonly TokenOptimizer.Providers.FreeToken.FreeTokenAdapter _freeTokenAdapter;
     private readonly ProxyCredentialStore _credentials = new();
     private readonly AntigravityAdapter _antigravityAdapter;
     private readonly JcodeHarnessAdapter _codexAdapter;
@@ -61,6 +62,7 @@ public partial class MainViewModel : ViewModelBase
         _claudeLocator = new ClaudeExecutableLocator(_configStore, _availability);
         _claudeAdapter = new ClaudeCodeAdapter(_claudeLocator, _availability);
         _llamaCppAdapter = new TokenOptimizer.Providers.LlamaCpp.LlamaCppAdapter(claudeLocator: _claudeLocator);
+        _freeTokenAdapter = new TokenOptimizer.Providers.FreeToken.FreeTokenAdapter(claudeLocator: _claudeLocator);
         _antigravityAdapter = new AntigravityAdapter(_credentials);
         _codexAdapter = new JcodeHarnessAdapter(_credentials, FallbackProvider.Codex, "openai", "Codex");
         _cursorAdapter = new CursorAdapter(_credentials);
@@ -77,7 +79,7 @@ public partial class MainViewModel : ViewModelBase
 
         _providers = new IProviderAdapter[]
         {
-            _claudeAdapter, _antigravityAdapter, _openCodeAdapter, _llamaCppAdapter, _codexAdapter, _cursorAdapter, _groqAdapter, _deepSeekHarnessAdapter,
+            _claudeAdapter, _antigravityAdapter, _openCodeAdapter, _llamaCppAdapter, _freeTokenAdapter, _codexAdapter, _cursorAdapter, _groqAdapter, _deepSeekHarnessAdapter,
         };
         ProviderNames = new ObservableCollection<string>(_providers.Select(p => p.Name));
         SelectedProviderName = ProviderNames.FirstOrDefault() ?? string.Empty;
@@ -164,11 +166,16 @@ public partial class MainViewModel : ViewModelBase
             var family = TokenOptimizer.Providers.LlamaCpp.LlamaCppModelCatalog.SupportedFamilies[0];
             return $"{family.RepoId}:{family.RecommendedQuant}";
         }
+        if (providerName == "FreeToken (local MoE)")
+        {
+            // Qwen3.6-35B-A3B - FreeToken's own README quickstart model.
+            return "Qwen3.6-35B-A3B";
+        }
         return StaticModelCatalog.TryGetValue(providerName, out var curated) ? curated[0] : providerName;
     }
 
     /// <summary>Providers that can share one Claude Code CLI window via UnifiedModelRouter - each speaks (or can be translated to) the Anthropic Messages API. Everything else opens its own separate tool, same as today.</summary>
-    private static readonly HashSet<string> BridgeableProviders = new(StringComparer.Ordinal) { "Claude Code", "Groq", "OpenCode" };
+    private static readonly HashSet<string> BridgeableProviders = new(StringComparer.Ordinal) { "Claude Code", "Groq", "OpenCode", "FreeToken (local MoE)" };
 
     /// <summary>Plain-language row text for the Models card - no raw ids, so a first-time user doesn't need to know what "glm-5.2" or "gpt-5-codex" means.</summary>
     private static string PlainLabelFor(string providerName, string modelId) => providerName switch
@@ -231,6 +238,12 @@ public partial class MainViewModel : ViewModelBase
                 continue;
             }
 
+            if (provider == _freeTokenAdapter)
+            {
+                await AddFreeTokenModelGroupAsync(ticked);
+                continue;
+            }
+
             if (!StaticModelCatalog.TryGetValue(provider.Name, out var models)) continue;
             var bridgeable = BridgeableProviders.Contains(provider.Name);
             var options = new List<ProviderModelOptionViewModel>();
@@ -289,6 +302,35 @@ public partial class MainViewModel : ViewModelBase
         };
         ModelCatalog.Add(option);
         return option;
+    }
+
+    /// <summary>
+    /// FreeToken's model list comes live from the running server's
+    /// GET /v1/models (the engine reports what it can actually serve), with
+    /// a curated fallback of the models its own docs name as supported so
+    /// the picker isn't empty when the app hasn't been opened yet. The
+    /// server being down shows the fallback plus a hint in each label.
+    /// </summary>
+    private async Task AddFreeTokenModelGroupAsync(HashSet<string> ticked)
+    {
+        const string providerName = "FreeToken (local MoE)";
+        var served = await TokenOptimizer.Providers.FreeToken.FreeTokenAdapter.ListServedModelsAsync();
+        var serverUp = served.Count > 0;
+
+        // Docs-named supported set (FreeToken README): frontier MoE models across quant formats.
+        string[] fallback = ["Qwen3.6-35B-A3B", "GLM-5.2", "DeepSeek-V4-Flash"];
+        var modelIds = serverUp ? served.ToArray() : fallback;
+
+        var options = new List<ProviderModelOptionViewModel>();
+        foreach (var modelId in modelIds)
+        {
+            var label = serverUp
+                ? $"{modelId} - loaded in local FreeToken server"
+                : $"{modelId} - load the FreeToken desktop app to serve this";
+            options.Add(AddModelOption(providerName, modelId, label, bridgeable: true, ticked));
+        }
+
+        ModelCatalogGroups.Add(new ProviderModelGroupViewModel(providerName, options, isBridgeable: true));
     }
 
     /// <summary>
@@ -1460,6 +1502,13 @@ public partial class MainViewModel : ViewModelBase
                 return true;
             case "OpenCode Zen":
                 route = new UnifiedModelRouter.ModelRoute(new Uri("https://opencode.ai/zen/v1"), RouteKind.OpenAiTranslate, () => _credentials.GetCredentialPlainText(FallbackProvider.OpenCodeZen));
+                return true;
+            case "FreeToken (local MoE)":
+                // FreeToken's desktop server speaks Anthropic /v1/messages
+                // natively (its own quickstart), so this is a straight
+                // passthrough - no translation, no injected auth (the dummy
+                // bearer lives in the launch env vars, not the route).
+                route = new UnifiedModelRouter.ModelRoute(new Uri(TokenOptimizer.Providers.FreeToken.FreeTokenLocator.DefaultBaseUrl), RouteKind.AnthropicPassthrough);
                 return true;
             default:
                 route = null!;
