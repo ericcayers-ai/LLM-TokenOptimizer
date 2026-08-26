@@ -58,14 +58,11 @@ public sealed class JcodeHarnessAdapter : IProviderAdapter
         if (!string.IsNullOrWhiteSpace(model))
             args += $" --model {model}";
 
-        switch (resumeMode)
-        {
-            case SessionResumeMode.Continue:
-            case SessionResumeMode.Pick:
-                Console.WriteLine($"jcode: Continue/Pick not yet mapped, launching New - see docs/superpowers/plans/findings/2026-08-21-jcode-spike-findings.md");
-                break;
-        }
-
+        // Continue/Pick are not yet mapped by jcode itself (see
+        // docs/plans/jcode-integration-plan.md) - they degrade to a fresh
+        // session. Deliberately NOT Console.WriteLine'd: CliHost promises one
+        // JSON object on stdout, and a stray line breaks every consumer's parse.
+        // The degradation is documented here and in the plan instead.
         return args;
     }
 

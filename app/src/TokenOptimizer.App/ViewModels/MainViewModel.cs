@@ -39,6 +39,7 @@ public partial class MainViewModel : ViewModelBase
     private readonly GroqAdapter _groqAdapter;
     private readonly DeepSeekHarnessAdapter _deepSeekHarnessAdapter;
     private readonly OpenCodeAdapter _openCodeAdapter;
+    private readonly TokenOptimizer.Providers.Hermes.HermesAgentAdapter _hermesAdapter;
     private readonly RateLimitTracker _rateLimits;
     private readonly FallbackChainResolver _fallbackResolver;
     private readonly PythonLocator _pythonLocator;
@@ -69,9 +70,10 @@ public partial class MainViewModel : ViewModelBase
         _groqAdapter = new GroqAdapter(_credentials, _claudeLocator);
         _deepSeekHarnessAdapter = new DeepSeekHarnessAdapter();
         _openCodeAdapter = new OpenCodeAdapter(_credentials, _claudeLocator);
+        _hermesAdapter = new TokenOptimizer.Providers.Hermes.HermesAgentAdapter();
         _rateLimits = new RateLimitTracker(_configStore);
         _fallbackResolver = new FallbackChainResolver(
-            _claudeAdapter, _antigravityAdapter, _codexAdapter, _cursorAdapter, _groqAdapter, _deepSeekHarnessAdapter, _openCodeAdapter, _llamaCppAdapter, _rateLimits);
+            _claudeAdapter, _antigravityAdapter, _codexAdapter, _cursorAdapter, _groqAdapter, _deepSeekHarnessAdapter, _openCodeAdapter, _llamaCppAdapter, _rateLimits, _hermesAdapter, _freeTokenAdapter);
         _wingetInstaller = new WingetInstaller(_availability);
         _agencyAgents = new AgencyAgentsInstaller(_configStore, _availability);
         _companionTooling = new CompanionToolingInstaller(_configStore, _claudeLocator, _availability, _pythonLocator, _agencyAgents);
@@ -79,7 +81,7 @@ public partial class MainViewModel : ViewModelBase
 
         _providers = new IProviderAdapter[]
         {
-            _claudeAdapter, _antigravityAdapter, _openCodeAdapter, _llamaCppAdapter, _freeTokenAdapter, _codexAdapter, _cursorAdapter, _groqAdapter, _deepSeekHarnessAdapter,
+            _claudeAdapter, _antigravityAdapter, _openCodeAdapter, _llamaCppAdapter, _freeTokenAdapter, _codexAdapter, _cursorAdapter, _groqAdapter, _deepSeekHarnessAdapter, _hermesAdapter,
         };
         ProviderNames = new ObservableCollection<string>(_providers.Select(p => p.Name));
         SelectedProviderName = ProviderNames.FirstOrDefault() ?? string.Empty;
@@ -1510,6 +1512,14 @@ public partial class MainViewModel : ViewModelBase
                 // bearer lives in the launch env vars, not the route).
                 route = new UnifiedModelRouter.ModelRoute(new Uri(TokenOptimizer.Providers.FreeToken.FreeTokenLocator.DefaultBaseUrl), RouteKind.AnthropicPassthrough);
                 return true;
+            case "Hermes Agent":
+            case "Hermes":
+                // Hermes rides TokenOptimizer-managed local engines through its
+                // native custom-endpoint config (see scripts/Setup-HermesIntegration.ps1).
+                // When that setup points Hermes at FreeToken, the same loopback
+                // endpoint serves both front-ends - one passthrough route here.
+                route = new UnifiedModelRouter.ModelRoute(new Uri(TokenOptimizer.Providers.FreeToken.FreeTokenLocator.DefaultBaseUrl), RouteKind.AnthropicPassthrough);
+                return true;
             default:
                 route = null!;
                 return false;
@@ -1529,6 +1539,14 @@ public partial class MainViewModel : ViewModelBase
             candidates.Add("OpenCode");
         }
         if (candidates.Count == 0) return null;
+
+        // FreeToken first: a local, free, Anthropic-native engine beats burning
+        // paid cloud tokens when both are live. Its route is static (loopback),
+        // so unlike runtime-started engines it is safe to resolve per-request.
+        if (await _freeTokenAdapter.IsAvailableAsync())
+        {
+            return new UnifiedModelRouter.ModelRoute(new Uri(TokenOptimizer.Providers.FreeToken.FreeTokenLocator.DefaultBaseUrl), RouteKind.AnthropicPassthrough);
+        }
 
         var preset = SessionPresetStore.ReadOrDefault(SelectedProject?.FullPath ?? string.Empty);
         var ranked = SessionPresetRanker.Rank(candidates, name => ProviderFit[name], preset);
@@ -1576,6 +1594,7 @@ public partial class MainViewModel : ViewModelBase
             "Cursor" => FallbackProvider.Cursor,
             "Groq" => FallbackProvider.Groq,
             "OpenCode" => FallbackProvider.OpenCode,
+            "Hermes Agent" => FallbackProvider.HermesAgent,
             _ => null,
         };
 

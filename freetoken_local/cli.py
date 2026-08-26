@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sys
 
+from .client import FreeTokenError
 from .handler import LocalLLM
 from .selftest import run as _selftest_run
 
@@ -28,12 +29,16 @@ def _cmd_chat(argv: list[str]) -> int:
     prompt = " ".join(argv)
     llm = LocalLLM.make_default()
     if not llm.health():
-        print("FreeToken server not reachable at", llm.client.base_url)
+        print("FreeToken server not usable at", llm.client.base_url)
         print("Start the FreeToken desktop app and load a model, then retry.")
         return 2
-    for delta in llm.stream(prompt):
-        sys.stdout.write(delta)
-        sys.stdout.flush()
+    try:
+        for delta in llm.stream(prompt):
+            sys.stdout.write(delta)
+            sys.stdout.flush()
+    except FreeTokenError as e:
+        print(f"\nstream error: {e}", file=sys.stderr)
+        return 3
     sys.stdout.write("\n")
     return 0
 

@@ -29,11 +29,17 @@ function resolveAppExecutablePath(context: vscode.ExtensionContext): string | un
     }
     // Auto-detect a local build of the app: it lives as a sibling "app/"
     // folder next to this extension's own repo root (extensionPath is
-    // .../LLM-TokenOptimizer/vscode-extension), or next to this extension
-    // itself once bundled into the MSI (see Product.wxs - both ship side by
-    // side under the same INSTALLFOLDER).
+    // .../LLM-TokenOptimizer/vscode-extension), or - once the MSI has
+    // installed the app - at the machine-wide or per-user install location
+    // (Product.wxs drops TokenOptimizer.App.exe directly under INSTALLFOLDER;
+    // the .vsix itself gets installed INTO VS Code from there, so this
+    // extension's own folder never contains the exe).
+    const programFiles = process.env['ProgramFiles'] ?? 'C:\\Program Files';
+    const localAppData = process.env['LOCALAPPDATA'];
     const repoRoot = path.dirname(context.extensionPath);
     const candidates = [
+        path.join(programFiles, 'TokenOptimizer', 'TokenOptimizer.App.exe'),
+        ...(localAppData ? [path.join(localAppData, 'Programs', 'TokenOptimizer', 'TokenOptimizer.App.exe')] : []),
         path.join(context.extensionPath, 'TokenOptimizer.App.exe'),
         path.join(repoRoot, 'TokenOptimizer.App.exe'),
         path.join(repoRoot, 'app', 'src', 'TokenOptimizer.App', 'bin', 'Debug', 'net10.0', 'TokenOptimizer.App.exe'),

@@ -1,6 +1,6 @@
 """
 freetoken_local.launcher
-=========================
+========================
 
 Locates and launches the **Windows** FreeToken desktop app.
 
@@ -27,14 +27,29 @@ from typing import Optional
 
 from .client import FreeTokenClient, FreeTokenConnectionError
 
-# Where we cached the official installer during setup.
-CACHED_INSTALLER = (
-    Path(os.environ.get("LOCALAPPDATA", ""))
-    / "hermes"
-    / "cache"
-    / "freetoken"
-    / "FreeToken-Setup-win-x64.exe"
-)
+# Where we cached the official installer during setup, plus other places a
+# downloaded installer typically lands.
+_INSTALLER_NAME = "FreeToken-Setup-win-x64.exe"
+
+
+def _installer_candidates() -> list[Path]:
+    cands = []
+    local = os.environ.get("LOCALAPPDATA")
+    home = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+    if local:
+        cands.append(Path(local) / "hermes" / "cache" / "freetoken" / _INSTALLER_NAME)
+    if home:
+        cands.append(Path(home) / "Downloads" / _INSTALLER_NAME)
+    return [c for c in cands if str(c)]
+
+
+def find_installer() -> Optional[Path]:
+    """Return the first existing cached/downloaded installer path, else None."""
+    for c in _installer_candidates():
+        if c.is_file():
+            return c
+    return None
+
 
 # Common install locations for the FreeToken desktop app on Windows.
 def _install_candidates() -> list[Path]:
@@ -43,24 +58,35 @@ def _install_candidates() -> list[Path]:
     pf86 = os.environ.get("ProgramFiles(x86)")
     local = os.environ.get("LOCALAPPDATA")
     appdata = os.environ.get("APPDATA")
+    exe_names = [
+        "freetoken-desktop.exe",  # actual NSIS-per-user install name (v0.2.x betas)
+        "FreeToken.exe",
+        "FreeToken.Desktop.exe",
+    ]
     if pf:
         roots.append(Path(pf))
     if pf86:
         roots.append(Path(pf86))
     if local:
+        # The desktop installer's real target dir, then the usual guesses.
+        roots.append(Path(local) / "FreeToken Desktop")
         roots.append(Path(local) / "Programs")
+        roots.append(Path(local))
     if appdata:
         roots.append(Path(appdata))
-    # also the user's local app-ish dirs
-    if local:
-        roots.append(Path(local) / "FreeToken")
     cands: list[Path] = []
     for r in roots:
-        cands.append(r / "FreeToken" / "FreeToken.exe")
-        cands.append(r / "FreeToken" / "FreeToken.Desktop.exe")
-        cands.append(r / "freetoken" / "freetoken.exe")
-        cands.append(r / "FreeToken" / "freetoken-desktop.exe")
-    return cands
+        for name in exe_names:
+            cands.append(r / name)
+            cands.append(r / "FreeToken" / name)
+    # Dedupe while preserving order (roots overlap intentionally).
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for c in cands:
+        if c not in seen:
+            seen.add(c)
+            unique.append(c)
+    return unique
 
 
 def find_app_executable() -> Optional[Path]:
@@ -69,15 +95,10 @@ def find_app_executable() -> Optional[Path]:
         if c.is_file():
             return c
     # fall back to PATH
-    found = shutil.which("FreeToken") or shutil.which("freetoken")
+    found = shutil.which("freetoken-desktop") or shutil.which("FreeToken") or shutil.which("freetoken")
     if found:
         return Path(found)
     return None
-
-
-def find_installer() -> Optional[Path]:
-    """Return the cached installer path if it exists, else None."""
-    return CACHED_INSTALLER if CACHED_INSTALLER.is_file() else None
 
 
 def locate() -> Optional[Path]:
@@ -95,8 +116,8 @@ def install_from_cache() -> Path:
     if not inst:
         raise FileNotFoundError(
             "FreeToken installer not found. Download FreeToken-Setup-win-x64.exe "
-            "from https://www.flashml.ai/ and place it at: "
-            f"{CACHED_INSTALLER}"
+            "from https://www.flashml.ai/ and place it in your Downloads folder "
+            f"(or the Hermes cache at {_installer_candidates()[0]})."
         )
     subprocess.Popen(
         [str(inst)],
@@ -124,10 +145,10 @@ def launch(
             # After install the exe may now exist; re-locate.
             exe = find_app_executable()
         if exe is None:
-            inst = find_installer()
             msg = (
                 "FreeToken desktop app is not installed. "
             )
+            inst = find_installer()
             if inst:
                 msg += (
                     f"An installer was found at {inst}. Run it (or call "

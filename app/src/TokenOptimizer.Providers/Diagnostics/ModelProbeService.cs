@@ -70,6 +70,8 @@ public sealed class ModelProbeService
                 "opcode" or "opencode" => await ProbeOpenCodeAsync(model, projectPath, ct),
                 "unsloth (local model)" or "unsloth" => await ProbeUnslothAsync(model, projectPath, ct),
                 "antigravity" => await ProbeAntigravityAsync(model, ct),
+                "freetoken (local moe)" or "freetoken" => await ProbeFreeTokenAsync(model, projectPath, ct),
+                "hermes agent" or "hermes" => await ProbeHermesAsync(model, projectPath, ct),
                 _ => new ProbeResult(false, providerName, model, "", (int)sw.ElapsedMilliseconds, $"Unknown provider: {providerName}"),
             };
         }
@@ -243,6 +245,116 @@ public sealed class ModelProbeService
 
         var result = await _runCommand(agy, $"-p \"{ProbePrompt}\" --model {model}", null, ProbeTimeoutSeconds, null, ct);
         return ToProbeResult("Antigravity", model, result, sw);
+    }
+
+    /// <summary>
+    /// Probes Hermes Agent through its real one-shot path: `hermes -z` runs a
+    /// single prompt non-interactively through the same agent loop a chat
+    /// session uses, so a passing probe proves the CLI, its config, and its
+    /// configured provider all work end-to-end. Skips with a stated reason on
+    /// machines without Hermes rather than fabricating a failure.
+    /// </summary>
+    private async Task<ProbeResult> ProbeHermesAsync(string? model, string? projectPath, CancellationToken ct)
+    {
+        var sw = Stopwatch.StartNew();
+        var hermesExe = TokenOptimizer.Providers.Hermes.HermesLocator.Find();
+        if (hermesExe is null)
+        {
+            return new ProbeResult(false, TokenOptimizer.Providers.Hermes.HermesAgentAdapter.ProviderName, model ?? "",
+                "", (int)sw.ElapsedMilliseconds, null, Skipped: true, SkipReason: "Hermes Agent CLI not found.");
+        }
+
+        var args = $"-z \"{ProbePrompt}\"";
+        if (!string.IsNullOrWhiteSpace(model))
+        {
+            args += $" --model {model}";
+        }
+
+        var result = await _runCommand(hermesExe, args, projectPath, ProbeTimeoutSeconds, null, ct);
+        return ToProbeResult(TokenOptimizer.Providers.Hermes.HermesAgentAdapter.ProviderName, model ?? "", result, sw);
+    }
+
+    /// <summary>
+    /// Probes FreeToken through the real production path: whatever model is
+    /// loaded in its desktop GUI answers one Anthropic-shaped /v1/messages
+    /// round trip over loopback. Skips honestly when the app isn't serving
+    /// (not installed, or no model loaded) - a local engine's availability is
+    /// GUI state we must not silently work around.
+    /// </summary>
+    private async Task<ProbeResult> ProbeFreeTokenAsync(string? model, string? projectPath, CancellationToken ct)
+    {
+        var sw = Stopwatch.StartNew();
+        if (TokenOptimizer.Providers.FreeToken.FreeTokenLocator.FindDesktopApp() is null)
+        {
+            return new ProbeResult(false, "FreeToken (local MoE)", model ?? "",
+                "", (int)sw.ElapsedMilliseconds, null, Skipped: true, SkipReason: "FreeToken desktop app not installed.");
+        }
+        if (!await TokenOptimizer.Providers.FreeToken.FreeTokenAdapter.ProbeServerAsync())
+        {
+            return new ProbeResult(false, "FreeToken (local MoE)", model ?? "",
+                "", (int)sw.ElapsedMilliseconds, null, Skipped: true, SkipReason: "FreeToken API not serving on 127.0.0.1:1919 (load a model in its window).");
+        }
+
+        var models = await TokenOptimizer.Providers.FreeToken.FreeTokenAdapter.ListServedModelsAsync();
+        var resolvedModel = string.IsNullOrWhiteSpace(model) ? models.FirstOrDefault() : model;
+        if (string.IsNullOrWhiteSpace(resolvedModel))
+        {
+            return new ProbeResult(false, "FreeToken (local MoE)", model ?? "",
+                "", (int)sw.ElapsedMilliseconds, null, Skipped: true, SkipReason: "FreeToken reports no loaded models.");
+        }
+
+        try
+        {
+            using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(ProbeTimeoutSeconds) };
+            using var body = new System.Net.Http.StringContent(
+                System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    model = resolvedModel,
+                    max_tokens = 64,
+                    messages = new[] { new { role = "user", content = ProbePrompt } },
+                }),
+                System.Text.Encoding.UTF8,
+                "application/json");
+            using var resp = await http.PostAsync(
+                $"{TokenOptimizer.Providers.FreeToken.FreeTokenLocator.DefaultBaseUrl}/v1/messages",
+                body,
+                ct);
+            var text = await resp.Content.ReadAsStringAsync(ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                return Fail("FreeToken (local MoE)", resolvedModel, sw, $"HTTP {(int)resp.StatusCode}: {Redact(text)}");
+            }
+
+            // Anthropic Messages shape: content blocks with text deltas.
+            string? reply = null;
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(text);
+                var blocks = doc.RootElement.GetProperty("content");
+                foreach (var block in blocks.EnumerateArray())
+                {
+                    if (block.TryGetProperty("text", out var t))
+                    {
+                        reply = (reply ?? "") + t.GetString();
+                    }
+                }
+            }
+            catch
+            {
+                return Fail("FreeToken (local MoE)", resolvedModel, sw, $"Unrecognized response shape: {Redact(text)}");
+            }
+
+            if (string.IsNullOrWhiteSpace(reply))
+            {
+                return Fail("FreeToken (local MoE)", resolvedModel, sw, "Model returned empty response.");
+            }
+
+            return new ProbeResult(true, "FreeToken (local MoE)", resolvedModel, reply!, (int)sw.ElapsedMilliseconds, null);
+        }
+        catch (Exception ex)
+        {
+            return Fail("FreeToken (local MoE)", resolvedModel, sw, Redact(ex.Message));
+        }
     }
 
     private async Task<CommandResult> RunClaudeProbeAsync(string claudeExe, ClaudeLaunchEnvironment env, string? projectPath, int timeoutSeconds, CancellationToken ct)

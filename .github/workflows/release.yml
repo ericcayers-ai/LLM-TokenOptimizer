@@ -3,7 +3,11 @@ name: Release MSI
 on:
   push:
     tags:
+      # Historical style (app-v1.x) and the style actually used by the two
+      # most recent releases (v1.9.1 / v1.10.0) - both must fire CI or a
+      # tagged release silently builds nothing.
       - "app-v*"
+      - "v*"
 
 permissions:
   contents: write

@@ -35,9 +35,12 @@ cd app
 dotnet test TokenOptimizer.slnx
 ```
 
-Add or update tests alongside any behavior change. Tests live under
-`app/tests/TokenOptimizer.Core.Tests` and `app/tests/TokenOptimizer.Providers.Tests`,
-mirroring the folder layout of `app/src`.
+Add or update tests alongside any behavior change. .NET tests live under
+`app/tests/TokenOptimizer.Core.Tests`, `app/tests/TokenOptimizer.Providers.Tests`,
+and `app/tests/TokenOptimizer.App.Tests`, mirroring the folder layout of `app/src`.
+The VS Code extension has its own suite (`npm test` inside `vscode-extension/`),
+and the `freetoken_local` Python package runs offline tests via
+`python -m unittest discover -s freetoken_local/tests` from the repo root.
 
 ## Code style
 

@@ -1,5 +1,10 @@
+using System.Runtime.Versioning;
 using TokenOptimizer.App.ViewModels;
 using TokenOptimizer.Sandbox;
+
+// The wizard drives Windows-only process/registry plumbing; every CA1416 in
+// this file is that same platform reality, silenced once here.
+[assembly: SupportedOSPlatform("windows")]
 
 namespace TokenOptimizer.App.Tests;
 

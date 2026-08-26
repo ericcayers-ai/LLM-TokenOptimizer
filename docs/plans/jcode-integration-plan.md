@@ -1,6 +1,6 @@
 # Plan: jcode integration into TokenOptimizer
 
-**Status:** plan only — not implemented. Written 2026-08-26 per the standing request
+**Status:** partially implemented since this plan was written - `JcodeHarnessAdapter` ships in the live fallback chain (manual-only provider). Continue/Pick resume modes remain unmapped; see the adapter's BuildArguments comment. Written 2026-08-26 per the standing request
 ("research http://github.com/1jehuang/jcode and implement jcode into the tokenoptimizer or
 things similar — wide scope, make the plan").
 

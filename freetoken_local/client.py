@@ -2,25 +2,30 @@
 freetoken_local.client
 =======================
 
-Real, stdlib-only OpenAI-compatible client for the FreeToken local LLM
-engine.
+Real, stdlib-only client for the FreeToken local LLM engine.
 
-FreeToken (https://github.com/FlashML-org/FreeToken) serves an
-OpenAI-compatible HTTP API on http://127.0.0.1:1919 by default:
+FreeToken (https://github.com/FlashML-org/FreeToken) serves BOTH API
+shapes on http://127.0.0.1:1919 by default (per its own quickstart):
 
     POST /v1/chat/completions   (OpenAI chat)
-    GET  /v1/models             (list loaded models)
-    POST /v1/messages           (Anthropic-compatible, optional)
+    POST /v1/responses          (OpenAI responses - not used here)
+    GET  /v1/models             (list loaded models; both shapes)
+    POST /v1/messages           (Anthropic Messages)
 
-This module talks to that server with nothing but the Python standard
-library, so it runs on a stock Windows Python 3.10+ install with zero
-third-party packages. No stubs, no mocks: every call performs a real
-socket round-trip and raises on failure.
+This module talks the OpenAI shape to that server with nothing but the
+Python standard library, so it runs on a stock Windows Python 3.10+
+install with zero third-party packages. No stubs, no mocks: every call
+performs a real socket round-trip and raises on failure.
 
 Design notes
 ------------
 * Synchronous + streaming both supported.
-* Streaming parses the real SSE `data: {...}` frames FreeToken emits.
+* Streaming parses the real SSE `data: {...}` frames FreeToken emits,
+  tolerating both LF and CRLF frame delimiters and reading in chunks
+  rather than one syscall per byte.
+* Transient network failures (connection reset, timeout) are retried
+  with exponential backoff on non-streaming calls. Streaming is NOT
+  retried (a retry would replay deltas to the caller); errors surface.
 * Token usage is read from the `usage` object in the response (FreeToken
   reports prompt/completion tokens). When the server omits it we fall back
   to a transparent length-based estimate and flag it as estimated.
@@ -86,11 +91,17 @@ class FreeTokenClient:
         port: int = DEFAULT_PORT,
         timeout: float = 120.0,
         api_key: str = "freetoken",
+        retries: int = 2,
+        backoff_seconds: float = 1.5,
     ):
         self.host = host
         self.port = port
         self.timeout = timeout
         self.api_key = api_key
+        # Transient-failure retries for NON-STREAMING requests only (a
+        # streaming retry would duplicate deltas already yielded).
+        self.retries = max(0, int(retries))
+        self.backoff_seconds = max(0.0, float(backoff_seconds))
         self.base_url = f"http://{host}:{port}"
 
     # ------------------------------------------------------------------ #
@@ -109,30 +120,46 @@ class FreeTokenClient:
     def _request(self, method: str, path: str, payload: Optional[dict] = None) -> dict:
         url = self._url(path)
         data = json.dumps(payload).encode("utf-8") if payload is not None else None
-        req = urllib.request.Request(
-            url, data=data, headers=self._headers(), method=method
+
+        last_err: Optional[Exception] = None
+        for attempt in range(self.retries + 1):
+            req = urllib.request.Request(
+                url, data=data, headers=self._headers(), method=method
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    raw = resp.read().decode("utf-8", "replace")
+                    return json.loads(raw) if raw else {}
+            except urllib.error.HTTPError as e:
+                # Deterministic server-side verdicts are never retried.
+                body = e.read().decode("utf-8", "replace")
+                raise FreeTokenAPIError(e.code, body, url) from e
+            except urllib.error.URLError as e:
+                last_err = e
+                if attempt < self.retries:
+                    time.sleep(self.backoff_seconds * (2**attempt))
+                    continue
+                raise FreeTokenConnectionError(
+                    f"Cannot reach FreeToken at {url}: {e.reason}"
+                ) from e
+        raise FreeTokenConnectionError(
+            f"Cannot reach FreeToken at {url}: {last_err}"
         )
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                raw = resp.read().decode("utf-8", "replace")
-                if resp.status >= 400:
-                    raise FreeTokenAPIError(resp.status, raw, url)
-                return json.loads(raw) if raw else {}
-        except urllib.error.HTTPError as e:  # pragma: no cover - network
-            body = e.read().decode("utf-8", "replace")
-            raise FreeTokenAPIError(e.code, body, url) from e
-        except urllib.error.URLError as e:  # pragma: no cover - network
-            raise FreeTokenConnectionError(
-                f"Cannot reach FreeToken at {url}: {e.reason}"
-            ) from e
 
     # ------------------------------------------------------------------ #
     # public API
     # ------------------------------------------------------------------ #
     def health(self) -> bool:
-        """Return True iff the server answers /v1/models."""
+        """True iff the server answers AND at least one model is loaded."""
         try:
-            self.list_models()
+            return len(self.model_ids()) > 0
+        except FreeTokenError:
+            return False
+
+    def server_up(self) -> bool:
+        """True iff the HTTP endpoint answers /v1/models, regardless of models."""
+        try:
+            self._request("GET", "/v1/models")
             return True
         except FreeTokenError:
             return False
@@ -181,7 +208,8 @@ class FreeTokenClient:
         """Streaming chat completion. Yields text deltas as they arrive.
 
         Real SSE parsing of the ``data: {json}`` frames FreeToken emits.
-        The terminal ``[DONE]`` frame stops iteration.
+        The terminal ``[DONE]`` frame stops iteration. A mid-stream HTTP
+        error raises ``FreeTokenAPIError`` carrying the status code.
         """
         model = model or self._auto_model()
         payload = {
@@ -197,20 +225,27 @@ class FreeTokenClient:
 
         url = self._url("/v1/chat/completions")
         data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            url, data=data,
-            headers={**self._headers(), "Accept": "text/event-stream"},
-            method="POST",
-        )
+
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            req = urllib.request.Request(
+                url, data=data,
+                headers={**self._headers(), "Accept": "text/event-stream"},
+                method="POST",
+            )
+            # urlopen raises HTTPError for >=400 before we ever get a stream.
+            resp_ctx = urllib.request.urlopen(req, timeout=self.timeout)
+            with resp_ctx as resp:
                 buffer = ""
                 while True:
-                    chunk = resp.read(1)
-                    if not chunk:
+                    chunk_bytes = resp.read(4096)
+                    if not chunk_bytes:
                         break
-                    buffer += chunk.decode("utf-8", "replace")
-                    # SSE frames end on a blank line
+                    buffer += chunk_bytes.decode("utf-8", "replace")
+                    # SSE frames end on a blank line; servers use either LF LF
+                    # or CRLF CRLF. Normalize CRLF first so one split works -
+                    # a bare "\n\n" split misses "\r\n\r\n" entirely (the CR
+                    # survives between the two LFs), stalling until EOF.
+                    buffer = buffer.replace("\r\n\r\n", "\n\n").replace("\r\n", "\n")
                     while "\n\n" in buffer:
                         frame, buffer = buffer.split("\n\n", 1)
                         for line in frame.splitlines():
@@ -231,6 +266,9 @@ class FreeTokenClient:
                             )
                             if delta:
                                 yield delta
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", "replace") if hasattr(e, "read") else ""
+            raise FreeTokenAPIError(e.code, body, url) from e
         except urllib.error.URLError as e:  # pragma: no cover - network
             raise FreeTokenConnectionError(
                 f"Stream broke against {url}: {e.reason}"
@@ -238,12 +276,17 @@ class FreeTokenClient:
 
     # ------------------------------------------------------------------ #
     def _auto_model(self) -> str:
-        """Pick the first available model; FreeToken's /v1/models is authoritative."""
+        """Pick the first available model; FreeToken's /v1/models is authoritative.
+
+        Raises instead of inventing a model name: a fabricated id just gets
+        rejected server-side with a more confusing error than this one.
+        """
         ids = self.model_ids()
         if not ids:
-            # FreeToken's served-model-name defaults to the checkpoint basename;
-            # if list is empty (engine still warming) we still let the call try.
-            return "local-model"
+            raise FreeTokenError(
+                f"FreeToken at {self.base_url} reports no loaded models. "
+                "Load a model in the desktop app window, then retry."
+            )
         return ids[0]
 
     @staticmethod

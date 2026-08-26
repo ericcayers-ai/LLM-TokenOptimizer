@@ -87,9 +87,10 @@ public static class CliHost
         var groqAdapter = new GroqAdapter(credentials, claudeLocator);
         var deepSeekHarnessAdapter = new DeepSeekHarnessAdapter();
         var openCodeAdapter = new OpenCodeAdapter(credentials, claudeLocator);
+        var hermesAdapter = new TokenOptimizer.Providers.Hermes.HermesAgentAdapter();
         var rateLimits = new RateLimitTracker(configStore);
         var fallbackResolver = new FallbackChainResolver(
-            claudeAdapter, antigravityAdapter, codexAdapter, cursorAdapter, groqAdapter, deepSeekHarnessAdapter, openCodeAdapter, llamaCppAdapter, rateLimits);
+            claudeAdapter, antigravityAdapter, codexAdapter, cursorAdapter, groqAdapter, deepSeekHarnessAdapter, openCodeAdapter, llamaCppAdapter, rateLimits, hermesAdapter, freeTokenAdapter);
         var agencyAgents = new AgencyAgentsInstaller(configStore, availability);
         var companionTooling = new CompanionToolingInstaller(configStore, claudeLocator, availability, pythonLocator, agencyAgents);
         var projectHistory = new ProjectHistoryService(configStore);
@@ -101,7 +102,7 @@ public static class CliHost
 
         var providers = new IProviderAdapter[]
         {
-            claudeAdapter, antigravityAdapter, openCodeAdapter, llamaCppAdapter, freeTokenAdapter, codexAdapter, cursorAdapter, groqAdapter, deepSeekHarnessAdapter,
+            claudeAdapter, antigravityAdapter, openCodeAdapter, llamaCppAdapter, freeTokenAdapter, codexAdapter, cursorAdapter, groqAdapter, deepSeekHarnessAdapter, hermesAdapter,
         };
 
         try

@@ -38,6 +38,7 @@ public sealed class RateLimitTracker
         FallbackProvider.Cursor => config.CursorRateLimitedUntilUtc,
         FallbackProvider.Groq => config.GroqRateLimitedUntilUtc,
         FallbackProvider.OpenCode => config.OpenCodeRateLimitedUntilUtc,
+        FallbackProvider.HermesAgent => config.HermesAgentRateLimitedUntilUtc,
         _ => null,
     };
 
@@ -51,6 +52,7 @@ public sealed class RateLimitTracker
             case FallbackProvider.Cursor: config.CursorRateLimitedUntilUtc = value; break;
             case FallbackProvider.Groq: config.GroqRateLimitedUntilUtc = value; break;
             case FallbackProvider.OpenCode: config.OpenCodeRateLimitedUntilUtc = value; break;
+            case FallbackProvider.HermesAgent: config.HermesAgentRateLimitedUntilUtc = value; break;
         }
     }
 }

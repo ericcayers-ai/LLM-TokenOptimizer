@@ -35,9 +35,26 @@ def run(auto_launch: bool = False, launch_timeout: float = 90.0) -> int:
     print(f"[1/4] health check -> {handler.client.base_url}")
     if not handler.health():
         if auto_launch:
-            print("    server not up; auto_launch requested but launch failed earlier.")
-        print("    RESULT: server not reachable. Start FreeToken desktop app + load a model.")
-        return 2
+            # The flag's whole purpose: actually try to bring the server up
+            # (locate + start the desktop app, wait for the port) before
+            # giving up - not just report that it wasn't up already.
+            print("    server not up; attempting auto-launch of the desktop app...")
+            try:
+                from .launcher import launch as _launch
+                _launch(handler.client, wait_timeout=launch_timeout)
+            except Exception as e:
+                print(f"    AUTO-LAUNCH FAILED: {e}")
+                print("    RESULT: server not reachable. Start FreeToken desktop app + load a model.")
+                return 2
+            if not handler.health():
+                print(
+                    "    RESULT: FreeToken is running but no model is loaded. "
+                    "Load one in its window, then re-run."
+                )
+                return 2
+        else:
+            print("    RESULT: server not reachable. Start FreeToken desktop app + load a model.")
+            return 2
     print("    OK: server reachable")
 
     # 2. models

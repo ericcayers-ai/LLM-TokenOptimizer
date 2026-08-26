@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "freetoken-local"
+version = "0.2.0"
+description = "Stdlib-only Python handler for the FreeToken desktop local-MoE engine (OpenAI + Anthropic APIs on 127.0.0.1:1919)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "LLM-TokenOptimizer contributors" }]
+keywords = ["freetoken", "flashml", "local-llm", "moe"]
+classifiers = [
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Libraries",
+]
+
+[project.scripts]
+freetoken-local = "freetoken_local.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/FlashML-org/FreeToken"
+
+# The package code lives in THIS directory itself (flat single-package
+# layout), not in a subdirectory named after the package.
+[tool.setuptools]
+packages = ["freetoken_local"]
+package-dir = { "freetoken_local" = "." }

@@ -19,14 +19,19 @@ stock Windows Python 3.10+ with **zero third-party dependencies**.
 ## What it does
 
 - Discovers and launches the installed FreeToken desktop app
-  (`launcher.launch()`), waiting for the API port to open.
-- OpenAI-compatible client with real SSE streaming, timeouts, retries
-  (`client.FreeTokenClient`).
-- A high-level `LocalLLM` handler: `health()`, `models()`, `complete()`,
-  `stream()`, with honest usage reporting (flags estimated tokens).
+  (`launcher.launch()`), waiting for the API port to open - including the
+  actual `%LOCALAPPDATA%\FreeToken Desktop\` install dir.
+- OpenAI-compatible client with real SSE streaming, timeouts, and
+  exponential-backoff retries on transient network failures
+  (`client.FreeTokenClient`; HTTP 4xx/5xx raise immediately, never retried).
+- A high-level `LocalLLM` handler: `health()` (server up AND a model loaded),
+  `models()`, `complete()`, `complete_with_usage()`, `stream()`, with honest
+  usage reporting (flags estimated tokens when the server omits usage).
 - A live `selftest` that performs a **real** round-trip (no mocks, no fake
-  server). If the server isn't up it reports that clearly and exits
-  non-zero.
+  server). If the server isn't up it reports that clearly and exits non-zero;
+  `--auto-launch` actually starts the desktop app and waits for it.
+- Offline unit tests (loopback fake server, no desktop app needed):
+  `python -m unittest discover -s freetoken_local/tests`.
 
 ## Usage
 
@@ -47,6 +52,10 @@ python -m freetoken_local selftest [--auto-launch]
 python -m freetoken_local chat "your prompt here"
 ```
 
+Packaging: `pyproject.toml` is included, so `pip install .` from this folder
+works too (exposing a `freetoken-local` console command); running from the repo
+root with `python -m freetoken_local` needs no install.
+
 ## Requirements before a live test
 
 1. FreeToken desktop app installed (run the cached installer at
@@ -60,9 +69,15 @@ python -m freetoken_local chat "your prompt here"
 
 | File | Purpose |
 |------|---------|
-| `client.py`   | OpenAI-compatible HTTP client (streaming, retries, timeouts) |
+| `client.py`   | OpenAI-compatible HTTP client (streaming, backoff retries on transient errors, timeouts) |
 | `launcher.py` | Locate / install / launch the Windows desktop app |
-| `handler.py`  | `LocalLLM` main abstraction (health, models, complete, stream) |
+| `handler.py`  | `LocalLLM` main abstraction (health, models, complete, complete_with_usage, stream) |
 | `selftest.py` | Real end-to-end live test |
 | `cli.py`      | `python -m freetoken_local` commands |
 | `__main__.py` | Module entry point |
+| `tests/test_offline.py` | Offline unit tests (loopback fake server; no desktop app needed) |
+
+Packaging: `pyproject.toml` sits alongside this README, so the package is
+pip-installable (`pip install .` from this folder exposes a `freetoken-local`
+console command); running from the repo root with `python -m freetoken_local`
+needs no install.

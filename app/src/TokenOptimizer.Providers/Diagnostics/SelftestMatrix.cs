@@ -22,5 +22,9 @@ public static class SelftestMatrix
         // gemini-3-pro/-high do not exist; verified live via `agy models` on 2026-08-21.
         ("Antigravity", "gemini-3.1-pro-high"),
         ("Antigravity", "gemini-3.1-pro-low"),
+        // FreeToken serves whatever model is loaded in its desktop GUI; null
+        // model id = probe whatever /v1/models reports (skipped when idle).
+        ("FreeToken (local MoE)", ""),
+        ("Hermes Agent", ""),
     };
 }

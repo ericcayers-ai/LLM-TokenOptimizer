@@ -35,6 +35,7 @@ public sealed class AppConfig
     public string? ClaudeRateLimitedUntilUtc { get; set; }
     public string? GroqRateLimitedUntilUtc { get; set; }
     public string? OpenCodeRateLimitedUntilUtc { get; set; }
+    public string? HermesAgentRateLimitedUntilUtc { get; set; }
 
     /// <summary>Provider names in user-chosen priority order for the "Custom (fallback chain)" option, drag-reordered in the Session tab.</summary>
     public List<string>? CustomFallbackOrder { get; set; }

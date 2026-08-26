@@ -17,4 +17,6 @@ public enum FallbackProvider
     OpenCode,
     /// <summary>OpenCode Zen - a separate gateway/account from OpenCode Go: different sign-in, different API key, different base URL (opencode.ai/zen vs opencode.ai/zen/go).</summary>
     OpenCodeZen,
+    /// <summary>Hermes Agent - an encompassing peer agent platform with its own provider config and fallback chain; manual-only like Codex/Cursor (a separate product, not a swappable backend).</summary>
+    HermesAgent,
 }

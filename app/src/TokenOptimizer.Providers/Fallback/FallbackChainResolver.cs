@@ -23,6 +23,8 @@ public sealed class FallbackChainResolver
     private readonly GroqAdapter _groq;
     private readonly DeepSeekHarnessAdapter _deepSeekHarness;
     private readonly OpenCodeAdapter _openCode;
+    private readonly TokenOptimizer.Providers.Hermes.HermesAgentAdapter _hermes;
+    private readonly IProviderAdapter _freeToken;
     private readonly IProviderAdapter _localModel;
     private readonly RateLimitTracker _rateLimits;
 
@@ -35,7 +37,9 @@ public sealed class FallbackChainResolver
         DeepSeekHarnessAdapter deepSeekHarness,
         OpenCodeAdapter openCode,
         IProviderAdapter localModel,
-        RateLimitTracker rateLimits)
+        RateLimitTracker rateLimits,
+        TokenOptimizer.Providers.Hermes.HermesAgentAdapter? hermes = null,
+        IProviderAdapter? freeToken = null)
     {
         _claudeAdapter = claudeAdapter;
         _antigravity = antigravity;
@@ -46,6 +50,9 @@ public sealed class FallbackChainResolver
         _openCode = openCode;
         _localModel = localModel;
         _rateLimits = rateLimits;
+        // Optional with real defaults so existing test constructors keep compiling; production wiring always passes both.
+        _hermes = hermes ?? new TokenOptimizer.Providers.Hermes.HermesAgentAdapter();
+        _freeToken = freeToken ?? new TokenOptimizer.Providers.FreeToken.FreeTokenAdapter();
     }
 
     /// <summary>All adapters this resolver knows about, keyed by Name, for custom-order resolution.</summary>
@@ -58,6 +65,11 @@ public sealed class FallbackChainResolver
         [_groq.Name] = (_groq, FallbackProvider.Groq),
         [_deepSeekHarness.Name] = (_deepSeekHarness, FallbackProvider.DeepSeekHarness),
         [_openCode.Name] = (_openCode, FallbackProvider.OpenCode),
+        [_hermes.Name] = (_hermes, FallbackProvider.HermesAgent),
+        // FreeToken: reachable in CUSTOM chains (user drag-reorder) but never
+        // auto-routed here - its availability is GUI state (loaded model), and
+        // the router's per-request auto-fallback already prefers it when live.
+        [_freeToken.Name] = (_freeToken, null),
         [_localModel.Name] = (_localModel, null),
     };
 
@@ -109,7 +121,13 @@ public sealed class FallbackChainResolver
             await DescribeManualOnlyAsync(_cursor, FallbackProvider.Cursor),
             await DescribeManualOnlyAsync(_groq, FallbackProvider.Groq),
             await DescribeManualOnlyAsync(_deepSeekHarness, FallbackProvider.DeepSeekHarness),
-        };
+            await DescribeManualOnlyAsync(_hermes, FallbackProvider.HermesAgent),
+            // Never auto-routed by this resolver (GUI-gated local engine); still
+            // described so users see its availability and how to reach it.
+            await DescribeAsync(_freeToken, null) is { } ftStep
+                ? ftStep with { UnavailableReason = ftStep.IsAvailable ? "Manual only - not auto-routed (pick it in the provider dropdown)" : ftStep.UnavailableReason }
+                : null,
+        }.Where(s => s is not null).Select(s => s!).ToList();
 
         return steps;
     }

@@ -4,7 +4,12 @@
 
   <!-- Fixed UpgradeCode - never change this across versions, it's what lets
        a newer MSI find and replace an older install instead of installing
-       side-by-side. -->
+       side-by-side.
+
+       Version axes (documented, deliberate): this Package Version tracks the
+       APP release line (1.x). The VS Code extension rides its own 6.x line in
+       vscode-extension/package.json - they are versioned independently on
+       purpose; a release ships both at whatever each has reached. -->
   <Package Name="TokenOptimizer"
            Manufacturer="TokenOptimizer"
            Version="1.10.0"

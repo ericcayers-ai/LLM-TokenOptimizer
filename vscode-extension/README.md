@@ -21,10 +21,11 @@ that happens to share the extension), which will refuse it with a
 "try installing in Visual Studio Code" error. `Install.bat` goes through VS
 Code's own `code.cmd` launcher instead.
 
-`TokenOptimizer.App.exe` needs to be reachable too - the MSI installer places
-it next to this extension automatically; building from a repo checkout,
-`dotnet build` under `app/` produces it and the extension auto-detects the
-build output, or set `llmTokenOptimizer.appExecutablePath` explicitly.
+`TokenOptimizer.App.exe` needs to be reachable too - the MSI installs it under
+the TokenOptimizer install folder and the extension auto-detects that location;
+building from a repo checkout, `dotnet build` under `app/` produces it and the
+extension auto-detects the build output, or set `llmTokenOptimizer.appExecutablePath`
+explicitly.
 
 ## Using it - everything is UI, no command to remember
 
@@ -69,7 +70,7 @@ there's one obvious way in instead of many competing entries.
 - `llmTokenOptimizer.isolateClaudeConfig` - forwards `--cli launch --isolate`
   (gives the project its own `CLAUDE_CONFIG_DIR`).
 - `llmTokenOptimizer.appExecutablePath` - path to `TokenOptimizer.App.exe`.
-  Leave blank to auto-detect (bundled next to this extension via the MSI, or
+  Leave blank to auto-detect (the TokenOptimizer install folder from the MSI,
   a local `dotnet build` output under this repo's `app/` folder).
 
 ## Why the CLI, not a reimplementation

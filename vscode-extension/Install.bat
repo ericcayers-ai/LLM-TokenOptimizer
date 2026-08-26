@@ -16,14 +16,20 @@ rem instead, so double-clicking THIS file is the one-click install path.
 rem Don't hardcode the version - it goes stale every time the extension is
 rem repackaged (this bit us: v5.4.0 was baked in here while the actual file
 rem on disk had moved on to v5.8.0). Instead, pick the most recently built
-rem llm-token-optimizer-*.vsix sitting next to this installer.
+rem llm-token-optimizer-*.vsix sitting next to this installer - or, failing
+rem that, the one build-installer.ps1 drops into app\publish\.
 set "VSIX="
 for /f "delims=" %%F in ('dir /b /o-d "%~dp0llm-token-optimizer-*.vsix" 2^>nul') do (
     if not defined VSIX set "VSIX=%~dp0%%F"
 )
 if not defined VSIX (
-    echo   ERROR: No llm-token-optimizer-*.vsix found next to this installer.
-    echo   Nothing to install.
+    for /f "delims=" %%F in ('dir /b /o-d "%~dp0..\app\publish\llm-token-optimizer-*.vsix" 2^>nul') do (
+        if not defined VSIX set "VSIX=%~dp0..\app\publish\%%F"
+    )
+)
+if not defined VSIX (
+    echo   ERROR: No llm-token-optimizer-*.vsix found next to this installer
+    echo   or under ..app\publish\. Run build-installer.ps1 (or npx @vscode/vsce package).
     echo.
     pause
     exit /b 1
