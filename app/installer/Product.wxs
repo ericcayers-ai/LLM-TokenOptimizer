@@ -17,6 +17,10 @@
            Language="1033"
            Scope="perUserOrMachine">
 
+    <!-- App icon (used for the MSI/shortcut). Built from the user-supplied
+         brand artwork; multi-resolution .ico under Assets/app-icon.ico. -->
+    <Icon Id="AppIcon.ico" SourceFile="C:\Users\ericc\OneDrive\Desktop\Programs\misc\LLM-TokenOptimizer\app\src\TokenOptimizer.App\Assets\app-icon.ico" />
+
     <SummaryInformation Description="TokenOptimizer ecosystem app + VS Code extension installer" />
 
     <MajorUpgrade DowngradeErrorMessage="A newer version of TokenOptimizer is already installed." />
@@ -41,6 +45,7 @@
                     Name="TokenOptimizer"
                     Description="Claude Code project launcher and provider fallback/translation layer"
                     Target="[INSTALLFOLDER]TokenOptimizer.App.exe"
+                    Icon="AppIcon.ico"
                     WorkingDirectory="INSTALLFOLDER" />
           <RemoveFolder Id="RemoveAppShortcutFolder" On="uninstall" />
           <RegistryValue Root="HKCU"
